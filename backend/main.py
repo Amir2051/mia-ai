@@ -65,7 +65,9 @@ def create_app() -> FastAPI:
 
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
+        # Shopify loads embedded apps inside an admin iframe. X-Frame-Options: DENY
+        # would block that iframe, so use CSP frame-ancestors for the intended hosts.
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         if settings.is_production:
