@@ -1,6 +1,6 @@
-from typing import Any, Optional
+from typing import Optional
 
-from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
+from app.shopify.client import ShopifyAPIClient
 
 
 class CustomerService:
@@ -8,16 +8,18 @@ class CustomerService:
         self.api = api_client
 
     async def list_customers(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
-        cursor = f', after: {after!r}' if after else ''
         gql = (
-            'query($query: String, $first: Int) {'
-            '  customers(first: $first, query: $query' + cursor + ') {'
+            'query($query: String, $first: Int!, $after: String) {'
+            '  customers(first: $first, after: $after, query: $query) {'
             '    edges { cursor node { id email displayName numberOfOrders amountSpent { amount currencyCode } } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
             '}'
         )
-        return await self.api.graphql(gql, {'query': query or None, 'first': first})
+        return await self.api.graphql(
+            gql,
+            {'query': query or None, 'first': max(1, min(first, 250)), 'after': after},
+        )
 
     async def get_customer(self, customer_id: str) -> dict:
         gql = (
