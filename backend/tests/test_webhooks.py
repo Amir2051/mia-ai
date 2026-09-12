@@ -46,8 +46,8 @@ def test_webhook_without_shopify_secret(client):
             content=json.dumps({"id": 123}).encode(),
         )
 
-        assert response.status_code == 200
-        assert response.json()["status"] == "received"
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Webhook verification is not configured"
     finally:
         router_settings.shopify_api_secret = original_secret
 
