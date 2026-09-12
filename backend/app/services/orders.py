@@ -1,6 +1,6 @@
-from typing import Any, Optional
+from typing import Optional
 
-from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
+from app.shopify.client import ShopifyAPIClient
 
 
 class OrderService:
@@ -8,10 +8,9 @@ class OrderService:
         self.api = api_client
 
     async def list_orders(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
-        cursor = f', after: {after!r}' if after else ''
         gql = (
-            'query($query: String, $first: Int) {'
-            '  orders(first: $first, reverse: true, query: $query' + cursor + ') {'
+            'query($query: String, $first: Int!, $after: String) {'
+            '  orders(first: $first, after: $after, reverse: true, query: $query) {'
             '    edges { cursor node { id name createdAt displayFinancialStatus displayFulfillmentStatus'
             '      totalPriceSet { shopMoney { amount currencyCode } }'
             '      customer { id displayName email }'
@@ -21,7 +20,10 @@ class OrderService:
             '  }'
             '}'
         )
-        return await self.api.graphql(gql, {'query': query or None, 'first': first})
+        return await self.api.graphql(
+            gql,
+            {'query': query or None, 'first': max(1, min(first, 250)), 'after': after},
+        )
 
     async def get_order(self, order_id: str) -> dict:
         gql = (
