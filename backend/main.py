@@ -7,7 +7,7 @@ import uuid
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.shopify.config import settings
@@ -138,6 +138,12 @@ def create_app() -> FastAPI:
 
         @application.get('/{full_path:path}')
         async def spa_fallback(request: Request, full_path: str):
+            # API and health routes are registered before this catch-all. Any
+            # remaining browser route should load the React app entry point so
+            # client-side routing works on direct navigation/refresh.
+            index_path = os.path.join(frontend_dist, 'index.html')
+            if os.path.isfile(index_path):
+                return FileResponse(index_path)
             return JSONResponse({'detail': 'not_found'}, status_code=404)
 
     return application
