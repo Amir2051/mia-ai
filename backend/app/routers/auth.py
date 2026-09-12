@@ -1,6 +1,8 @@
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -17,7 +19,9 @@ from app.shopify.auth import (
     ShopifyOAuthFlow,
     _validate_shop_domain,
     generate_nonce,
+    generate_session_token,
     generate_state,
+    now_utc,
 )
 from app.shopify.config import settings
 
@@ -60,67 +64,40 @@ async def session(
         "",
     ).strip()
 
-    # No authentication header.
     if not authorization:
-        return SessionResponse(
-            connected=False,
-        )
+        return SessionResponse(connected=False)
 
-    # Only Bearer authentication is supported.
     if not authorization.lower().startswith("bearer "):
-        return SessionResponse(
-            connected=False,
-        )
+        return SessionResponse(connected=False)
 
     id_token = authorization[7:].strip()
 
     if not id_token:
-        return SessionResponse(
-            connected=False,
-        )
+        return SessionResponse(connected=False)
 
-    # Validate the Shopify App Bridge ID token.
-    from app.auth.dependencies import (
-        _validate_shopify_id_token,
-    )
+    from app.auth.dependencies import _validate_shopify_id_token
 
     try:
-        payload = _validate_shopify_id_token(
-            id_token,
-        )
+        payload = _validate_shopify_id_token(id_token)
     except HTTPException as exc:
-        response.headers[
-            "X-Shopify-Retry-Invalid-Session-Request"
-        ] = "1"
+        response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
         raise exc
 
-    shop_domain = payload.get(
-        "shop_domain",
-    )
+    shop_domain = payload.get("shop_domain")
 
     if not shop_domain:
-        response.headers[
-            "X-Shopify-Retry-Invalid-Session-Request"
-        ] = "1"
-
+        response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Shopify shop could not be determined",
-            headers={
-                "X-Shopify-Retry-Invalid-Session-Request": "1",
-            },
+            headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
         )
 
-    # Look for an existing local Shop record.
     result = await db.execute(
-        select(Shop).where(
-            Shop.shop_domain == shop_domain,
-        )
+        select(Shop).where(Shop.shop_domain == shop_domain)
     )
-
     shop = result.scalar_one_or_none()
 
-    # Existing active connection.
     if (
         shop is not None
         and shop.is_active
@@ -132,56 +109,32 @@ async def session(
             connected=True,
         )
 
-    # First connection or reactivation.
     oauth = ShopifyOAuthFlow()
 
     try:
-        token_data = (
-            oauth.exchange_id_token_for_access_token(
-                shop=shop_domain,
-                id_token=id_token,
-            )
+        token_data = oauth.exchange_id_token_for_access_token(
+            shop=shop_domain,
+            id_token=id_token,
         )
-    except (
-        AuthenticationError,
-        AuthorizationError,
-    ) as exc:
-        response.headers[
-            "X-Shopify-Retry-Invalid-Session-Request"
-        ] = "1"
-
+    except (AuthenticationError, AuthorizationError) as exc:
+        response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
-            headers={
-                "X-Shopify-Retry-Invalid-Session-Request": "1",
-            },
+            headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
         ) from exc
 
-    access_token = token_data.get(
-        "access_token",
-    )
+    access_token = token_data.get("access_token")
 
     if not access_token:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Shopify token exchange returned "
-                "no access token"
-            ),
+            detail="Shopify token exchange returned no access token",
         )
 
-    # Never store the Shopify access token in plaintext.
-    encrypted_access_token = encrypt_token(
-        access_token,
-    )
+    encrypted_access_token = encrypt_token(access_token)
+    scope = token_data.get("scope") or settings.shopify_scopes
 
-    scope = (
-        token_data.get("scope")
-        or settings.shopify_scopes
-    )
-
-    # Create the local Shop record if necessary.
     if shop is None:
         shop = Shop(
             shop_domain=shop_domain,
@@ -191,9 +144,7 @@ async def session(
         )
         db.add(shop)
     else:
-        shop.access_token_encrypted = (
-            encrypted_access_token
-        )
+        shop.access_token_encrypted = encrypted_access_token
         shop.scope = scope
         shop.is_active = True
 
@@ -211,9 +162,7 @@ async def install(
     shop: str = Query(...),
     db=Depends(get_db),
 ):
-    """
-    Start the Shopify OAuth authorization flow.
-    """
+    """Start the Shopify OAuth authorization flow."""
     oauth = ShopifyOAuthFlow()
 
     try:
@@ -243,23 +192,91 @@ async def install(
 
     session_obj = ShopSession(
         shop_id=shop_obj.id,
+        session_token=generate_session_token(),
         state=state,
         nonce=nonce,
+        expires_at=(now_utc() + timedelta(minutes=settings.oauth_state_expire_minutes)).replace(tzinfo=None),
         is_valid=True,
     )
     db.add(session_obj)
     await db.commit()
 
-    authorization_url = (
-        oauth.build_authorization_url(
-            shop=shop,
-            state=state,
-            nonce=nonce,
-        )
+    authorization_url = oauth.build_authorization_url(
+        shop=shop,
+        state=state,
+        nonce=nonce,
     )
 
-    return AuthorizationResponse(
-        authorization_url=authorization_url,
+    return AuthorizationResponse(authorization_url=authorization_url)
+
+
+@router.get("/callback")
+async def callback(
+    shop: str = Query(...),
+    code: str = Query(...),
+    state: str = Query(...),
+    db=Depends(get_db),
+):
+    """Complete the legacy OAuth flow and return to the embedded app."""
+    try:
+        shop = _validate_shop_domain(shop)
+    except AuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    result = await db.execute(
+        select(ShopSession)
+        .join(Shop)
+        .where(
+            Shop.shop_domain == shop,
+            ShopSession.state == state,
+            ShopSession.is_valid.is_(True),
+        )
+    )
+    session_obj = result.scalar_one_or_none()
+
+    if session_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state",
+        )
+
+    if session_obj.expires_at is not None and session_obj.expires_at < now_utc().replace(tzinfo=None):
+        session_obj.is_valid = False
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Expired OAuth state",
+        )
+
+    oauth = ShopifyOAuthFlow()
+
+    try:
+        access_token = oauth.exchange_code_for_token(
+            shop=shop,
+            code=code,
+        )
+    except (AuthenticationError, AuthorizationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    shop_result = await db.execute(
+        select(Shop).where(Shop.shop_domain == shop)
+    )
+    shop_obj = shop_result.scalar_one()
+    shop_obj.access_token_encrypted = encrypt_token(access_token)
+    shop_obj.scope = settings.shopify_scopes
+    shop_obj.is_active = True
+    session_obj.is_valid = False
+    await db.commit()
+
+    return RedirectResponse(
+        url=f"{settings.shopify_app_url.rstrip('/')}/?shop={shop}",
+        status_code=status.HTTP_302_FOUND,
     )
 
 
@@ -268,9 +285,7 @@ async def logout(
     current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
-    """
-    Disconnect a Shopify shop by deactivating the local shop record.
-    """
+    """Disconnect a Shopify shop by deactivating the local shop record."""
     if not current:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -278,9 +293,7 @@ async def logout(
         )
 
     result = await db.execute(
-        select(Shop).where(
-            Shop.shop_domain == current.shop_domain,
-        )
+        select(Shop).where(Shop.shop_domain == current.shop_domain)
     )
     shop = result.scalar_one_or_none()
 
