@@ -1,0 +1,36 @@
+import { useEffect, useState } from 'react';
+import api from '../services/api';
+
+type ShopifyStatus = { connected: boolean } | null;
+
+export function useShopifyStatus() {
+  const [data, setData] = useState<ShopifyStatus>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.get('/shopify/status')
+      .then((res) => {
+        if (!cancelled) {
+          setData({ connected: !!res?.data?.configured });
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError((err as Error)?.message || 'Failed to load status');
+          setData(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { data, error, loading };
+}

@@ -1,0 +1,21 @@
+name = "Mia AI"
+client_id = c3778df7ce03ca72b52ea21020c3570b
+application_url = "https://drivenest.info"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,write_products,read_orders,read_customers,read_inventory"
+
+[access.admin]
+direct_api_mode = "online"
+
+[auth]
+redirect_urls = [
+  "https://drivenest.info/auth/callback"
+]
+
+[webhooks]
+api_version = "2026-07"
+
+[build]
+automatically_update_urls_on_dev = false

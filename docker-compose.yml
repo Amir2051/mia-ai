@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  mia-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    volumes:
+      - mia-data:/app/data
+    restart: unless-stopped
+volumes:
+  mia-data:

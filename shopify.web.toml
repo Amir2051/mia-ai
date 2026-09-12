@@ -1,0 +1,6 @@
+roles = ["frontend"]
+port = 5173
+
+[commands]
+dev = "npm run dev"
+build = "npm run build"
