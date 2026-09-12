@@ -46,7 +46,6 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "AsyncSessionLocal", session_local)
-    monkeypatch.setattr(main_mod, "engine", engine)
 
     application = main_mod.create_app()
 
