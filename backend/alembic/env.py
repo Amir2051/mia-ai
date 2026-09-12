@@ -19,12 +19,25 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+
+def _sync_database_url(url: str) -> str:
+    """Convert the application's async DB URL to an Alembic sync URL."""
+    if url.startswith("sqlite+aiosqlite://"):
+        return url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    return url
+
+
 # Use the application's configured database URL rather than the placeholder
-# URL in alembic.ini. This keeps local and production migrations aligned with
-# the same DATABASE_URL used by the application.
+# URL in alembic.ini. Alembic uses a synchronous engine, so normalize the
+# application's async driver URLs before creating that engine.
 database_url = os.getenv("DATABASE_URL")
 if database_url:
-    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        _sync_database_url(database_url).replace("%", "%%"),
+    )
 
 target_metadata = Base.metadata
 
