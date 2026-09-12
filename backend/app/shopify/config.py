@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # Load from .env in production. Do not hardcode production secrets.
     secret_key: str = ''
 
+    # SQLite is intended only for local development. Production must use
+    # PostgreSQL so application data survives container replacement and can
+    # be backed up and migrated safely.
     database_url: str = 'sqlite+aiosqlite:///./dev.db'
 
     # Shopify
@@ -90,6 +93,8 @@ class Settings(BaseSettings):
                 issues.append('SESSION_COOKIE_SECURE must be True in production')
             if 'localhost' in self.cors_origins:
                 issues.append('localhost in CORS_ORIGINS is not safe for production')
+            if self.database_url.startswith('sqlite'):
+                issues.append('DATABASE_URL must use PostgreSQL in production')
         return issues
 
 
