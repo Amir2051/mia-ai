@@ -91,7 +91,7 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     if topic not in SUPPORTED_TOPICS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported webhook topic")
     if not settings.shopify_api_secret:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Shopify webhook secret is not configured")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook verification is not configured")
     if not hmac_header or not _verify_webhook_signature(hmac_header, body):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
 
