@@ -110,11 +110,7 @@ def create_app() -> FastAPI:
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            'http://localhost:5173',
-            'http://localhost:3000',
-            'https://drivenest.info',
-        ],
+        allow_origins=settings.effective_cors_origins,
         allow_credentials=True,
         allow_methods=['*'],
         allow_headers=['*'],
@@ -131,6 +127,7 @@ def create_app() -> FastAPI:
         orders,
         products,
         settings as settings_router,
+        webhooks,
     )
     application.include_router(auth.router, prefix='/api/auth', tags=['auth'])
     application.include_router(analytics.router, prefix='/api/analytics', tags=['analytics'])
@@ -140,6 +137,7 @@ def create_app() -> FastAPI:
     application.include_router(orders.router, prefix='/api/orders', tags=['orders'])
     application.include_router(products.router, prefix='/api/products', tags=['products'])
     application.include_router(settings_router.router, prefix='/api/settings', tags=['settings'])
+    application.include_router(webhooks.router, prefix='/api', tags=['webhooks'])
 
     @application.get('/health', tags=['health'])
     async def health():
