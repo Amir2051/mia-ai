@@ -1,5 +1,5 @@
 name = "Mia AI"
-client_id = c3778df7ce03ca72b52ea21020c3570b
+client_id = "c3778df7ce03ca72b52ea21020c3570b"
 application_url = "https://drivenest.info"
 embedded = true
 
@@ -16,6 +16,18 @@ redirect_urls = [
 
 [webhooks]
 api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "/api/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["products/create", "products/update", "products/delete"]
+uri = "/api/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["orders/create", "orders/updated"]
+uri = "/api/webhooks"
 
 [build]
 automatically_update_urls_on_dev = false
