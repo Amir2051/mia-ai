@@ -11,7 +11,7 @@ direct_api_mode = "online"
 
 [auth]
 redirect_urls = [
-  "https://drivenest.info/auth/callback"
+  "https://drivenest.info/api/auth/callback"
 ]
 
 [webhooks]
