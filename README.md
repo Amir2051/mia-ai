@@ -1,142 +1,105 @@
-# Mia AI - Shopify Embedded Admin App
+# Mia AI — Shopify Embedded Admin App
 
-Production-quality Shopify embedded admin application built for the existing Mia AI Partner app (App ID: 418029862913, API version 2026-07).
+Production Shopify embedded admin application for the existing Mia AI Partner app.
 
-## What This Is
+- **Shopify App ID:** `418029862913`
+- **Client ID:** `c3778df7ce03ca72b52ea21020c3570b`
+- **Admin API:** `2026-07`
+- **Production URL:** `https://drivenest.info`
 
-Mia AI is a modular Shopify merchant administration application. It provides a professional embedded Admin experience for:
+## Features
 
-- Dashboard
+- Embedded Shopify Admin dashboard
 - Product management
-- Product imports
-- Order management
-- Customer insights
-- Analytics
-- Marketing architecture
+- CSV product imports with duplicate actions: `skip`, `update`, `create`, `fail`
+- Orders and customers
+- Analytics and marketing architecture
 - Settings
-
-## Project Location
-
-```
-/opt/data/mia-ai/
-```
+- Shopify App Bridge ID-token authentication and OAuth fallback
+- Encrypted Shopify token storage
+- HMAC-verified, deduplicated Shopify webhooks
 
 ## Architecture
 
-```
+```text
 mia-ai/
-├── backend/            # FastAPI backend (Python)
-│   ├── app/
-│   │   ├── shopify/    # Shopify integration layer
-│   │   ├── models/     # Database models & schemas
-│   │   ├── services/   # Business logic
-│   │   └── routers/    # API routes
-│   └── tests/          # Backend tests
-├── frontend/           # React + TypeScript SPA
-│   └── src/
-│       ├── components/ # Reusable UI components
-│       ├── pages/      # Route pages
-│       ├── services/   # API clients
-│       └── hooks/      # React hooks
-├── tests/              # Cross-cutting tests
-└── README.md
+├── backend/       # FastAPI + SQLAlchemy + Alembic
+├── frontend/      # React + TypeScript + Vite
+├── docker-entrypoint.sh
+├── Dockerfile
+└── shopify.app.toml
 ```
 
-## Tech Stack
+Production uses PostgreSQL. SQLite is development/test only.
 
-- **Backend:** FastAPI + SQLAlchemy + SQLite (dev) / PostgreSQL (prod-ready)
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS
-- **Shopify:** Admin GraphQL abstraction with placeholder credentials
-- **Testing:** pytest (backend) + Vitest (frontend)
+## Required Production Environment
 
-## Local Development
+Set these values in the deployment environment; never commit the Shopify secret:
 
-### Prerequisites
+```text
+ENVIRONMENT=production
+SECRET_KEY=<long-random-secret>
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/mia
+SHOPIFY_API_KEY=c3778df7ce03ca72b52ea21020c3570b
+SHOPIFY_API_SECRET=<Shopify secret>
+SHOPIFY_APP_URL=https://drivenest.info
+SHOPIFY_REDIRECT_URIS=https://drivenest.info/api/auth/callback
+SHOPIFY_SCOPES=read_products,write_products,read_orders,read_customers,read_inventory
+SHOPIFY_API_VERSION=2026-07
+TOKEN_ENCRYPTION_KEY=<Fernet key>
+CORS_ORIGINS=https://drivenest.info
+SESSION_COOKIE_SECURE=true
+```
 
-- Python 3.11+
-- Node.js 18+
-- npm or pnpm
+## Production build
 
-### Setup
+The Docker image builds the React frontend, installs the FastAPI backend, copies the built SPA into the runtime image, runs Alembic migrations, and starts Uvicorn.
 
 ```bash
-# Backend
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload
-
-# Frontend
-cd frontend
-npm install
-npm run dev
+docker build -t mia-ai .
+docker run --env-file .env -p 8000:8000 mia-ai
 ```
 
-### Environment Variables
+Cloudflare should proxy `drivenest.info` to the production origin. Keep the Shopify secret and database credentials only in the server environment.
 
-See `.env.example` for required variables. Shopify-specific values are intentionally left as placeholders until credentials are supplied.
+## Database migrations
 
-### Database
+Schema changes are managed by Alembic. Application startup does **not** call `create_all()`.
 
-Local SQLite database is created automatically at `backend/dev.db`. Schema includes:
-
-- `shops`
-- `shop_sessions`
-- `products`
-- `product_variants`
-- `suppliers`
-- `product_imports`
-- `sync_jobs`
-- `webhook_events`
-- `app_settings`
-- `audit_logs`
+```bash
+cd backend
+alembic upgrade head
+```
 
 ## Testing
 
 ```bash
-# Backend
-cd backend && pytest
-
-# Frontend
-cd frontend && npm test
-
-# All
-cd tests && ./run_tests.sh
+cd backend && pytest -q
+cd frontend && npm run build
 ```
 
-## Shopify Connection (Pending)
+GitHub Actions also runs backend migrations/tests and the frontend build for pushes and pull requests to `main`.
 
-The app is structured to connect to the existing Mia AI Partner app (418029862913) once credentials are supplied.
+## Shopify configuration
 
-Required Shopify configuration:
-- `SHOPIFY_API_KEY`
-- `SHOPIFY_API_SECRET`
-- `SHOPIFY_APP_URL` (development URL)
-- `SHOPIFY_REDIRECT_URIS`
-- `SHOPIFY_SCOPES`
-- `SHOPIFY_API_VERSION=2026-07`
+`shopify.app.toml` is configured for:
 
-See `backend/app/shopify/config.py` for integration points.
+- `https://drivenest.info`
+- OAuth callback: `https://drivenest.info/api/auth/callback`
+- webhook endpoint: `https://drivenest.info/api/webhooks`
+- app uninstall, product create/update/delete, and order create/update subscriptions
+
+Before production install, perform a live dev-store acceptance test covering install, OAuth, embedded loading, products, CSV import, orders, customers, uninstall, reinstall, and webhook delivery.
 
 ## Security
 
-- No secrets in source code
-- `.env` files gitignored
-- Server-side only Shopify credentials
-- Merchant data isolated per shop
-- Input validation on all endpoints
-- Webhook HMAC verification stubs ready
-
-## Production Deployment
-
-**NOT YET DEPLOYED.** Do not install on production Shopify stores until:
-1. Shopify credentials are configured
-2. OAuth flow is tested
-3. Webhook endpoints are verified
-4. Security review is complete
-5. Merchant isolation is validated
-
-## License
-
-Proprietary - Mia AI
+- Shopify access tokens encrypted at rest
+- App Bridge ID-token validation
+- OAuth state/nonce validation
+- Webhook HMAC verification and event deduplication
+- Merchant isolation on shop-scoped records
+- Production PostgreSQL requirement
+- Request-size limits and security headers
+- Environment-driven CORS
+- Structured request IDs and safe 500 responses
+- No secrets committed to source control
