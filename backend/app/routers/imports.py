@@ -14,6 +14,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.products import ImportService
+from app.services.csv_imports import CsvImportService
 from app.shopify.client import (
     ShopifyAPIClient,
     ShopifyAPIError,
@@ -38,138 +39,46 @@ async def list_imports(
     db=Depends(get_db),
 ):
     if not current:
-        return ImportResponse(
-            data=None,
-            connected=False,
-        )
-
-    result = await db.execute(
-        select(Shop).where(
-            Shop.shop_domain == current.shop_domain
-        )
-    )
-
+        return ImportResponse(data=None, connected=False)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
-    if (
-        not shop
-        or not shop.access_token_encrypted
-        or not shop.is_active
-    ):
-        return ImportResponse(
-            data=None,
-            connected=False,
-        )
-
+    if not shop or not shop.access_token_encrypted or not shop.is_active:
+        return ImportResponse(data=None, connected=False)
     try:
-        access_token = decrypt_token(
-            shop.access_token_encrypted
-        )
+        access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
-        ) from exc
-
-    client = ShopifyAPIClient(
-        shop_domain=shop.shop_domain,
-        access_token=access_token,
-    )
-
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
+    client = ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
     try:
-        data = await ImportService(
-            db_session=db,
-            shop=shop,
-        ).list_imports()
-
+        data = await ImportService(db_session=db, shop=shop).list_imports()
     except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-    return ImportResponse(
-        data=data,
-        connected=True,
-    )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return ImportResponse(data=data, connected=True)
 
 
 @router.get("/{import_id}", response_model=ImportResponse)
-async def get_import(
-    import_id: str,
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
-    db=Depends(get_db),
-):
+async def get_import(import_id: str, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
-        return ImportResponse(
-            data=None,
-            connected=False,
-        )
-
-    result = await db.execute(
-        select(Shop).where(
-            Shop.shop_domain == current.shop_domain
-        )
-    )
-
+        return ImportResponse(data=None, connected=False)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
-    if (
-        not shop
-        or not shop.access_token_encrypted
-        or not shop.is_active
-    ):
-        return ImportResponse(
-            data=None,
-            connected=False,
-        )
-
+    if not shop or not shop.access_token_encrypted or not shop.is_active:
+        return ImportResponse(data=None, connected=False)
     try:
-        access_token = decrypt_token(
-            shop.access_token_encrypted
-        )
+        decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     try:
-        data = await ImportService(
-            db_session=db,
-            shop=shop,
-        ).get_import(int(import_id))
-
+        data = await ImportService(db_session=db, shop=shop).get_import(int(import_id))
     except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     if data is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Import not found",
-        )
-
-    return ImportResponse(
-        data=data,
-        connected=True,
-    )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
+    return ImportResponse(data=data, connected=True)
 
 
 class ImportCreateRequest(BaseModel):
@@ -218,213 +127,84 @@ class ImportRunRequest(BaseModel):
 
 
 @router.post("/preview", response_model=ImportCreateResponse)
-async def preview_import(
-    request: Request,
-    payload: ImportPreviewRequest,
-    current: Optional[CurrentUser] = Depends(get_optional_shop),
-    db=Depends(get_db),
-):
+async def preview_import(request: Request, payload: ImportPreviewRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
-
-    result = await db.execute(
-        select(Shop).where(Shop.shop_domain == current.shop_domain)
-    )
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportCreateResponse(data=None, connected=False)
-
     try:
         access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
-        ) from exc
-
-    client = ShopifyAPIClient(
-        shop_domain=shop.shop_domain,
-        access_token=access_token,
-    )
-
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
+    client = ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
     try:
-        data = await ImportService(
-            db_session=db,
-            shop=shop,
-            api_client=client,
-        ).create_import_from_csv(
+        data = await CsvImportService(db_session=db, shop=shop, api_client=client).create_import_from_csv(
             shop_id=shop.id,
             payload={**payload.dict(exclude_none=True), "validate_only": True},
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
         if _is_shopify_validation_error(exc):
-            return ImportCreateResponse(
-                data=None,
-                connected=True,
-                error=str(exc),
-                userErrors=(
-                    exc.response.get("userErrors") if isinstance(exc.response, dict) else None
-                ),
-            )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
+            return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
 @router.post("/{import_id}/run", response_model=ImportCreateResponse)
-async def run_import(
-    import_id: int,
-    payload: Optional[ImportRunRequest] = None,
-    current: Optional[CurrentUser] = Depends(get_optional_shop),
-    db=Depends(get_db),
-):
+async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
-
-    result = await db.execute(
-        select(Shop).where(Shop.shop_domain == current.shop_domain)
-    )
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportCreateResponse(data=None, connected=False)
-
     try:
         access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
-        ) from exc
-
-    client = ShopifyAPIClient(
-        shop_domain=shop.shop_domain,
-        access_token=access_token,
-    )
-
-    import_service = ImportService(
-        db_session=db,
-        shop=shop,
-        api_client=client,
-    )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
+    client = ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
+    import_service = CsvImportService(db_session=db, shop=shop, api_client=client)
     existing = await import_service.get_import(import_id)
-
     if existing is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Import not found",
-        )
-
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
     run_payload = (payload.dict(exclude_none=True) if payload else {}) or {}
     run_payload["validate_only"] = False
     if not run_payload.get("content"):
         run_payload["content"] = existing.get("description") or ""
-
     try:
-        data = await import_service.update_import_from_csv(
-            import_id=import_id,
-            payload=run_payload,
-        )
+        data = await import_service.update_import_from_csv(import_id=import_id, payload=run_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
         if _is_shopify_validation_error(exc):
-            return ImportCreateResponse(
-                data=None,
-                connected=True,
-                error=str(exc),
-                userErrors=(
-                    exc.response.get("userErrors") if isinstance(exc.response, dict) else None
-                ),
-            )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
+            return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
 @router.post("/", response_model=ImportCreateResponse)
-async def create_import(
-    payload: ImportCreateRequest,
-    current: Optional[CurrentUser] = Depends(
-        get_current_shop
-    ),
-    db=Depends(get_db),
-):
+async def create_import(payload: ImportCreateRequest, current: Optional[CurrentUser] = Depends(get_current_shop), db=Depends(get_db)):
     if not current:
-        return ImportCreateResponse(
-            data=None,
-            connected=False,
-        )
-
-    result = await db.execute(
-        select(Shop).where(
-            Shop.shop_domain == current.shop_domain
-        )
-    )
-
+        return ImportCreateResponse(data=None, connected=False)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
-    if (
-        not shop
-        or not shop.access_token_encrypted
-        or not shop.is_active
-    ):
-        return ImportCreateResponse(
-            data=None,
-            connected=False,
-        )
-
+    if not shop or not shop.access_token_encrypted or not shop.is_active:
+        return ImportCreateResponse(data=None, connected=False)
     try:
-        access_token = decrypt_token(
-            shop.access_token_encrypted
-        )
+        access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
-        ) from exc
-
-    client = ShopifyAPIClient(
-        shop_domain=shop.shop_domain,
-        access_token=access_token,
-    )
-
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     try:
-        data = await ImportService(
-            db_session=db,
-            shop=shop,
-        ).create_import(
-            payload.dict(exclude_none=True),
-        )
-
+        data = await ImportService(db_session=db, shop=shop).create_import(payload.dict(exclude_none=True))
     except NotImplementedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-    return ImportCreateResponse(
-        data=data,
-        connected=True,
-    )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return ImportCreateResponse(data=data, connected=True)
