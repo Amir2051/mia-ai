@@ -5,19 +5,12 @@ import sys
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.models.database import Base, engine
 from app.shopify.config import settings
-
-try:
-    from sqlalchemy import text
-except Exception:  # pragma: no cover
-    text = None
 
 
 def _configure_logging() -> None:
@@ -33,29 +26,16 @@ def _configure_logging() -> None:
     logger.setLevel(__import__('logging').INFO)
 
 
-async def _init_db() -> None:
-    if text is None:
-        return
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(
-        request: Request,
-        exc: Exception,
-    ):
+    async def unhandled_exception_handler(request: Request, exc: Exception):
         request_id = getattr(request.state, 'request_id', 'n/a')
-
         getLogger('mia_ai').exception(
             'request_id=%s path=%s',
             request_id,
             request.url.path,
             exc_info=exc,
         )
-
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={'detail': 'Internal server error'},
@@ -64,7 +44,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    await _init_db()
+    # Database schema creation is intentionally NOT performed here.
+    # Production schema changes are managed exclusively by Alembic migrations.
     yield
 
 
