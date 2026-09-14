@@ -8,12 +8,14 @@ class OrderService:
         self.api = api_client
 
     async def list_orders(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
+        # Keep the analytics order query independent from protected customer
+        # profile fields. Customer details are fetched through the customer
+        # service only when the UI actually needs them.
         gql = (
             'query($query: String, $first: Int!, $after: String) {'
             '  orders(first: $first, after: $after, reverse: true, query: $query) {'
             '    edges { cursor node { id name createdAt displayFinancialStatus displayFulfillmentStatus'
             '      totalPriceSet { shopMoney { amount currencyCode } }'
-            '      customer { id displayName }'
             '      lineItems(first: 10) { edges { node { title quantity sku } } }'
             '    } }'
             '    pageInfo { hasNextPage endCursor }'
