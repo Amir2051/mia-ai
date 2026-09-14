@@ -1,5 +1,4 @@
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -14,13 +13,10 @@ from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
-logger = logging.getLogger("mia_ai")
 router = APIRouter()
-
 
 class ShopifyNotConnected(BaseModel):
     detail: str = "Shopify is not connected"
-
 
 class AnalyticsResponse(BaseModel):
     connected: bool = False
@@ -29,10 +25,9 @@ class AnalyticsResponse(BaseModel):
     orders: Optional[int] = None
     customers: Optional[int] = None
     average_order_value: Optional[float] = None
-    top_products: Optional[List[Dict[str, Any]]] = None
-    recent_sales: Optional[List[Dict[str, Any]]] = None
+    top_products: Optional[list[Dict[str, Any]]] = None
+    recent_sales: Optional[list[Dict[str, Any]]] = None
     filtered: Optional[Dict[str, Any]] = None
-
 
 async def _current_shop_or_connected_error(current: Optional[CurrentUser], db) -> Optional[Shop]:
     if not current:
@@ -43,7 +38,6 @@ async def _current_shop_or_connected_error(current: Optional[CurrentUser], db) -
         return None
     return shop
 
-
 async def _shop_client(shop: Shop) -> ShopifyAPIClient:
     try:
         access_token = decrypt_token(shop.access_token_encrypted or "")
@@ -51,30 +45,13 @@ async def _shop_client(shop: Shop) -> ShopifyAPIClient:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     return ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
 
-
 def _raise_shopify_error(exc: ShopifyAPIError, shop: Shop) -> None:
-    logger.warning(
-        "shopify_api_request_failed route=analytics shop=%s status=%s response_keys=%s",
-        shop.shop_domain,
-        exc.status_code,
-        sorted(exc.response.keys()),
-    )
     if exc.status_code == 401:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Shopify session credentials expired or were revoked. Please retry the Shopify session.",
-            headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
-        ) from exc
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="Shopify data is temporarily unavailable. Please try again.",
-    ) from exc
-
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Shopify session credentials expired or were revoked. Please retry the Shopify session.", headers={"X-Shopify-Retry-Invalid-Session-Request": "1"}) from exc
+    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify data is temporarily unavailable. Please try again.") from exc
 
 async def _load_orders(shop: Shop) -> dict:
-    client = await _shop_client(shop)
-    return await OrderService(client).list_orders()
-
+    return await OrderService(await _shop_client(shop)).list_orders()
 
 @router.get("/", response_model=AnalyticsResponse)
 async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
@@ -90,22 +67,16 @@ async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop),
     except ShopifyAPIError as exc:
         _raise_shopify_error(exc, shop)
 
-    customer_data = None
+    # Customer access can be denied by Shopify protected-customer-data rules.
+    # Analytics does not require customer rows, so treat that failure as an empty response.
+    customer_data: Dict[str, Any] = {}
     try:
         customer_data = await CustomerService(await _shop_client(shop)).list_customers()
     except ShopifyAPIError:
-        customer_data = None
+        customer_data = {}
 
     dashboard = compute_dashboard(order_data, customer_data)
-    return AnalyticsResponse(
-        connected=True,
-        shop_domain=shop.shop_domain,
-        revenue=dashboard.get("revenue"),
-        orders=dashboard.get("orders"),
-        customers=dashboard.get("customers"),
-        average_order_value=dashboard.get("average_order_value"),
-    )
-
+    return AnalyticsResponse(connected=True, shop_domain=shop.shop_domain, revenue=dashboard.get("revenue"), orders=dashboard.get("orders"), customers=dashboard.get("customers"), average_order_value=dashboard.get("average_order_value"))
 
 @router.get("/products", response_model=AnalyticsResponse)
 async def product_performance(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
@@ -122,7 +93,6 @@ async def product_performance(current: Optional[CurrentUser] = Depends(get_optio
         _raise_shopify_error(exc, shop)
     return AnalyticsResponse(connected=True, shop_domain=shop.shop_domain, top_products=compute_top_products(order_data))
 
-
 @router.get("/recent-sales", response_model=AnalyticsResponse)
 async def recent_sales(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
@@ -137,7 +107,6 @@ async def recent_sales(current: Optional[CurrentUser] = Depends(get_optional_sho
     except ShopifyAPIError as exc:
         _raise_shopify_error(exc, shop)
     return AnalyticsResponse(connected=True, shop_domain=shop.shop_domain, recent_sales=compute_recent_sales(order_data))
-
 
 @router.get("/filter", response_model=AnalyticsResponse)
 async def filter_analytics(start: Optional[str] = Query(None), end: Optional[str] = Query(None), current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
