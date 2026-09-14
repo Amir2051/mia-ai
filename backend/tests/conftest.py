@@ -1,7 +1,11 @@
+import asyncio
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+os.environ["ENVIRONMENT"] = "test"
 
 backend_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(backend_dir))
@@ -34,15 +38,7 @@ def client(tmp_path, monkeypatch):
         expire_on_commit=False,
     )
 
-    settings.database_url = db_url
-
-    async def init_db():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    import asyncio
-
-    asyncio.run(init_db())
+    monkeypatch.setattr(settings, "database_url", db_url)
 
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "AsyncSessionLocal", session_local)

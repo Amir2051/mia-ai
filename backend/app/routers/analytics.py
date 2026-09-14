@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,6 +20,8 @@ from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.services.products import ProductService
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
+
+logger = logging.getLogger("mia_ai")
 
 router = APIRouter()
 
@@ -94,9 +97,15 @@ async def analytics(
             detail=str(exc),
         ) from exc
     except ShopifyAPIError as exc:
+        logger.warning(
+            "shopify_api_request_failed route=analytics shop=%s status=%s response_keys=%s",
+            shop.shop_domain,
+            exc.status_code,
+            sorted(exc.response.keys()),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="Shopify data is temporarily unavailable. Please try again.",
         ) from exc
 
     # Customer statistics are useful but should not make the whole dashboard fail
@@ -140,9 +149,15 @@ async def product_performance(
             detail=str(exc),
         ) from exc
     except ShopifyAPIError as exc:
+        logger.warning(
+            "shopify_api_request_failed route=analytics shop=%s status=%s response_keys=%s",
+            shop.shop_domain,
+            exc.status_code,
+            sorted(exc.response.keys()),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="Shopify data is temporarily unavailable. Please try again.",
         ) from exc
 
     top_products = compute_top_products(order_data)
@@ -175,9 +190,15 @@ async def recent_sales(
             detail=str(exc),
         ) from exc
     except ShopifyAPIError as exc:
+        logger.warning(
+            "shopify_api_request_failed route=analytics shop=%s status=%s response_keys=%s",
+            shop.shop_domain,
+            exc.status_code,
+            sorted(exc.response.keys()),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="Shopify data is temporarily unavailable. Please try again.",
         ) from exc
 
     recent = compute_recent_sales(order_data)
@@ -212,9 +233,15 @@ async def filter_analytics(
             detail=str(exc),
         ) from exc
     except ShopifyAPIError as exc:
+        logger.warning(
+            "shopify_api_request_failed route=analytics shop=%s status=%s response_keys=%s",
+            shop.shop_domain,
+            exc.status_code,
+            sorted(exc.response.keys()),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail="Shopify data is temporarily unavailable. Please try again.",
         ) from exc
 
     filtered = filter_orders_by_date(order_data, start=start, end=end)

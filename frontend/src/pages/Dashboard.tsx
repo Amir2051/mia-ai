@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,10 +71,12 @@ export default function Dashboard() {
         setDashboard(res.data as DashboardSummary);
         setDashboardError(null);
       })
-      .catch((err) => {
+      .catch((_err) => {
         if (cancelled) return;
         setDashboard(null);
-        setDashboardError((err as Error)?.message || 'Failed to load analytics');
+        setDashboardError(
+          "We could not load your Shopify sales right now. Please try again shortly.",
+        );
       })
       .finally(() => {
         if (!cancelled) setDashboardLoading(false);
@@ -82,7 +85,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [session?.connected]);
+  }, [session?.connected, refreshKey]);
 
   const formatCurrency = (value?: number | null, currency = 'USD') => {
     if (typeof value !== 'number') return '—';
@@ -201,6 +204,13 @@ export default function Dashboard() {
               }}
             >
               {dashboardError}
+              <button
+                type="button"
+                onClick={() => setRefreshKey((value) => value + 1)}
+                style={{ display: "block", marginTop: 8 }}
+              >
+                Try again
+              </button>
             </div>
           )}
           {session?.connected && !dashboardLoading && !dashboardError && !dashboard && (
