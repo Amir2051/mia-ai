@@ -28,12 +28,15 @@ class CustomerService:
     async def get_customer(self, customer_id: str) -> dict:
         # Keep identifying/profile fields out of the detail query until the
         # corresponding protected-customer-data approval is granted. Financial
-        # summary is useful to the customer detail view and is requested
-        # separately from those protected identity fields.
+        # summary and order history are requested without customer profile
+        # fields so the detail view remains compatible with the current access.
         gql = (
             'query($id: ID!) {'
             '  customer(id: $id) {'
             '    id numberOfOrders amountSpent { amount currencyCode } tags'
+            '    orders(first: 10, reverse: true) {'
+            '      edges { node { id name createdAt totalPriceSet { shopMoney { amount currencyCode } } } }'
+            '    }'
             '  }'
             '}'
         )
