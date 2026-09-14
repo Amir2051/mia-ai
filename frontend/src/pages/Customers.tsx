@@ -134,7 +134,7 @@ export default function Customers() {
                 }}
               >
                 <div style={{ fontWeight: 600 }}>
-                  <Link to={`/customers/${customer.id}`} style={{ color: '#005bd3', textDecoration: 'none' }}>
+                  <Link to={`/customers/${encodeURIComponent(customer.id)}`} style={{ color: '#005bd3', textDecoration: 'none' }}>
                     {displayName}
                   </Link>
                 </div>
