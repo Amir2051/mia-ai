@@ -24,11 +24,11 @@ class MarketingResponse(BaseModel):
     error: Optional[str] = None
 
 
-def _current_shop(current: Optional[CurrentUser], db) -> Optional[Shop]:
+async def _current_shop(current: Optional[CurrentUser], db) -> Optional[Shop]:
     if not current:
         return None
 
-    result = db.execute(
+    result = await db.execute(
         select(Shop).where(Shop.shop_domain == current.shop_domain)
     )
     shop = result.scalar_one_or_none()
@@ -62,7 +62,7 @@ def _shop_client(shop: Shop) -> ShopifyAPIClient:
 
 def _build_product_promotion(product: Dict[str, Any]) -> Dict[str, Any]:
     title = product.get("title") or "this product"
-    status = product.get("status") or "draft"
+    product_status = product.get("status") or "draft"
     inventory = product.get("totalInventory")
     price = None
     variants = (((product.get("variants") or {}).get("edges")) or [])
@@ -85,7 +85,7 @@ def _build_product_promotion(product: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "message": (
             f"Promote {title}{price_copy}. "
-            f"Status: {status}.{inventory_copy}"
+            f"Status: {product_status}.{inventory_copy}"
         ),
         "cta": (
             "Shop now"
@@ -134,15 +134,13 @@ def _build_seo_suggestion(product: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get('/', response_model=MarketingResponse)
 async def marketing_overview(
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
         return MarketingResponse(connected=False)
 
-    shop = _current_shop(current, db)
+    shop = await _current_shop(current, db)
     if not shop:
         return MarketingResponse(connected=False)
 
@@ -186,15 +184,13 @@ async def marketing_overview(
 @router.get('/product/{product_id}', response_model=MarketingResponse)
 async def product_marketing(
     product_id: str,
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
         return MarketingResponse(connected=False)
 
-    shop = _current_shop(current, db)
+    shop = await _current_shop(current, db)
     if not shop:
         return MarketingResponse(connected=False)
 
@@ -225,15 +221,13 @@ async def product_marketing(
 
 @router.get('/social', response_model=MarketingResponse)
 async def social_copy(
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
         return MarketingResponse(connected=False)
 
-    shop = _current_shop(current, db)
+    shop = await _current_shop(current, db)
     if not shop:
         return MarketingResponse(connected=False)
 
