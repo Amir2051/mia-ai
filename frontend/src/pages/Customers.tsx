@@ -5,9 +5,13 @@ import api from '../services/api';
 type CustomerEdge = {
   node: {
     id: string;
+    firstName?: string | null;
+    lastName?: string | null;
     displayName?: string | null;
     email?: string | null;
     phone?: string | null;
+    defaultEmailAddress?: { emailAddress?: string | null } | null;
+    defaultPhoneNumber?: { phoneNumber?: string | null } | null;
     numberOfOrders?: number | string | null;
     amountSpent?: {
       amount?: string | null;
@@ -65,7 +69,23 @@ export default function Customers() {
         if (cancelled) return;
         const rawEdges = res.data?.data?.customers?.edges;
         const edges = Array.isArray(rawEdges)
-          ? rawEdges.filter((edge: CustomerEdge | null) => !!edge?.node?.id)
+          ? rawEdges
+              .filter((edge: CustomerEdge | null) => !!edge?.node?.id)
+              .map((edge: CustomerEdge) => {
+                const node = edge.node;
+                const email = node.email ?? node.defaultEmailAddress?.emailAddress ?? null;
+                const phone = node.phone ?? node.defaultPhoneNumber?.phoneNumber ?? null;
+                const displayName = node.displayName ?? [node.firstName, node.lastName].filter(Boolean).join(' ') || null;
+                return {
+                  ...edge,
+                  node: {
+                    ...node,
+                    displayName,
+                    email,
+                    phone,
+                  },
+                };
+              })
           : [];
         setItems(edges as CustomerEdge[]);
         setError(null);
