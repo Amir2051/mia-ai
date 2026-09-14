@@ -8,15 +8,15 @@ class CustomerService:
         self.api = api_client
 
     async def list_customers(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
-        # Avoid Level 2 protected customer fields in the list request. Shopify
-        # can reject a GraphQL request when an app has customer-data access but
-        # has not been granted the corresponding identifying fields (such as
-        # name). Financial summary fields remain available for the current
-        # access level and let the list show an accurate spend value.
         gql = (
             'query($query: String, $first: Int!, $after: String) {'
             '  customers(first: $first, after: $after, query: $query) {'
-            '    edges { cursor node { id numberOfOrders amountSpent { amount currencyCode } } }'
+            '    edges { cursor node { '
+            '      id firstName lastName '
+            '      defaultEmailAddress { emailAddress } '
+            '      defaultPhoneNumber { phoneNumber } '
+            '      numberOfOrders amountSpent { amount currencyCode } '
+            '    } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
             '}'
@@ -27,14 +27,13 @@ class CustomerService:
         )
 
     async def get_customer(self, customer_id: str) -> dict:
-        # Keep identifying/profile fields out of the detail query until the
-        # corresponding protected-customer-data approval is granted. Financial
-        # summary and order history are requested without customer profile
-        # fields so the detail view remains compatible with the current access.
         gql = (
             'query($id: ID!) {'
             '  customer(id: $id) {'
-            '    id numberOfOrders amountSpent { amount currencyCode } tags'
+            '    id firstName lastName '
+            '    defaultEmailAddress { emailAddress } '
+            '    defaultPhoneNumber { phoneNumber } '
+            '    numberOfOrders amountSpent { amount currencyCode } tags'
             '    orders(first: 10, reverse: true) {'
             '      edges { node { id name createdAt totalPriceSet { shopMoney { amount currencyCode } } } }'
             '    }'
