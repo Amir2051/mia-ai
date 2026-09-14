@@ -53,12 +53,11 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
 
     if topic == "app/uninstalled":
         shop.is_active = False
-        await db.execute(
-            update(ShopSession)
-            .where(ShopSession.shop_id == shop.id)
-            .values(is_valid=False)
-        )
+        await db.execute(update(ShopSession).where(ShopSession.shop_id == shop.id).values(is_valid=False))
         shop.access_token_encrypted = None
+        shop.access_token_expires_at = None
+        shop.refresh_token_encrypted = None
+        shop.refresh_token_expires_at = None
         action = "shop.uninstalled"
         entity_type = "shop"
         entity_id = str(shop.id)
@@ -99,12 +98,7 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     shop_id = shop_obj.id if shop_obj else None
 
     if event_id:
-        existing = await db.execute(
-            select(WebhookEvent).where(
-                WebhookEvent.shop_id == shop_id,
-                WebhookEvent.event_id == event_id,
-            ).limit(1)
-        )
+        existing = await db.execute(select(WebhookEvent).where(WebhookEvent.shop_id == shop_id, WebhookEvent.event_id == event_id).limit(1))
         if existing.scalar_one_or_none():
             response.headers["ETag"] = f'W/"{event_id}"'
             return {"status": "received", "duplicate": True}
@@ -115,13 +109,7 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook JSON") from exc
 
-    event = WebhookEvent(
-        shop_id=shop_id,
-        topic=topic,
-        event_id=event_id,
-        payload_json=payload_text,
-        processed=False,
-    )
+    event = WebhookEvent(shop_id=shop_id, topic=topic, event_id=event_id, payload_json=payload_text, processed=False)
     db.add(event)
     await db.flush()
 
