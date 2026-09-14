@@ -27,7 +27,12 @@ def _shop_from_current(current: Optional[CurrentUser], db):
     if not current:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
 
-    result = db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
+    return current
+
+
+async def _get_shop_from_current(current: Optional[CurrentUser], db):
+    current = _shop_from_current(current, db)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
 
     if not shop or not shop.access_token_encrypted or not shop.is_active:
@@ -47,13 +52,13 @@ async def get_app_settings(current: Optional[CurrentUser] = Depends(get_optional
         return AppSettingsResponse(connected=False)
 
     try:
-        shop, _ = _shop_from_current(current, db)
+        shop, _ = await _get_shop_from_current(current, db)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_401_UNAUTHORIZED:
             raise
         return AppSettingsResponse(connected=False)
 
-    result = db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
+    result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
     rows = result.scalars().all()
     settings: Dict[str, Any] = {}
     for row in rows:
@@ -72,23 +77,23 @@ async def upsert_app_settings(body: UpsertAppSettingsRequest, current: Optional[
     if not current:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
 
-    shop, _ = _shop_from_current(current, db)
+    shop, _ = await _get_shop_from_current(current, db)
 
     for key, value in body.settings.items():
         if not isinstance(key, str) or not key:
             continue
         value_json = __import__("json").dumps(value) if value is not None else None
 
-        existing = db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id, AppSetting.key == key)).scalar_one_or_none()
+        result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id, AppSetting.key == key))
+        existing = result.scalar_one_or_none()
         if existing:
             existing.value_json = value_json
         else:
             db.add(AppSetting(shop_id=shop.id, key=key, value_json=value_json))
 
-    db.commit()
-    db.refresh()
+    await db.commit()
 
-    result = db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
+    result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
     rows = result.scalars().all()
     settings: Dict[str, Any] = {}
     for row in rows:
