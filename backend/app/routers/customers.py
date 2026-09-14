@@ -144,7 +144,7 @@ async def list_customers(
 
 
 @router.get(
-    "/{customer_id}",
+    "/{customer_id:path}",
     response_model=CustomerListResponse,
 )
 async def get_customer(
