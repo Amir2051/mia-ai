@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.dependencies import (
     CurrentUser,
@@ -59,10 +60,7 @@ async def session(
     token exchange again on every session request.
     """
 
-    authorization = request.headers.get(
-        "Authorization",
-        "",
-    ).strip()
+    authorization = request.headers.get("Authorization", "").strip()
 
     if not authorization:
         return SessionResponse(connected=False)
@@ -71,7 +69,6 @@ async def session(
         return SessionResponse(connected=False)
 
     id_token = authorization[7:].strip()
-
     if not id_token:
         return SessionResponse(connected=False)
 
@@ -84,7 +81,6 @@ async def session(
         raise exc
 
     shop_domain = payload.get("shop_domain")
-
     if not shop_domain:
         response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
         raise HTTPException(
@@ -93,16 +89,10 @@ async def session(
             headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
         )
 
-    result = await db.execute(
-        select(Shop).where(Shop.shop_domain == shop_domain)
-    )
+    result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
     shop = result.scalar_one_or_none()
 
-    if (
-        shop is not None
-        and shop.is_active
-        and shop.access_token_encrypted
-    ):
+    if shop is not None and shop.is_active and shop.access_token_encrypted:
         return SessionResponse(
             shop_domain=shop.shop_domain,
             scopes=shop.scope,
@@ -125,7 +115,6 @@ async def session(
         ) from exc
 
     access_token = token_data.get("access_token")
-
     if not access_token:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -143,16 +132,31 @@ async def session(
             is_active=True,
         )
         db.add(shop)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Two embedded requests can exchange the same ID token at the
+            # same time. The unique shop_domain constraint makes creation
+            # atomic; if the other request won the race, reuse that record.
+            await db.rollback()
+            result = await db.execute(
+                select(Shop).where(Shop.shop_domain == shop_domain)
+            )
+            shop = result.scalar_one_or_none()
+            if shop is None or not shop.is_active or not shop.access_token_encrypted:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Shop connection is being established. Please retry.",
+                )
     else:
         shop.access_token_encrypted = encrypted_access_token
         shop.scope = scope
         shop.is_active = True
-
-    await db.commit()
+        await db.commit()
 
     return SessionResponse(
         shop_domain=shop_domain,
-        scopes=scope,
+        scopes=shop.scope,
         connected=True,
     )
 
@@ -168,27 +172,30 @@ async def install(
     try:
         shop = _validate_shop_domain(shop)
     except AuthorizationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     state = generate_state()
     nonce = generate_nonce()
 
-    existing = await db.execute(
-        select(Shop).where(Shop.shop_domain == shop)
-    )
+    existing = await db.execute(select(Shop).where(Shop.shop_domain == shop))
     shop_obj = existing.scalar_one_or_none()
 
     if shop_obj is None:
-        shop_obj = Shop(
-            shop_domain=shop,
-            is_active=False,
-        )
+        shop_obj = Shop(shop_domain=shop, is_active=False)
         db.add(shop_obj)
-        await db.commit()
-        await db.refresh(shop_obj)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = await db.execute(select(Shop).where(Shop.shop_domain == shop))
+            shop_obj = existing.scalar_one_or_none()
+            if shop_obj is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Shop installation is being initialized. Please retry.",
+                )
+        if shop_obj is not None:
+            await db.refresh(shop_obj)
 
     session_obj = ShopSession(
         shop_id=shop_obj.id,
@@ -221,10 +228,7 @@ async def callback(
     try:
         shop = _validate_shop_domain(shop)
     except AuthorizationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     result = await db.execute(
         select(ShopSession)
@@ -238,35 +242,21 @@ async def callback(
     session_obj = result.scalar_one_or_none()
 
     if session_obj is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OAuth state",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OAuth state")
 
     if session_obj.expires_at is not None and session_obj.expires_at < now_utc().replace(tzinfo=None):
         session_obj.is_valid = False
         await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Expired OAuth state",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expired OAuth state")
 
     oauth = ShopifyOAuthFlow()
 
     try:
-        access_token = oauth.exchange_code_for_token(
-            shop=shop,
-            code=code,
-        )
+        access_token = oauth.exchange_code_for_token(shop=shop, code=code)
     except (AuthenticationError, AuthorizationError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
-    shop_result = await db.execute(
-        select(Shop).where(Shop.shop_domain == shop)
-    )
+    shop_result = await db.execute(select(Shop).where(Shop.shop_domain == shop))
     shop_obj = shop_result.scalar_one()
     shop_obj.access_token_encrypted = encrypt_token(access_token)
     shop_obj.scope = settings.shopify_scopes
@@ -287,21 +277,13 @@ async def logout(
 ):
     """Disconnect a Shopify shop by deactivating the local shop record."""
     if not current:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Shopify session",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
 
-    result = await db.execute(
-        select(Shop).where(Shop.shop_domain == current.shop_domain)
-    )
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
 
     if not shop:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Shop not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
 
     shop.is_active = False
     shop.access_token_encrypted = None
