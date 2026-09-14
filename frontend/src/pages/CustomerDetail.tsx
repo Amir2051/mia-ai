@@ -52,7 +52,8 @@ export default function CustomerDetail() {
     setLoading(true);
     setError(null);
 
-    api.get(`/customers/${id}`)
+    const customerId = decodeURIComponent(id ?? '');
+    api.get(`/customers/${encodeURIComponent(customerId)}`)
       .then((res) => {
         if (cancelled) return;
         setCustomer((res.data?.data as Customer) || null);
