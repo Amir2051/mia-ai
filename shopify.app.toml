@@ -9,11 +9,6 @@ scopes = "read_products,write_products,read_orders,read_customers,read_inventory
 [access.admin]
 direct_api_mode = "online"
 
-[auth]
-redirect_urls = [
-  "https://drivenest.info/api/auth/callback"
-]
-
 [webhooks]
 api_version = "2026-07"
 
