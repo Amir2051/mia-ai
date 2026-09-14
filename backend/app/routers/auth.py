@@ -1,4 +1,3 @@
-import threading
 from datetime import timedelta
 from typing import Optional
 
@@ -26,7 +25,6 @@ from app.shopify.config import settings
 
 
 router = APIRouter()
-_token_exchange_lock = threading.Lock()
 
 
 class SessionResponse(BaseModel):
@@ -62,26 +60,15 @@ def _refresh_expiry(token_data: dict):
 def _needs_token_exchange(shop: Shop) -> bool:
     if not shop.access_token_encrypted or not shop.is_active:
         return True
-
-    # Existing installations created before token-lifecycle tracking have
-    # no expiry metadata. Re-exchange once so they migrate safely.
     if shop.access_token_expires_at is None:
         return True
-
-    # Refresh before expiry while the merchant session is active. Shopify
-    # recommends token exchange with the fresh App Bridge ID token here.
     return shop.access_token_expires_at <= now_utc().replace(tzinfo=None) + timedelta(minutes=5)
 
 
 @router.get("/session", response_model=SessionResponse)
-async def session(
-    request: Request,
-    response: Response,
-    db=Depends(get_db),
-):
-    """Return and maintain the current Shopify embedded-app session."""
+async def session(request: Request, response: Response, db=Depends(get_db)):
+    """Validate the embedded ID token and maintain the store's offline token."""
     authorization = request.headers.get("Authorization", "").strip()
-
     if not authorization or not authorization.lower().startswith("bearer "):
         return SessionResponse(connected=False)
 
@@ -107,71 +94,65 @@ async def session(
 
     result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
     shop = result.scalar_one_or_none()
-
     if shop is not None and not _needs_token_exchange(shop):
         return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
 
-    # Serialize token exchange per application process. Shopify retires the
-    # previous expiring offline token when a new one is acquired, so two
-    # simultaneous exchanges must not race each other.
-    with _token_exchange_lock:
-        result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
-        shop = result.scalar_one_or_none()
-        if shop is not None and not _needs_token_exchange(shop):
-            return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
+    # PostgreSQL production uses row-level locking here. This prevents two
+    # uvicorn workers from simultaneously acquiring expiring offline tokens;
+    # Shopify retires the previous expiring token when a new one is acquired.
+    result = await db.execute(
+        select(Shop).where(Shop.shop_domain == shop_domain).with_for_update()
+    )
+    shop = result.scalar_one_or_none()
+    if shop is not None and not _needs_token_exchange(shop):
+        return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
 
-        oauth = ShopifyOAuthFlow()
+    oauth = ShopifyOAuthFlow()
+    try:
+        token_data = oauth.exchange_id_token_for_access_token(shop=shop_domain, id_token=id_token)
+    except (AuthenticationError, AuthorizationError) as exc:
+        response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
+        ) from exc
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify token exchange returned no access token")
+
+    encrypted_access_token = encrypt_token(access_token)
+    refresh_token = token_data.get("refresh_token")
+    scope = token_data.get("scope") or settings.shopify_scopes
+
+    if shop is None:
+        shop = Shop(
+            shop_domain=shop_domain,
+            access_token_encrypted=encrypted_access_token,
+            access_token_expires_at=_token_expiry(token_data),
+            refresh_token_encrypted=encrypt_token(str(refresh_token)) if refresh_token else None,
+            refresh_token_expires_at=_refresh_expiry(token_data),
+            scope=scope,
+            is_active=True,
+        )
+        db.add(shop)
         try:
-            token_data = oauth.exchange_id_token_for_access_token(
-                shop=shop_domain,
-                id_token=id_token,
-            )
-        except (AuthenticationError, AuthorizationError) as exc:
-            response.headers["X-Shopify-Retry-Invalid-Session-Request"] = "1"
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(exc),
-                headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
-            ) from exc
-
-        access_token = token_data.get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify token exchange returned no access token")
-
-        encrypted_access_token = encrypt_token(access_token)
-        refresh_token = token_data.get("refresh_token")
-        scope = token_data.get("scope") or settings.shopify_scopes
-
-        if shop is None:
-            shop = Shop(
-                shop_domain=shop_domain,
-                access_token_encrypted=encrypted_access_token,
-                access_token_expires_at=_token_expiry(token_data),
-                refresh_token_encrypted=encrypt_token(str(refresh_token)) if refresh_token else None,
-                refresh_token_expires_at=_refresh_expiry(token_data),
-                scope=scope,
-                is_active=True,
-            )
-            db.add(shop)
-            try:
-                await db.commit()
-            except IntegrityError:
-                await db.rollback()
-                result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
-                shop = result.scalar_one_or_none()
-                if shop is None or not shop.is_active or not shop.access_token_encrypted:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Shop connection is being established. Please retry.",
-                    )
-        else:
-            shop.access_token_encrypted = encrypted_access_token
-            shop.access_token_expires_at = _token_expiry(token_data)
-            shop.refresh_token_encrypted = encrypt_token(str(refresh_token)) if refresh_token else shop.refresh_token_encrypted
-            shop.refresh_token_expires_at = _refresh_expiry(token_data) if refresh_token else shop.refresh_token_expires_at
-            shop.scope = scope
-            shop.is_active = True
             await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
+            shop = existing.scalar_one_or_none()
+            if shop is None or not shop.is_active or not shop.access_token_encrypted:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Shop connection is being established. Please retry.")
+    else:
+        shop.access_token_encrypted = encrypted_access_token
+        shop.access_token_expires_at = _token_expiry(token_data)
+        shop.refresh_token_encrypted = encrypt_token(str(refresh_token)) if refresh_token else shop.refresh_token_encrypted
+        shop.refresh_token_expires_at = _refresh_expiry(token_data) if refresh_token else shop.refresh_token_expires_at
+        shop.scope = scope
+        shop.is_active = True
+        await db.commit()
 
     return SessionResponse(shop_domain=shop_domain, scopes=shop.scope, connected=True)
 
@@ -214,7 +195,6 @@ async def install(shop: str = Query(...), db=Depends(get_db)):
     )
     db.add(session_obj)
     await db.commit()
-
     return AuthorizationResponse(authorization_url=oauth.build_authorization_url(shop=shop, state=state, nonce=nonce))
 
 
@@ -236,7 +216,6 @@ async def callback(shop: str = Query(...), code: str = Query(...), state: str = 
     session_obj = result.scalar_one_or_none()
     if session_obj is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OAuth state")
-
     if session_obj.expires_at is not None and session_obj.expires_at < now_utc().replace(tzinfo=None):
         session_obj.is_valid = False
         await db.commit()
@@ -258,7 +237,6 @@ async def callback(shop: str = Query(...), code: str = Query(...), state: str = 
     shop_obj.is_active = True
     session_obj.is_valid = False
     await db.commit()
-
     return RedirectResponse(url=f"{settings.shopify_app_url.rstrip('/')}/?shop={shop}", status_code=status.HTTP_302_FOUND)
 
 
@@ -267,12 +245,10 @@ async def logout(current: Optional[CurrentUser] = Depends(get_optional_shop), db
     """Disconnect a Shopify shop by deactivating the local shop record."""
     if not current:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
-
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
-
     shop.is_active = False
     shop.access_token_encrypted = None
     shop.access_token_expires_at = None
