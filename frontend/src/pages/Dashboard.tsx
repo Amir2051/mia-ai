@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../services/api';
 
 type Session = {
@@ -249,36 +250,21 @@ export default function Dashboard() {
         >
           <h2 style={{ fontSize: 16, marginBottom: 8 }}>Quick actions</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <a
-              href="/products"
-              style={{ color: '#005bd3', textDecoration: 'none' }}
-            >
+            <Link to="/products" style={{ color: '#005bd3', textDecoration: 'none' }}>
               Manage products
-            </a>
-            <a
-              href="/orders"
-              style={{ color: '#005bd3', textDecoration: 'none' }}
-            >
+            </Link>
+            <Link to="/orders" style={{ color: '#005bd3', textDecoration: 'none' }}>
               View orders
-            </a>
-            <a
-              href="/customers"
-              style={{ color: '#005bd3', textDecoration: 'none' }}
-            >
+            </Link>
+            <Link to="/customers" style={{ color: '#005bd3', textDecoration: 'none' }}>
               Review customers
-            </a>
-            <a
-              href="/imports"
-              style={{ color: '#005bd3', textDecoration: 'none' }}
-            >
+            </Link>
+            <Link to="/imports" style={{ color: '#005bd3', textDecoration: 'none' }}>
               Import products
-            </a>
-            <a
-              href="/marketing"
-              style={{ color: '#005bd3', textDecoration: 'none' }}
-            >
+            </Link>
+            <Link to="/marketing" style={{ color: '#005bd3', textDecoration: 'none' }}>
               Marketing assistant
-            </a>
+            </Link>
           </div>
         </div>
       </div>
