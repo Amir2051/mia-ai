@@ -8,10 +8,14 @@ class CustomerService:
         self.api = api_client
 
     async def list_customers(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
+        # Avoid Level 2 protected customer fields in the list request. Shopify
+        # can reject a GraphQL request when an app has customer-data access but
+        # has not been granted the corresponding identifying fields (such as
+        # name). Details are fetched separately when those fields are approved.
         gql = (
             'query($query: String, $first: Int!, $after: String) {'
             '  customers(first: $first, after: $after, query: $query) {'
-            '    edges { cursor node { id displayName numberOfOrders } }'
+            '    edges { cursor node { id numberOfOrders } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
             '}'
