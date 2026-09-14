@@ -1,14 +1,14 @@
+import json
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
-from app.models.schemas import Shop, AppSetting
+from app.models.schemas import AppSetting, Shop
 from app.security.tokens import decrypt_token
-
 
 router = APIRouter()
 
@@ -16,25 +16,19 @@ router = APIRouter()
 class AppSettingsResponse(BaseModel):
     connected: bool
     shop_domain: Optional[str] = None
-    settings: Dict[str, Any] = {}
+    settings: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UpsertAppSettingsRequest(BaseModel):
     settings: Dict[str, Any]
 
 
-def _shop_from_current(current: Optional[CurrentUser], db):
+async def _get_shop_from_current(current: Optional[CurrentUser], db):
     if not current:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
 
-    return current
-
-
-async def _get_shop_from_current(current: Optional[CurrentUser], db):
-    current = _shop_from_current(current, db)
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
-
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Shopify is not connected")
 
@@ -46,30 +40,26 @@ async def _get_shop_from_current(current: Optional[CurrentUser], db):
     return shop, access_token
 
 
-@router.get("/", response_model=AppSettingsResponse)
-async def get_app_settings(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
-    if not current:
-        return AppSettingsResponse(connected=False)
-
-    try:
-        shop, _ = await _get_shop_from_current(current, db)
-    except HTTPException as exc:
-        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
-            raise
-        return AppSettingsResponse(connected=False)
-
-    result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
+async def _read_settings(db, shop_id: int) -> Dict[str, Any]:
+    result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop_id))
     rows = result.scalars().all()
-    settings: Dict[str, Any] = {}
+    values: Dict[str, Any] = {}
     for row in rows:
         if not row.key:
             continue
         try:
-            settings[row.key] = __import__("json").loads(row.value_json) if row.value_json is not None else None
-        except Exception:  # noqa: BLE001
-            settings[row.key] = row.value_json
+            values[row.key] = json.loads(row.value_json) if row.value_json is not None else None
+        except (TypeError, ValueError):
+            values[row.key] = row.value_json
+    return values
 
-    return AppSettingsResponse(connected=True, shop_domain=shop.shop_domain, settings=settings)
+
+@router.get("/", response_model=AppSettingsResponse)
+async def get_app_settings(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
+    if not current:
+        return AppSettingsResponse(connected=False)
+    shop, _ = await _get_shop_from_current(current, db)
+    return AppSettingsResponse(connected=True, shop_domain=shop.shop_domain, settings=await _read_settings(db, shop.id))
 
 
 @router.post("/", response_model=AppSettingsResponse)
@@ -80,10 +70,10 @@ async def upsert_app_settings(body: UpsertAppSettingsRequest, current: Optional[
     shop, _ = await _get_shop_from_current(current, db)
 
     for key, value in body.settings.items():
-        if not isinstance(key, str) or not key:
+        if not isinstance(key, str) or not key.strip():
             continue
-        value_json = __import__("json").dumps(value) if value is not None else None
-
+        key = key.strip()
+        value_json = json.dumps(value) if value is not None else None
         result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id, AppSetting.key == key))
         existing = result.scalar_one_or_none()
         if existing:
@@ -92,16 +82,4 @@ async def upsert_app_settings(body: UpsertAppSettingsRequest, current: Optional[
             db.add(AppSetting(shop_id=shop.id, key=key, value_json=value_json))
 
     await db.commit()
-
-    result = await db.execute(select(AppSetting).where(AppSetting.shop_id == shop.id))
-    rows = result.scalars().all()
-    settings: Dict[str, Any] = {}
-    for row in rows:
-        if not row.key:
-            continue
-        try:
-            settings[row.key] = __import__("json").loads(row.value_json) if row.value_json is not None else None
-        except Exception:  # noqa: BLE001
-            settings[row.key] = row.value_json
-
-    return AppSettingsResponse(connected=True, shop_domain=shop.shop_domain, settings=settings)
+    return AppSettingsResponse(connected=True, shop_domain=shop.shop_domain, settings=await _read_settings(db, shop.id))
