@@ -13,7 +13,7 @@ class OrderService:
             '  orders(first: $first, after: $after, reverse: true, query: $query) {'
             '    edges { cursor node { id name createdAt displayFinancialStatus displayFulfillmentStatus'
             '      totalPriceSet { shopMoney { amount currencyCode } }'
-            '      customer { id displayName email }'
+            '      customer { id displayName }'
             '      lineItems(first: 10) { edges { node { title quantity sku } } }'
             '    } }'
             '    pageInfo { hasNextPage endCursor }'
