@@ -1,25 +1,27 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 
-def test_spa_routes_return_frontend_entrypoint(client: TestClient):
+def test_spa_routes_return_frontend_entrypoint_when_built(client: TestClient):
     response = client.get("/dashboard")
+    frontend_index = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html"
 
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
+    if frontend_index.is_file():
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+    else:
+        # Backend CI intentionally does not run the frontend build first.
+        assert response.status_code == 404
 
 
 def test_health(client: TestClient):
     response = client.get("/health")
-
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
 def test_auth_session_without_authentication(client: TestClient):
     response = client.get("/api/auth/session")
-
     assert response.status_code == 200
-
-    data = response.json()
-
-    assert data["connected"] is False
+    assert response.json()["connected"] is False
