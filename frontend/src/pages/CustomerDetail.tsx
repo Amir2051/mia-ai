@@ -56,7 +56,9 @@ export default function CustomerDetail() {
     api.get(`/customers/${encodeURIComponent(customerId)}`)
       .then((res) => {
         if (cancelled) return;
-        setCustomer((res.data?.data as Customer) || null);
+        const payload = res.data?.data;
+        const customerData = payload?.customer ?? payload;
+        setCustomer((customerData as Customer) || null);
       })
       .catch((err) => {
         if (!cancelled) setError((err as Error)?.message || 'Failed to load customer');
