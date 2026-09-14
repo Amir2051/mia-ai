@@ -8,7 +8,7 @@ type CustomerEdge = {
     displayName?: string | null;
     email?: string | null;
     phone?: string | null;
-    numberOfOrders?: number | null;
+    numberOfOrders?: number | string | null;
     amountSpent?: {
       amount?: string | null;
       currencyCode?: string | null;
@@ -30,6 +30,11 @@ type CustomerEdge = {
     };
   };
 };
+
+function customerFallbackName(id: string): string {
+  const match = id.match(/Customer\/(\d+)$/);
+  return match ? `Customer ${match[1]}` : 'Customer';
+}
 
 export default function Customers() {
   const [items, setItems] = useState<CustomerEdge[]>([]);
@@ -58,8 +63,11 @@ export default function Customers() {
     api.get(`/customers/?query=${encodeURIComponent(query)}`)
       .then((res) => {
         if (cancelled) return;
-        const edges = (res.data?.data?.customers?.edges ?? []) as CustomerEdge[];
-        setItems(edges);
+        const rawEdges = res.data?.data?.customers?.edges;
+        const edges = Array.isArray(rawEdges)
+          ? rawEdges.filter((edge: CustomerEdge | null) => !!edge?.node?.id)
+          : [];
+        setItems(edges as CustomerEdge[]);
         setError(null);
       })
       .catch((err) => {
@@ -78,7 +86,7 @@ export default function Customers() {
   }, [connected, query]);
 
   const formatCurrency = (amount?: string | null, currency = 'USD') => {
-    if (!amount) return '—';
+    if (amount == null || amount === '') return '—';
     const value = Number(amount);
     if (!Number.isFinite(value)) return '—';
     try {
@@ -113,6 +121,11 @@ export default function Customers() {
 
       {connected && !loading && (
         <div>
+          {items.length > 0 && (
+            <p style={{ color: '#616161', marginBottom: 12 }}>
+              {items.length} customer{items.length === 1 ? '' : 's'} found.
+            </p>
+          )}
           {items.length === 0 && <p style={{ color: '#616161' }}>No customers found.</p>}
           {items.map((edge) => {
             const customer = edge.node;
@@ -121,7 +134,7 @@ export default function Customers() {
             const totalAmount = total?.amount;
             const currency = total?.currencyCode || 'USD';
             const recent = orders.slice(0, 3);
-            const displayName = customer.displayName || customer.email || 'Unnamed customer';
+            const displayName = customer.displayName || customer.email || customerFallbackName(customer.id);
 
             return (
               <div
@@ -139,7 +152,7 @@ export default function Customers() {
                   </Link>
                 </div>
                 <div style={{ color: '#616161' }}>
-                  {customer.email || '—'} · {customer.phone ? `Phone: ${customer.phone}` : 'No phone'}
+                  {customer.email || 'Email unavailable'} · {customer.phone ? `Phone: ${customer.phone}` : 'Phone unavailable'}
                 </div>
                 <div style={{ color: '#616161' }}>
                   Orders: {customer.numberOfOrders ?? '—'} · Spent: {formatCurrency(totalAmount, currency)}
@@ -147,8 +160,8 @@ export default function Customers() {
                 {recent.length > 0 && (
                   <div style={{ marginTop: 6 }}>
                     <div style={{ fontSize: 12, color: '#616161' }}>Recent orders:</div>
-                    {recent.map((orderEdge) => (
-                      <div key={orderEdge.node.id || Math.random()} style={{ fontSize: 12, color: '#616161' }}>
+                    {recent.map((orderEdge, index) => (
+                      <div key={orderEdge.node.id || `${customer.id}-order-${index}`} style={{ fontSize: 12, color: '#616161' }}>
                         {orderEdge.node.name || 'Untitled'} · {orderEdge.node.createdAt || '—'} · {formatCurrency(orderEdge.node.totalPriceSet?.shopMoney?.amount, orderEdge.node.totalPriceSet?.shopMoney?.currencyCode || 'USD')}
                       </div>
                     ))}
