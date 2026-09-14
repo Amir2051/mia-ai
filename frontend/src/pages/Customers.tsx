@@ -75,7 +75,7 @@ export default function Customers() {
                 const node = edge.node;
                 const email = node.email ?? node.defaultEmailAddress?.emailAddress ?? null;
                 const phone = node.phone ?? node.defaultPhoneNumber?.phoneNumber ?? null;
-                const displayName = node.displayName ?? [node.firstName, node.lastName].filter(Boolean).join(' ') || null;
+                const displayName = node.displayName ?? ([node.firstName, node.lastName].filter(Boolean).join(' ') || null);
                 return {
                   ...edge,
                   node: {
