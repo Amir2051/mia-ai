@@ -11,11 +11,12 @@ class CustomerService:
         # Avoid Level 2 protected customer fields in the list request. Shopify
         # can reject a GraphQL request when an app has customer-data access but
         # has not been granted the corresponding identifying fields (such as
-        # name). Details are fetched separately when those fields are approved.
+        # name). Financial summary fields remain available for the current
+        # access level and let the list show an accurate spend value.
         gql = (
             'query($query: String, $first: Int!, $after: String) {'
             '  customers(first: $first, after: $after, query: $query) {'
-            '    edges { cursor node { id numberOfOrders } }'
+            '    edges { cursor node { id numberOfOrders amountSpent { amount currencyCode } } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
             '}'
