@@ -11,7 +11,7 @@ class CustomerService:
         gql = (
             'query($query: String, $first: Int!, $after: String) {'
             '  customers(first: $first, after: $after, query: $query) {'
-            '    edges { cursor node { id email displayName numberOfOrders amountSpent { amount currencyCode } } }'
+            '    edges { cursor node { id displayName numberOfOrders } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
             '}'
@@ -25,8 +25,8 @@ class CustomerService:
         gql = (
             'query($id: ID!) {'
             '  customer(id: $id) {'
-            '    id email displayName firstName lastName tags'
-            '    ordersCount amountSpent { amount currencyCode }'
+            '    id displayName firstName lastName tags'
+            '    ordersCount'
             '    defaultAddress { address1 city province country zip }'
             '  }'
             '}'
