@@ -30,7 +30,7 @@ class CustomerService:
             'query($id: ID!) {'
             '  customer(id: $id) {'
             '    id displayName firstName lastName tags'
-            '    ordersCount'
+            '    numberOfOrders'
             '    defaultAddress { address1 city province country zip }'
             '  }'
             '}'
