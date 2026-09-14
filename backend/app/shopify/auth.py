@@ -49,14 +49,6 @@ def verify_api_secret(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
-def generate_state() -> str:
-    return secrets.token_urlsafe(32)
-
-
-def generate_nonce() -> str:
-    return secrets.token_urlsafe(32)
-
-
 def generate_session_token() -> str:
     return secrets.token_urlsafe(48)
 
@@ -87,57 +79,7 @@ class ShopifySession:
 
 
 class ShopifyOAuthFlow:
-    def build_authorization_url(self, shop: str, state: str, nonce: Optional[str] = None) -> str:
-        shop = _validate_shop_domain(shop)
-        if not settings.shopify_api_key:
-            raise AuthorizationError("Shopify API key is not configured")
-        redirect_uri = settings.shopify_redirect_uris.split(",")[0].strip()
-        params = {
-            "client_id": settings.shopify_api_key,
-            "scope": settings.shopify_scopes,
-            "redirect_uri": redirect_uri,
-            "state": state,
-        }
-        if nonce:
-            params["nonce"] = nonce
-        return f"https://{shop}/admin/oauth/authorize?{urlencode(params)}"
-
-    def exchange_code_for_token(self, shop: str, code: str) -> str:
-        shop = _validate_shop_domain(shop)
-        if not settings.shopify_api_key:
-            raise AuthorizationError("Shopify API key is not configured")
-        if not settings.shopify_api_secret:
-            raise AuthorizationError("Shopify API secret is not configured")
-        code = (code or "").strip()
-        if not code:
-            raise AuthorizationError("Shopify authorization code is required")
-
-        try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-                response = client.post(
-                    f"https://{shop}/admin/oauth/access_token",
-                    data={"client_id": settings.shopify_api_key, "client_secret": settings.shopify_api_secret, "code": code},
-                    headers={"Accept": "application/json"},
-                )
-        except httpx.HTTPError as exc:
-            raise AuthenticationError("Unable to contact Shopify token endpoint") from exc
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-            except ValueError:
-                error_data = {}
-            message = error_data.get("error_description") or error_data.get("error") or f"Shopify returned HTTP {response.status_code}"
-            raise AuthenticationError(f"Shopify OAuth token exchange failed: {message}")
-
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise AuthenticationError("Shopify returned an invalid token response") from exc
-        access_token = data.get("access_token")
-        if not access_token:
-            raise AuthenticationError("Shopify token response did not contain an access token")
-        return str(access_token)
+    """Shopify embedded-app token exchange and webhook helpers."""
 
     def exchange_id_token_for_access_token(self, shop: str, id_token: str) -> dict:
         shop = _validate_shop_domain(shop)
@@ -156,7 +98,6 @@ class ShopifyOAuthFlow:
             "subject_token": id_token,
             "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
             "requested_token_type": "urn:shopify:params:oauth:token-type:offline-access-token",
-            # Public apps must use expiring offline Admin API tokens.
             "expiring": "1",
         }
         return self._post_token_exchange(shop, payload)
