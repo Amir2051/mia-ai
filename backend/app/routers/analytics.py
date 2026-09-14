@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.auth.dependencies import CurrentUser, get_current_shop, get_optional_shop
+from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
@@ -18,10 +18,7 @@ from app.services.analytics import (
 from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.services.products import ProductService
-from app.shopify.client import (
-    ShopifyAPIClient,
-    ShopifyAPIError,
-)
+from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
 router = APIRouter()
 
@@ -54,27 +51,19 @@ async def _current_shop_or_connected_error(
     )
     shop = result.scalar_one_or_none()
 
-    if (
-        not shop
-        or not shop.access_token_encrypted
-        or not shop.is_active
-    ):
+    if not shop or not shop.access_token_encrypted or not shop.is_active:
         return None
 
     return shop
 
 
-async def _shop_client(
-    shop: Shop,
-) -> ShopifyAPIClient:
+async def _shop_client(shop: Shop) -> ShopifyAPIClient:
     try:
-        access_token = decrypt_token(
-            shop.access_token_encrypted or ""
-        )
+        access_token = decrypt_token(shop.access_token_encrypted or '')
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored Shopify access token could not be decrypted",
+            detail='Stored Shopify access token could not be decrypted',
         ) from exc
 
     return ShopifyAPIClient(
@@ -85,9 +74,7 @@ async def _shop_client(
 
 @router.get('/', response_model=AnalyticsResponse)
 async def analytics(
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
@@ -97,10 +84,10 @@ async def analytics(
     if not shop:
         return AnalyticsResponse(connected=False)
 
+    client = await _shop_client(shop)
+
     try:
-        client = await _shop_client(shop)
         order_data = await OrderService(client).list_orders()
-        customer_data = await CustomerService(client).list_customers()
     except NotImplementedError as exc:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -112,26 +99,29 @@ async def analytics(
             detail=str(exc),
         ) from exc
 
-    dashboard = compute_dashboard(
-        order_data,
-        customer_data,
-    )
+    # Customer statistics are useful but should not make the whole dashboard fail
+    # when the Shopify token lacks the optional customer-data access.
+    customer_data = None
+    try:
+        customer_data = await CustomerService(client).list_customers()
+    except ShopifyAPIError:
+        customer_data = None
+
+    dashboard = compute_dashboard(order_data, customer_data)
 
     return AnalyticsResponse(
         connected=True,
         shop_domain=shop.shop_domain,
-        revenue=dashboard.get("revenue"),
-        orders=dashboard.get("orders"),
-        customers=dashboard.get("customers"),
-        average_order_value=dashboard.get("average_order_value"),
+        revenue=dashboard.get('revenue'),
+        orders=dashboard.get('orders'),
+        customers=dashboard.get('customers'),
+        average_order_value=dashboard.get('average_order_value'),
     )
 
 
 @router.get('/products', response_model=AnalyticsResponse)
 async def product_performance(
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
@@ -166,9 +156,7 @@ async def product_performance(
 
 @router.get('/recent-sales', response_model=AnalyticsResponse)
 async def recent_sales(
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
@@ -205,9 +193,7 @@ async def recent_sales(
 async def filter_analytics(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
-    current: Optional[CurrentUser] = Depends(
-        get_optional_shop
-    ),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
     if not current:
