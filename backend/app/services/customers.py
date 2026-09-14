@@ -26,12 +26,14 @@ class CustomerService:
         )
 
     async def get_customer(self, customer_id: str) -> dict:
+        # Keep the detail query to fields that the app can safely request
+        # without Shopify's protected-customer-data approval. Protected
+        # display/name fields are intentionally omitted; the API/router will
+        # surface an unavailable state when Shopify blocks customer details.
         gql = (
             'query($id: ID!) {'
             '  customer(id: $id) {'
-            '    id displayName firstName lastName tags'
-            '    numberOfOrders'
-            '    defaultAddress { address1 city province country zip }'
+            '    id numberOfOrders tags'
             '  }'
             '}'
         )
