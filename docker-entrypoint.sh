@@ -2,6 +2,7 @@
 set -eu
 
 cd /app
+export PYTHONPATH="/app/backend${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "Running database migrations..."
 alembic -c backend/alembic.ini upgrade head

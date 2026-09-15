@@ -23,10 +23,6 @@ class Settings(BaseSettings):
     shopify_api_key: str = ''
     shopify_api_secret: str = ''
     shopify_app_url: str = 'http://localhost:8000'
-    shopify_redirect_uris: str = (
-        'http://localhost:8000/api/auth/callback'
-    )
-
     shopify_scopes: str = (
         'read_products,'
         'write_products,'
@@ -48,10 +44,6 @@ class Settings(BaseSettings):
     # JWT
     jwt_algorithm: str = 'HS256'
     access_token_expire_minutes: int = 60
-
-    # OAuth
-    oauth_state_expire_minutes: int = 10
-    oauth_nonce_expire_minutes: int = 10
 
     # Session cookie
     session_cookie_name: str = 'mia_session'
@@ -89,10 +81,6 @@ class Settings(BaseSettings):
                 issues.append('TOKEN_ENCRYPTION_KEY missing')
             if not self.shopify_app_url or self.shopify_app_url.startswith('http://localhost'):
                 issues.append('SHOPIFY_APP_URL not set to production domain')
-            if not self.shopify_redirect_uris or 'https://drivenest.info/api/auth/callback' not in [
-                uri.strip() for uri in self.shopify_redirect_uris.split(',') if uri.strip()
-            ]:
-                issues.append('SHOPIFY_REDIRECT_URIS must include https://drivenest.info/api/auth/callback')
             if self.session_cookie_secure is False:
                 issues.append('SESSION_COOKIE_SECURE must be True in production')
             if 'localhost' in self.cors_origins:

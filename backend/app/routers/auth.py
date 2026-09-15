@@ -51,7 +51,7 @@ def _needs_token_exchange(shop: Shop) -> bool:
     if not shop.access_token_encrypted or not shop.is_active:
         return True
     if shop.access_token_expires_at is None:
-        return False
+        return True
     return shop.access_token_expires_at <= now_utc().replace(tzinfo=None) + timedelta(minutes=5)
 
 

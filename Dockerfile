@@ -11,7 +11,7 @@ FROM python:3.13-slim AS runtime
 WORKDIR /app
 
 ENV ENVIRONMENT=production \
-    PYTHONPATH=/app \
+    PYTHONPATH=/app/backend \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

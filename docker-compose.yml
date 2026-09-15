@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   mia-ai:
     build: .
@@ -9,5 +8,14 @@ services:
     volumes:
       - mia-data:/app/data
     restart: unless-stopped
+    networks:
+      default:
+      supabase_network_safenestt-platform:
+        aliases:
+          - db
 volumes:
   mia-data:
+
+networks:
+  supabase_network_safenestt-platform:
+    external: true
