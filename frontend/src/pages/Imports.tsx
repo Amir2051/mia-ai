@@ -224,6 +224,32 @@ export default function Imports() {
       setFileContent(content);
       setParsedRows(rows.slice(0, 20));
       setParsedColumns(columns);
+
+      // Infer CSV -> Shopify product field mapping from common header names.
+      const aliases: Record<string, string[]> = {
+        title: ['title', 'product_title', 'name'],
+        descriptionHtml: ['description', 'body_html', 'description_html', 'body'],
+        vendor: ['vendor', 'supplier', 'brand'],
+        productType: ['product_type', 'category', 'type'],
+        tags: ['tags', 'tag'],
+        sku: ['sku', 'variant_sku', 'variant sku'],
+        price: ['price', 'variant_price', 'variant price'],
+        compareAtPrice: ['compare_at_price', 'variant_compare_at_price', 'compare at price'],
+        inventoryQuantity: ['inventory_quantity', 'variant_inventory_qty', 'inventory_qty', 'quantity'],
+        weight: ['weight', 'variant_weight'],
+      };
+      const inferred: Record<string, string> = {};
+      const normalized = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+      columns.forEach((column) => {
+        const n = normalized(column);
+        for (const [target, candidates] of Object.entries(aliases)) {
+          if (candidates.some((candidate) => normalized(candidate) === n)) {
+            inferred[target] = column;
+            break;
+          }
+        }
+      });
+      setMapping(inferred);
       setFileError(null);
     };
 
@@ -474,11 +500,11 @@ export default function Imports() {
                     />
                     <select
                       value={importConfig.duplicate_action}
-                      onChange={(event) => updateConfig('duplicate_action', event.target.value as 'skip' | 'overwrite')}
+                      onChange={(event) => updateConfig('duplicate_action', event.target.value)}
                       style={{ padding: 8, border: '1px solid #e1e3e5', borderRadius: 6 }}
                     >
                       <option value="skip">Skip duplicates</option>
-                      <option value="overwrite">Overwrite duplicates</option>
+                      <option value="update">Update duplicates</option>
                     </select>
                     <select
                       value={importConfig.status}

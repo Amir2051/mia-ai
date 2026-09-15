@@ -71,7 +71,6 @@ class CsvImportService(ImportService):
             for key in variant_fields:
                 if key in product:
                     variant_input[key] = product.pop(key)
-            product.setdefault("productOptions", [{"name": "Title"}])
             variant_input["selectedOptions"] = [{"name": "Title", "value": "Default Title"}]
             product["variants"] = [variant_input]
         return product

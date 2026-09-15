@@ -126,19 +126,63 @@ class ShopifyAPIClient:
         return await self.create_product(ProductService(self).map_import_to_product(payload))
 
     async def create_product(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        # Shopify 2026-07 productCreate accepts product fields only; variant pricing/SKU
+        # must be applied to the initial variant after product creation.
+        product_input = dict(input_data)
+        variants = product_input.pop("variants", None) or []
+        product_input.pop("productOptions", None)
+
         gql = """
         mutation CreateProduct($product: ProductCreateInput!) {
             productCreate(product: $product) {
-                product { id handle title status }
+                product {
+                    id handle title status
+                    variants(first: 1) { nodes { id } }
+                }
                 userErrors { field message }
             }
         }
         """
-        result = await self.graphql(gql, {"product": input_data})
+        result = await self.graphql(gql, {"product": product_input})
         product_create = result.get("productCreate") or {}
         user_errors = product_create.get("userErrors") or []
         if user_errors:
             raise ShopifyAPIError("Shopify productCreate failed", status_code=200, response={"data": result, "userErrors": user_errors})
+
+        product = product_create.get("product") or {}
+        product_id = product.get("id")
+        if variants and product_id:
+            variant = dict(variants[0])
+            variant.pop("selectedOptions", None)
+            variant.pop("optionValues", None)
+            default_variant = ((product.get("variants") or {}).get("nodes") or [None])[0]
+            variant_id = (default_variant or {}).get("id")
+            if variant_id:
+                update_input: Dict[str, Any] = {"id": variant_id}
+                if "price" in variant and variant.get("price") not in (None, ""):
+                    update_input["price"] = variant["price"]
+                if "compareAtPrice" in variant and variant.get("compareAtPrice") not in (None, ""):
+                    update_input["compareAtPrice"] = variant["compareAtPrice"]
+                if "inventoryPolicy" in variant and variant.get("inventoryPolicy") not in (None, ""):
+                    update_input["inventoryPolicy"] = variant["inventoryPolicy"]
+                if "sku" in variant and variant.get("sku") not in (None, ""):
+                    update_input["inventoryItem"] = {"sku": str(variant["sku"])}
+                if len(update_input) > 1:
+                    update_gql = """
+                    mutation UpdateInitialVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+                        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                            product { id }
+                            productVariants { id sku price compareAtPrice }
+                            userErrors { field message }
+                        }
+                    }
+                    """
+                    update_result = await self.graphql(update_gql, {"productId": product_id, "variants": [update_input]})
+                    update_payload = update_result.get("productVariantsBulkUpdate") or {}
+                    update_errors = update_payload.get("userErrors") or []
+                    if update_errors:
+                        raise ShopifyAPIError("Shopify initial variant update failed", status_code=200, response={"data": update_result, "userErrors": update_errors})
+                    result["productCreate"]["product"]["variantUpdate"] = update_payload
         return result
 
     async def update_product(self, product_id: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
