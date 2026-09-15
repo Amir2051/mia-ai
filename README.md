@@ -43,7 +43,6 @@ DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/mia
 SHOPIFY_API_KEY=c3778df7ce03ca72b52ea21020c3570b
 SHOPIFY_API_SECRET=<Shopify secret>
 SHOPIFY_APP_URL=https://drivenest.info
-SHOPIFY_REDIRECT_URIS=https://drivenest.info/api/auth/callback
 SHOPIFY_SCOPES=read_products,write_products,read_orders,read_customers,read_inventory
 SHOPIFY_API_VERSION=2026-07
 TOKEN_ENCRYPTION_KEY=<Fernet key>
@@ -85,17 +84,17 @@ GitHub Actions also runs backend migrations/tests and the frontend build for pus
 `shopify.app.toml` is configured for:
 
 - `https://drivenest.info`
-- OAuth callback: `https://drivenest.info/api/auth/callback`
+- Embedded authentication: Shopify managed installation + ID-token token exchange
 - webhook endpoint: `https://drivenest.info/api/webhooks`
 - app uninstall, product create/update/delete, and order create/update subscriptions
 
-Before production install, perform a live dev-store acceptance test covering install, OAuth, embedded loading, products, CSV import, orders, customers, uninstall, reinstall, and webhook delivery.
+Before production install, perform a live dev-store acceptance test covering managed installation, embedded loading, ID-token token exchange, products, CSV import, orders, customers, uninstall, reinstall, and webhook delivery.
 
 ## Security
 
 - Shopify access tokens encrypted at rest
 - App Bridge ID-token validation
-- OAuth state/nonce validation
+- Shopify ID-token validation and token exchange
 - Webhook HMAC verification and event deduplication
 - Merchant isolation on shop-scoped records
 - Production PostgreSQL requirement
