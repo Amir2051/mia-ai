@@ -53,6 +53,9 @@ export default function AppLayout() {
       </aside>
 
       <main className="main">
+        <NavLink to="/mia" className="mia-float" aria-label="Open Mia Intelligence" title="Ask Mia">
+          <span className="mia-float-core">✦</span>
+        </NavLink>
         {!hideConnectionBanner && !loading && !connected && (
           <div className="connection-banner">
             Shopify is not connected yet. Go to Settings to connect your store.
