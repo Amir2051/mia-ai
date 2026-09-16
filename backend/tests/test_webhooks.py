@@ -4,26 +4,12 @@ import hmac
 import json
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.routers.webhooks import router
 from app.shopify.config import settings as router_settings
-
-
-app = FastAPI()
-app.include_router(router)
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app) as test_client:
-        yield test_client
 
 
 def test_webhook_requires_headers(client):
     response = client.post(
-        "/webhooks",
+        "/api/webhooks",
         content=b'{"id":123}',
     )
 
@@ -37,7 +23,7 @@ def test_webhook_without_shopify_secret(client):
 
     try:
         response = client.post(
-            "/webhooks",
+            "/api/webhooks",
             headers={
                 "X-Shopify-Topic": "products/create",
                 "X-Shopify-Shop-Domain": "example.myshopify.com",
@@ -58,7 +44,7 @@ def test_webhook_rejects_missing_signature_when_secret_configured(client):
 
     try:
         response = client.post(
-            "/webhooks",
+            "/api/webhooks",
             headers={
                 "X-Shopify-Topic": "products/create",
                 "X-Shopify-Shop-Domain": "example.myshopify.com",
@@ -79,7 +65,7 @@ def test_webhook_rejects_invalid_signature(client):
 
     try:
         response = client.post(
-            "/webhooks",
+            "/api/webhooks",
             headers={
                 "X-Shopify-Topic": "products/create",
                 "X-Shopify-Shop-Domain": "example.myshopify.com",
@@ -110,7 +96,7 @@ def test_webhook_accepts_valid_signature(client):
 
     try:
         response = client.post(
-            "/webhooks",
+            "/api/webhooks",
             headers={
                 "X-Shopify-Topic": "products/create",
                 "X-Shopify-Shop-Domain": "example.myshopify.com",
