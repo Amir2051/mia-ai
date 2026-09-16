@@ -191,6 +191,7 @@ def create_app() -> FastAPI:
         seo,
         settings as settings_router,
         webhooks,
+        legal,
         mia,
     )
 
@@ -253,6 +254,8 @@ def create_app() -> FastAPI:
         prefix="/api",
         tags=["webhooks"],
     )
+
+    application.include_router(legal.router, tags=["legal"] )
 
     application.include_router(
         mia.router,

@@ -3,7 +3,7 @@
 Production Shopify embedded admin application for the existing Mia AI Partner app.
 
 - **Shopify App ID:** `418029862913`
-- **Client ID:** `c3778df7ce03ca72b52ea21020c3570b`
+- **Client ID:** `9c422dedf9e850a1f8fb3078ca747fa7`
 - **Admin API:** `2026-07`
 - **Production URL:** `https://drivenest.info`
 
@@ -86,7 +86,11 @@ GitHub Actions also runs backend migrations/tests and the frontend build for pus
 - `https://drivenest.info`
 - Embedded authentication: Shopify managed installation + ID-token token exchange
 - webhook endpoint: `https://drivenest.info/api/webhooks`
+- mandatory compliance webhooks: `customers/data_request`, `customers/redact`, `shop/redact`
 - app uninstall, product create/update/delete, and order create/update subscriptions
+- public privacy policy: `https://drivenest.info/privacy`
+- terms: `https://drivenest.info/terms`
+- support: `https://drivenest.info/support`
 
 Before production install, perform a live dev-store acceptance test covering managed installation, embedded loading, ID-token token exchange, products, CSV import, orders, customers, uninstall, reinstall, and webhook delivery.
 

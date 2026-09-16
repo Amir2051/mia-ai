@@ -5,7 +5,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
@@ -16,6 +16,9 @@ router = APIRouter()
 
 SUPPORTED_TOPICS = [
     "app/uninstalled",
+    "customers/data_request",
+    "customers/redact",
+    "shop/redact",
     "products/create",
     "products/update",
     "products/delete",
@@ -61,6 +64,40 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         action = "shop.uninstalled"
         entity_type = "shop"
         entity_id = str(shop.id)
+    elif topic == "customers/data_request":
+        # Mia does not persist a separate customer profile store. Customer/order
+        # data is fetched from Shopify on demand. Acknowledge the request and
+        # record only the compliance event metadata, not the submitted PII.
+        action = "privacy.customer_data_request"
+        entity_type = "customer"
+        entity_id = None
+    elif topic == "customers/redact":
+        customer = payload.get("customer") or {}
+        customer_id = str(customer.get("id") or "")
+        customer_email = str(customer.get("email") or "")
+        patterns = [v for v in (customer_id, customer_email) if v]
+        for pattern in patterns:
+            await db.execute(
+                delete(WebhookEvent).where(
+                    WebhookEvent.shop_id == shop.id, WebhookEvent.payload_json.contains(pattern)
+                )
+            )
+            await db.execute(
+                delete(AuditLog).where(
+                    AuditLog.shop_id == shop.id, AuditLog.details_json.contains(pattern)
+                )
+            )
+        action = "privacy.customer_redact"
+        entity_type = "customer"
+        entity_id = customer_id or None
+    elif topic == "shop/redact":
+        # Shopify sends this after uninstall. Erase all Mia-owned shop data.
+        await db.execute(delete(WebhookEvent).where(WebhookEvent.shop_id == shop.id))
+        await db.execute(delete(AuditLog).where(AuditLog.shop_id == shop.id))
+        await db.delete(shop)
+        action = "privacy.shop_redact"
+        entity_type = "shop"
+        entity_id = str(shop.id)
     else:
         object_key = "product" if topic.startswith("products/") else "order"
         raw_id = payload.get("id") or payload.get(f"{object_key}_id")
@@ -68,13 +105,14 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         entity_type = object_key
         entity_id = str(raw_id) if raw_id is not None else None
 
-    db.add(AuditLog(
-        shop_id=shop.id,
-        action=action,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        details_json=json.dumps(payload, separators=(",", ":")),
-    ))
+    if topic != "shop/redact":
+        db.add(AuditLog(
+            shop_id=shop.id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details_json=json.dumps(payload, separators=(",", ":")) if topic not in {"customers/data_request", "customers/redact"} else "{}",
+        ))
 
 
 @router.post("/webhooks")
@@ -109,7 +147,8 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook JSON") from exc
 
-    event = WebhookEvent(shop_id=shop_id, topic=topic, event_id=event_id, payload_json=payload_text, processed=False)
+    safe_payload_text = "{}" if topic in {"customers/data_request", "customers/redact", "shop/redact"} else payload_text
+    event = WebhookEvent(shop_id=shop_id, topic=topic, event_id=event_id, payload_json=safe_payload_text, processed=False)
     db.add(event)
     await db.flush()
 
