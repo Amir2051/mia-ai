@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # OpenRouter is server-side only. Never expose this setting through an API.
     openrouter_api_key: str = ''
-    openrouter_model: str = ''
+    openrouter_model: str = 'nvidia/nemotron-3-super-120b-a12b:free'
     openrouter_timeout_seconds: float = 45.0
     openrouter_retries: int = 2
     openrouter_image_model: str = 'meta/muse-image'

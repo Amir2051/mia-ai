@@ -26,9 +26,17 @@ class SEOResult(BaseModel):
     issues: list[str] = Field(default_factory=list, max_length=30)
     recommendations: list[str] = Field(default_factory=list, max_length=30)
 
-    @field_validator("keywords", "tags", "image_alt_text")
+    @field_validator("keywords", "tags", "image_alt_text", mode="before")
     @classmethod
-    def clean_lists(cls, values: list[str]) -> list[str]:
+    def clean_lists(cls, values: Any) -> list[str]:
+        # Free/routed models sometimes return a single string instead of an array.
+        # Normalize that harmless shape variation before strict schema validation.
+        if values is None:
+            return []
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, (list, tuple)):
+            values = [values]
         return [str(v).strip() for v in values if str(v).strip()][:50]
 
 
