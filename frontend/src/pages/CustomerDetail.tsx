@@ -7,6 +7,8 @@ type Customer = {
   displayName?: string | null;
   email?: string | null;
   phone?: string | null;
+  defaultEmailAddress?: { emailAddress?: string | null } | null;
+  defaultPhoneNumber?: { phoneNumber?: string | null } | null;
   numberOfOrders?: number | null;
   amountSpent?: {
     amount?: string | null;
@@ -58,7 +60,17 @@ export default function CustomerDetail() {
         if (cancelled) return;
         const payload = res.data?.data;
         const customerData = payload?.customer ?? payload;
-        setCustomer((customerData as Customer) || null);
+        if (customerData) {
+          const normalized = {
+            ...customerData,
+            email: customerData.email ?? customerData.defaultEmailAddress?.emailAddress ?? null,
+            phone: customerData.phone ?? customerData.defaultPhoneNumber?.phoneNumber ?? null,
+            displayName: customerData.displayName ?? ([customerData.firstName, customerData.lastName].filter(Boolean).join(' ') || null),
+          };
+          setCustomer(normalized as Customer);
+        } else {
+          setCustomer(null);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError((err as Error)?.message || 'Failed to load customer');

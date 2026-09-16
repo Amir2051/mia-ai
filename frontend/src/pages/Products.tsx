@@ -107,7 +107,7 @@ export default function Products() {
                 }}
               >
                 <div style={{ fontWeight: 600 }}>
-                  <Link to={`/products/${product.id}`} style={{ color: '#005bd3', textDecoration: 'none' }}>
+                  <Link to={`/products/${encodeURIComponent(product.id)}`} style={{ color: '#005bd3', textDecoration: 'none' }}>
                     {product.title || 'Untitled'}
                   </Link>
                 </div>
