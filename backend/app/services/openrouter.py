@@ -118,9 +118,21 @@ class OpenRouterService:
             raise OpenRouterError(f"OpenRouter chat request failed: HTTP {response.status_code}")
         try:
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            content = str(data["choices"][0]["message"]["content"])
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                # Some routed/free models ignore response_format and wrap JSON in markdown.
+                cleaned = content.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+                    cleaned = cleaned.rsplit("```", 1)[0].strip()
+                start = cleaned.find("{")
+                end = cleaned.rfind("}")
+                if start < 0 or end <= start:
+                    raise
+                parsed = json.loads(cleaned[start:end + 1])
+        except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise OpenRouterError("OpenRouter returned malformed JSON content") from exc
         if not isinstance(parsed, dict):
             raise OpenRouterError("OpenRouter JSON response must be an object")
@@ -150,6 +162,28 @@ class OpenRouterService:
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise OpenRouterError("OpenRouter returned malformed chat content") from exc
         return str(content), selected_model, latency_ms
+
+    async def generate_image(self, prompt: str, *, reference_url: Optional[str] = None, model: Optional[str] = None) -> tuple[str, str, float]:
+        selected_model = model or settings.openrouter_image_model
+        payload: dict[str, Any] = {"model": selected_model, "prompt": prompt, "n": 1, "aspect_ratio": "1:1", "resolution": "1K"}
+        if reference_url:
+            payload["input_references"] = [reference_url]
+        started = time.perf_counter()
+        response = await self._request("POST", "/images", json=payload)
+        latency_ms = (time.perf_counter() - started) * 1000
+        if response.status_code >= 400:
+            logger.warning("openrouter_image_error status=%s", response.status_code)
+            raise OpenRouterError("OpenRouter image generation needs image-model access/credits on the connected account" if response.status_code in (402, 403, 404) else f"OpenRouter image request failed: HTTP {response.status_code}")
+        try:
+            data = response.json()
+            item = (data.get("data") or [])[0]
+            b64 = item.get("b64_json")
+            media_type = item.get("media_type") or "image/png"
+            if not b64:
+                raise ValueError("image response contained no b64_json")
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise OpenRouterError("OpenRouter returned no usable generated image") from exc
+        return f"data:{media_type};base64,{b64}", selected_model, latency_ms
 
 
 async def generate_json(messages: list[dict[str, str]], model: Optional[str] = None) -> tuple[dict[str, Any], str, float]:

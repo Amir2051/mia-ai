@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from html.parser import HTMLParser
 from typing import Any
@@ -133,3 +134,43 @@ class SEOService:
             "seo": {"title": result.seo_title, "description": result.meta_description},
             "tags": result.tags,
         }
+
+
+class MarketingResult(BaseModel):
+    product_id: str
+    product_title: str
+    image_url: str | None = None
+    facebook: dict[str, str]
+    instagram: dict[str, str]
+    tiktok: dict[str, str]
+    email: dict[str, str]
+    ad: dict[str, str]
+    creative_prompt: str
+    hashtags: list[str] = Field(default_factory=list, max_length=30)
+
+
+def marketing_prompt(product: dict[str, Any]) -> list[dict[str, str]]:
+    compact = {
+        "id": product.get("id"), "title": product.get("title"),
+        "description": product.get("descriptionHtml"), "product_type": product.get("productType"),
+        "vendor": product.get("vendor"), "tags": product.get("tags") or [],
+        "handle": product.get("handle"), "images": product.get("images") or [],
+    }
+    return [
+        {"role": "system", "content": "You are Mia's production ecommerce marketing engine. Return ONLY JSON. Ground every claim in the supplied Shopify product. Never invent discounts, features, guarantees, reviews, stock claims, or specifications. Create copy that can be posted immediately."},
+        {"role": "user", "content": "Create a complete ready-to-post marketing package for this Shopify product. Return exactly: product_id, product_title, image_url, facebook{copy,cta}, instagram{copy,cta}, tiktok{copy,cta}, email{subject,body}, ad{primary_text,headline,description,cta}, creative_prompt, hashtags. Make each channel distinct. creative_prompt must be a detailed commercial product-photo prompt that uses the actual product appearance when an image exists, with no invented product features.\n\nPRODUCT JSON:\n" + json.dumps(compact, ensure_ascii=False)},
+    ]
+
+
+async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], model: str | None = None) -> tuple[MarketingResult, str, float]:
+    raw, selected_model, latency = await ai.chat_json(marketing_prompt(product), model=model, temperature=0.7)
+    raw["product_id"] = product.get("id") or ""
+    raw["product_title"] = product.get("title") or "Product"
+    images = product.get("images") or []
+    if not raw.get("image_url") and images:
+        raw["image_url"] = images[0].get("url") if isinstance(images[0], dict) else None
+    try:
+        result = MarketingResult.model_validate(raw)
+    except Exception as exc:
+        raise OpenRouterError("AI marketing result failed schema validation") from exc
+    return result, selected_model, latency

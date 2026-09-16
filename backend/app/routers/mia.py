@@ -15,6 +15,7 @@ from app.services.products import ProductService
 from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.services.openrouter import OpenRouterError, OpenRouterService
+from app.services.seo import SEOService, generate_marketing
 
 router = APIRouter()
 
@@ -255,6 +256,40 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
     ctx = await _context(shop)
     q = body.message.lower().strip()
     products = ctx["products"]
+
+    # Real AI product workflows from chat. A product name in the request selects
+    # the matching live Shopify product; otherwise the first catalog product is used.
+    target = None
+    selected_match = re.search(r"\[Selected Shopify product:\s*([^\]]+)\]", body.message, flags=re.I)
+    if selected_match:
+        selected_id = selected_match.group(1).strip()
+        target = next((p for p in products if p.get("id") == selected_id), None)
+    for p in products if target is None else []:
+        title = (p.get("title") or "").lower()
+        if title and title in q:
+            target = p
+            break
+    if target is None and products:
+        words = [w for w in re.findall(r"[a-z0-9]+", q) if len(w) >= 5]
+        scored = sorted(((sum(1 for w in words if w in (p.get("title") or "").lower()), p) for p in products), key=lambda x: x[0], reverse=True)
+        if scored and scored[0][0] > 0:
+            target = scored[0][1]
+
+    if any(k in q for k in ["seo", "search engine", "meta description", "meta title"]) and target:
+        try:
+            product_full = (await ProductService(_client(shop)).get_product(target["id"])).get("product") or {}
+            seo_result, model, latency = await SEOService(OpenRouterService()).generate(product_full)
+            return {"answer": f"I generated a real SEO package for {product_full.get('title')}. It is ready for review in the SEO workspace before applying to Shopify.", "artifact": {"type": "seo", "product": product_full, "result": seo_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": {"shop": ctx["shop"], "catalog_scanned": len(products)}}
+        except (ShopifyAPIError, OpenRouterError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if any(k in q for k in ["facebook", "instagram", "tiktok", "marketing", "ready to post", "ad copy", "advertisement"]) and target:
+        try:
+            product_full = (await ProductService(_client(shop)).get_product(target["id"])).get("product") or {}
+            marketing_result, model, latency = await generate_marketing(OpenRouterService(), product_full)
+            return {"answer": f"I generated a ready-to-post marketing package for {product_full.get('title')} using its live Shopify product data and image.", "artifact": {"type": "marketing", "product": product_full, "result": marketing_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": {"shop": ctx["shop"], "catalog_scanned": len(products)}}
+        except (ShopifyAPIError, OpenRouterError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if any(k in q for k in ["low inventory", "low stock", "out of stock", "stock"]):
         rows = [p for p in products if p.get("inventory") is not None and int(p.get("inventory") or 0) <= 5]

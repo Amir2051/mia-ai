@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     openrouter_model: str = ''
     openrouter_timeout_seconds: float = 45.0
     openrouter_retries: int = 2
+    openrouter_image_model: str = 'meta/muse-image'
 
     @property
     def is_production(self) -> bool:

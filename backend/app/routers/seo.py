@@ -11,7 +11,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.openrouter import OpenRouterError, OpenRouterService
-from app.services.seo import SEOResult, SEOService, normalize_handle, sanitize_html
+from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
 router = APIRouter()
@@ -65,7 +65,7 @@ async def _get_product(client: ShopifyAPIClient, product_id: str) -> dict[str, A
     for node in ((product.get("media") or {}).get("nodes") or []):
         preview = node.get("preview") or {}
         image = preview.get("image") or {}
-        media.append({"alt": node.get("alt"), "altText": image.get("altText"), "url": image.get("url")})
+        media.append({"id": node.get("id"), "alt": node.get("alt"), "altText": image.get("altText"), "url": image.get("url")})
     seo = product.get("seo") or {}
     return {
         **product,
@@ -139,7 +139,7 @@ async def apply_seo(
 ):
     if not body.confirmed:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required before applying SEO changes")
-    allowed = {"title", "descriptionHtml", "seo", "tags"}
+    allowed = {"title", "descriptionHtml", "seo", "tags", "image_alt_text"}
     changes = {key: value for key, value in body.changes.items() if key in allowed}
     if "title" in changes:
         if not isinstance(changes["title"], str) or len(changes["title"]) > 255:
@@ -159,6 +159,11 @@ async def apply_seo(
         if not isinstance(body.changes["handle"], str):
             raise HTTPException(status_code=422, detail="handle must be a string")
         changes["handle"] = normalize_handle(body.changes["handle"])
+    image_alt_text = changes.pop("image_alt_text", None)
+    if image_alt_text is not None:
+        if not isinstance(image_alt_text, list) or len(image_alt_text) > 50:
+            raise HTTPException(status_code=422, detail="image_alt_text must be a list of 50 items or fewer")
+        image_alt_text = [str(v).strip()[:500] for v in image_alt_text if str(v).strip()]
     if "seo" in changes:
         if not isinstance(changes["seo"], dict):
             raise HTTPException(status_code=422, detail="seo must be an object")
@@ -169,12 +174,71 @@ async def apply_seo(
         if len(seo.get("title", "")) > 70 or len(seo.get("description", "")) > 320:
             raise HTTPException(status_code=422, detail="SEO metadata exceeds allowed length")
         changes["seo"] = seo
-    if not changes:
+    if not changes and not image_alt_text:
         raise HTTPException(status_code=400, detail="No permitted SEO changes supplied")
     shop = await _shop(current, db)
+    client = _client(shop)
     try:
-        result = await _client(shop).update_product(body.product_id, changes)
-        updated = await _get_product(_client(shop), body.product_id)
+        result = await client.update_product(body.product_id, changes) if changes else {"productUpdate": {"product": {"id": body.product_id}, "userErrors": []}}
+        media_result = None
+        if image_alt_text:
+            current_product = await _get_product(client, body.product_id)
+            media_nodes = current_product.get("images") or []
+            media_updates = []
+            for index, alt in enumerate(image_alt_text):
+                if index < len(media_nodes) and media_nodes[index].get("id"):
+                    media_updates.append({"id": media_nodes[index]["id"], "alt": alt})
+            if media_updates:
+                media_gql = """
+                mutation UpdateProductMedia($productId: ID!, $media: [UpdateMediaInput!]!) {
+                  productUpdateMedia(productId: $productId, media: $media) {
+                    media { id alt }
+                    mediaUserErrors { field message }
+                  }
+                }
+                """
+                media_result = await client.graphql(media_gql, {"productId": body.product_id, "media": media_updates})
+                media_payload = media_result.get("productUpdateMedia") or {}
+                if media_payload.get("mediaUserErrors"):
+                    raise ShopifyAPIError("Shopify image alt-text update failed", status_code=200, response=media_result)
+        updated = await _get_product(client, body.product_id)
     except ShopifyAPIError as exc:
         _shopify_error(exc)
-    return {"success": True, "changes": changes, "shopify": result, "product": updated}
+    return {"success": True, "changes": {**changes, **({"image_alt_text": image_alt_text} if image_alt_text else {})}, "shopify": result, "media": media_result, "product": updated}
+
+
+@router.post("/creative")
+async def generate_product_creative(
+    body: GenerateRequest,
+    current: CurrentUser = Depends(get_current_shop),
+    db=Depends(get_db),
+):
+    shop = await _shop(current, db)
+    try:
+        product = await _get_product(_client(shop), body.product_id)
+        marketing_result, _, _ = await generate_marketing(OpenRouterService(), product, model=body.model)
+        prompt = marketing_result.creative_prompt
+        reference = marketing_result.image_url
+        image, model, latency = await OpenRouterService().generate_image(prompt, reference_url=reference, model=body.model)
+    except ShopifyAPIError as exc:
+        _shopify_error(exc)
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"product": product, "image": image, "model": model, "latency_ms": round(latency, 2), "used_reference_image": bool(reference)}
+
+
+@router.post("/marketing")
+async def generate_product_marketing(
+    body: GenerateRequest,
+    current: CurrentUser = Depends(get_current_shop),
+    db=Depends(get_db),
+):
+    shop = await _shop(current, db)
+    try:
+        product = await _get_product(_client(shop), body.product_id)
+        result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model)
+    except ShopifyAPIError as exc:
+        _shopify_error(exc)
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"product": product, "result": result.model_dump(), "model": model, "latency_ms": round(latency, 2)}

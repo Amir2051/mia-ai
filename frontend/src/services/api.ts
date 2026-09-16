@@ -62,7 +62,14 @@ api.interceptors.response.use(
         const refresh = async () => {
           try {
             const token = await window.shopify!.idToken();
-            if (token) return resolve(token);
+            if (token) {
+              try {
+                await api.get('/auth/session?force=true', { headers: { Authorization: `Bearer ${token}` } });
+              } catch (sessionError) {
+                if (attempt >= 5) return reject(sessionError);
+              }
+              return resolve(token);
+            }
           } catch (refreshError) {
             if (attempt >= 5) return reject(refreshError);
           }

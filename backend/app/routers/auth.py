@@ -56,7 +56,7 @@ def _needs_token_exchange(shop: Shop) -> bool:
 
 
 @router.get("/session", response_model=SessionResponse)
-async def session(request: Request, response: Response, db=Depends(get_db)):
+async def session(request: Request, response: Response, force: bool = Query(False), db=Depends(get_db)):
     """Validate the embedded Shopify ID token and establish/refresh the offline Admin API token."""
     authorization = request.headers.get("Authorization", "").strip()
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -80,12 +80,12 @@ async def session(request: Request, response: Response, db=Depends(get_db)):
 
     result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
     shop = result.scalar_one_or_none()
-    if shop is not None and not _needs_token_exchange(shop):
+    if shop is not None and not force and not _needs_token_exchange(shop):
         return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
 
     result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain).with_for_update())
     shop = result.scalar_one_or_none()
-    if shop is not None and not _needs_token_exchange(shop):
+    if shop is not None and not force and not _needs_token_exchange(shop):
         return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
 
     oauth = ShopifyOAuthFlow()
