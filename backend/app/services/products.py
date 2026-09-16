@@ -34,6 +34,12 @@ class ProductService:
                         handle
                         status
                         totalInventory
+                        createdAt
+                        updatedAt
+                        descriptionHtml
+                        productType
+                        vendor
+                        tags
                         variants(first: 5) {
                             edges {
                                 node {

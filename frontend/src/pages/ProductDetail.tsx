@@ -37,8 +37,11 @@ export default function ProductDetail() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
-  const [marketing, setMarketing] = useState<{ suggestions?: Array<{ title?: string; message?: string; cta?: string }>; seo?: { seo_title?: string; seo_description?: string }; campaigns?: Array<{ subject?: string; body?: string; channel?: string }> } | null>(null);
+  const [marketing, setMarketing] = useState<any>(null);
   const [marketingLoading, setMarketingLoading] = useState(false);
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [enhancement, setEnhancement] = useState<any>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
   const [vendor, setVendor] = useState('');
@@ -116,13 +119,40 @@ export default function ProductDetail() {
     loadProduct();
   }, [loadProduct]);
 
+  const analyzeWithMia = async () => {
+    if (!product?.id) return;
+    setActionLoading('analyze'); setSaveError(null);
+    try { const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/analyze`); setAnalysis(res.data?.analysis || null); }
+    catch (err) { setSaveError((err as Error)?.message || 'Mia could not analyze this product'); }
+    finally { setActionLoading(null); }
+  };
+
+  const enhanceWithMia = async () => {
+    if (!product?.id) return;
+    setActionLoading('enhance'); setSaveError(null);
+    try { const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/enhance`); setEnhancement(res.data || null); setMarketing(res.data?.marketing || null); }
+    catch (err) { setSaveError((err as Error)?.message || 'Mia could not enhance this product'); }
+    finally { setActionLoading(null); }
+  };
+
+  const applyMiaChanges = async () => {
+    if (!product?.id || !enhancement?.proposal) return;
+    setActionLoading('apply'); setSaveError(null); setSaveSuccess(null);
+    try {
+      const proposal = enhancement.proposal;
+      const res = await api.post(`/mia/product/${encodeURIComponent(product.id)}/apply`, { changes: { title: proposal.title, descriptionHtml: proposal.descriptionHtml, tags: proposal.tags, productType: proposal.productType } });
+      if (res.data?.connected) { setSaveSuccess('Mia changes approved and written to Shopify.'); setEnhancement(null); loadProduct(); }
+    } catch (err) { const detail = (err as any)?.response?.data?.detail || (err as Error)?.message || 'Mia could not apply the approved changes'; setSaveError(detail); }
+    finally { setActionLoading(null); }
+  };
+
   const generateMarketing = async () => {
     if (!product?.id) return;
     setMarketingLoading(true);
     setSaveError(null);
     try {
-      const res = await api.get(`/marketing/product/${encodeURIComponent(product.id)}`);
-      setMarketing(res.data || null);
+      const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/marketing`);
+      setMarketing(res.data?.marketing || null);
     } catch (err) {
       setSaveError((err as Error)?.message || 'Mia could not generate marketing for this product');
     } finally {
@@ -245,14 +275,9 @@ export default function ProductDetail() {
 
       <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <Link to="/products" style={{ color: '#005bd3' }}>Back to products</Link>
-        <button
-          type="button"
-          onClick={generateMarketing}
-          disabled={marketingLoading}
-          style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#6366f1,#06b6d4)', color: 'white', fontWeight: 700, cursor: marketingLoading ? 'wait' : 'pointer' }}
-        >
-          {marketingLoading ? 'Mia is analyzing…' : '✦ Enhance with Mia'}
-        </button>
+        <button type="button" onClick={analyzeWithMia} disabled={!!actionLoading} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #c7d2fe', background: '#eef2ff', color: '#4338ca', fontWeight: 700 }}>{actionLoading === 'analyze' ? 'Analyzing…' : '✦ Analyze Product'}</button>
+        <button type="button" onClick={enhanceWithMia} disabled={!!actionLoading} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#6366f1,#06b6d4)', color: 'white', fontWeight: 700 }}>{actionLoading === 'enhance' ? 'Generating…' : '✦ Enhance Product'}</button>
+        <button type="button" onClick={generateMarketing} disabled={marketingLoading || !!actionLoading} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #f0abfc', background: '#fdf4ff', color: '#a21caf', fontWeight: 700 }}>{marketingLoading ? 'Creating…' : '✦ Create Marketing'}</button>
       </div>
 
       {saveError && (
@@ -337,12 +362,30 @@ export default function ProductDetail() {
         </div>
       )}
 
+      {analysis && (
+        <div style={{ marginBottom: 16, padding: 16, border: '1px solid #a5b4fc', borderRadius: 12, background: 'linear-gradient(135deg,#eef2ff,#ecfeff)' }}>
+          <h2 style={{ fontSize: 18, marginBottom: 10 }}>✦ Mia Product Analysis</h2>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}><strong>Quality score: {analysis.quality_score}/100</strong><span>Title: {analysis.title_length} chars</span><span>Description: {analysis.description_length} chars</span><span>Tags: {analysis.tag_count}</span></div>
+          {analysis.issues?.map((x:string,i:number)=><div key={i} style={{color:'#b91c1c',margin:'5px 0'}}>⚠ {x}</div>)}
+          {analysis.opportunities?.map((x:string,i:number)=><div key={i} style={{color:'#047857',margin:'5px 0'}}>✓ {x}</div>)}
+        </div>
+      )}
+
+      {enhancement?.proposal && (
+        <div style={{ marginBottom: 16, padding: 16, border: '1px solid #67e8f9', borderRadius: 12, background: 'linear-gradient(135deg,#ecfeff,#f5f3ff)' }}>
+          <h2 style={{ fontSize: 18, marginBottom: 8 }}>✦ Mia Enhancement Proposal</h2>
+          <p><strong>Proposed title:</strong> {enhancement.proposal.title}</p>
+          <p><strong>Proposed tags:</strong> {(enhancement.proposal.tags || []).join(', ')}</p>
+          <p><strong>Positioning:</strong> {enhancement.proposal.positioning}</p>
+          <div style={{padding:12,background:'white',borderRadius:8}} dangerouslySetInnerHTML={{__html: enhancement.proposal.descriptionHtml}} />
+          <div style={{marginTop:12,display:'flex',gap:8,alignItems:'center'}}><button type='button' onClick={applyMiaChanges} disabled={!!actionLoading} style={{padding:'9px 14px',border:0,borderRadius:8,background:'#059669',color:'white',fontWeight:700}}>{actionLoading === 'apply' ? 'Applying…' : '✓ Approve & Apply to Shopify'}</button><span style={{fontSize:12,color:'#64748b'}}>Mia will not write changes until you approve.</span></div>
+        </div>
+      )}
+
       {marketing && (
         <div style={{ marginBottom: 16, padding: 16, border: '1px solid #c7d2fe', borderRadius: 12, background: 'linear-gradient(135deg,#eef2ff,#ecfeff)' }}>
           <h2 style={{ fontSize: 18, marginBottom: 10 }}>✦ Mia Product Intelligence</h2>
-          {marketing.suggestions?.map((item, index) => <div key={index} style={{ marginBottom: 8 }}><strong>{item.title || 'Promotion'}</strong><div>{item.message}</div><small>{item.cta || 'Recommended action'}</small></div>)}
-          {marketing.seo && <div style={{ marginTop: 10 }}><strong>SEO</strong><div>{marketing.seo.seo_title}</div><small>{marketing.seo.seo_description}</small></div>}
-          {marketing.campaigns?.map((campaign, index) => <div key={index} style={{ marginTop: 10 }}><strong>{campaign.channel || 'Campaign'}: {campaign.subject}</strong><div style={{ whiteSpace: 'pre-wrap' }}>{campaign.body}</div></div>)}
+          {Object.entries(marketing).map(([channel, item]: [string, any]) => <div key={channel} style={{ marginTop: 10, padding: 12, background: 'rgba(255,255,255,.72)', borderRadius: 8 }}><strong>{item.channel || channel}</strong>{item.subject && <div><strong>Subject:</strong> {item.subject}</div>}{item.headline && <div><strong>Headline:</strong> {item.headline}</div>}<div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>{item.copy || item.body || item.primary_text || item.description}</div>{item.cta && <small>CTA: {item.cta}</small>}</div>)}
         </div>
       )}
 

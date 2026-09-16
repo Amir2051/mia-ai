@@ -222,7 +222,7 @@ class ShopifyAPIClient:
         gql = """
         query ListProducts($query: String, $first: Int!, $after: String) {
             products(first: $first, query: $query, after: $after) {
-                edges { cursor node { id title handle status totalInventory variants(first: 5) { nodes { id title sku price inventoryQuantity } } } }
+                edges { cursor node { id title handle status totalInventory createdAt updatedAt descriptionHtml productType vendor tags variants(first: 5) { nodes { id title sku price inventoryQuantity } } } }
                 pageInfo { hasNextPage endCursor }
             }
         }
