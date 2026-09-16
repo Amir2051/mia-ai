@@ -37,6 +37,8 @@ export default function ProductDetail() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+  const [marketing, setMarketing] = useState<{ suggestions?: Array<{ title?: string; message?: string; cta?: string }>; seo?: { seo_title?: string; seo_description?: string }; campaigns?: Array<{ subject?: string; body?: string; channel?: string }> } | null>(null);
+  const [marketingLoading, setMarketingLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState('');
   const [vendor, setVendor] = useState('');
@@ -113,6 +115,20 @@ export default function ProductDetail() {
   useEffect(() => {
     loadProduct();
   }, [loadProduct]);
+
+  const generateMarketing = async () => {
+    if (!product?.id) return;
+    setMarketingLoading(true);
+    setSaveError(null);
+    try {
+      const res = await api.get(`/marketing/product/${encodeURIComponent(product.id)}`);
+      setMarketing(res.data || null);
+    } catch (err) {
+      setSaveError((err as Error)?.message || 'Mia could not generate marketing for this product');
+    } finally {
+      setMarketingLoading(false);
+    }
+  };
 
   const startEditing = () => {
     setEditing(true);
@@ -227,8 +243,16 @@ export default function ProductDetail() {
         {product.title || 'Untitled'}
       </h1>
 
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <Link to="/products" style={{ color: '#005bd3' }}>Back to products</Link>
+        <button
+          type="button"
+          onClick={generateMarketing}
+          disabled={marketingLoading}
+          style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#6366f1,#06b6d4)', color: 'white', fontWeight: 700, cursor: marketingLoading ? 'wait' : 'pointer' }}
+        >
+          {marketingLoading ? 'Mia is analyzing…' : '✦ Enhance with Mia'}
+        </button>
       </div>
 
       {saveError && (
@@ -310,6 +334,15 @@ export default function ProductDetail() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {marketing && (
+        <div style={{ marginBottom: 16, padding: 16, border: '1px solid #c7d2fe', borderRadius: 12, background: 'linear-gradient(135deg,#eef2ff,#ecfeff)' }}>
+          <h2 style={{ fontSize: 18, marginBottom: 10 }}>✦ Mia Product Intelligence</h2>
+          {marketing.suggestions?.map((item, index) => <div key={index} style={{ marginBottom: 8 }}><strong>{item.title || 'Promotion'}</strong><div>{item.message}</div><small>{item.cta || 'Recommended action'}</small></div>)}
+          {marketing.seo && <div style={{ marginTop: 10 }}><strong>SEO</strong><div>{marketing.seo.seo_title}</div><small>{marketing.seo.seo_description}</small></div>}
+          {marketing.campaigns?.map((campaign, index) => <div key={index} style={{ marginTop: 10 }}><strong>{campaign.channel || 'Campaign'}: {campaign.subject}</strong><div style={{ whiteSpace: 'pre-wrap' }}>{campaign.body}</div></div>)}
         </div>
       )}
 

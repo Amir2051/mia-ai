@@ -169,7 +169,7 @@ async def list_products(
 
 
 @router.get(
-    "/{product_id}",
+    "/{product_id:path}",
     response_model=ProductListResponse,
 )
 async def get_product(

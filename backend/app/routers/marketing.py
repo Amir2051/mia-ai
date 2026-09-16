@@ -126,7 +126,7 @@ async def marketing_overview(current: Optional[CurrentUser] = Depends(get_option
     )
 
 
-@router.get('/product/{product_id}', response_model=MarketingResponse)
+@router.get('/product/{product_id:path}', response_model=MarketingResponse)
 async def product_marketing(product_id: str, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return MarketingResponse(connected=False)

@@ -12,7 +12,7 @@ class ProductService:
     async def list_products(
         self,
         query: str = "",
-        first: int = 20,
+        first: int = 250,
         after: Optional[str] = None,
     ) -> dict:
         gql = """
