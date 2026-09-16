@@ -11,7 +11,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.openrouter import OpenRouterError, OpenRouterService
-from app.services.seo import SEOResult, SEOService
+from app.services.seo import SEOResult, SEOService, normalize_handle, sanitize_html
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
 router = APIRouter()
@@ -141,12 +141,34 @@ async def apply_seo(
         raise HTTPException(status_code=400, detail="Explicit confirmation is required before applying SEO changes")
     allowed = {"title", "descriptionHtml", "seo", "tags"}
     changes = {key: value for key, value in body.changes.items() if key in allowed}
+    if "title" in changes:
+        if not isinstance(changes["title"], str) or len(changes["title"]) > 255:
+            raise HTTPException(status_code=422, detail="title must be a string of 255 characters or fewer")
+        changes["title"] = changes["title"].strip()
+    if "descriptionHtml" in changes:
+        if not isinstance(changes["descriptionHtml"], str) or len(changes["descriptionHtml"]) > 20000:
+            raise HTTPException(status_code=422, detail="descriptionHtml is invalid")
+        changes["descriptionHtml"] = sanitize_html(changes["descriptionHtml"])
+    if "tags" in changes:
+        if not isinstance(changes["tags"], list) or len(changes["tags"]) > 30:
+            raise HTTPException(status_code=422, detail="tags must be a list of 30 items or fewer")
+        changes["tags"] = [str(tag).strip()[:255] for tag in changes["tags"] if str(tag).strip()]
     if not body.apply_handle:
         changes.pop("handle", None)
     elif "handle" in body.changes:
-        changes["handle"] = body.changes["handle"]
-    if "seo" in changes and not isinstance(changes["seo"], dict):
-        raise HTTPException(status_code=422, detail="seo must be an object")
+        if not isinstance(body.changes["handle"], str):
+            raise HTTPException(status_code=422, detail="handle must be a string")
+        changes["handle"] = normalize_handle(body.changes["handle"])
+    if "seo" in changes:
+        if not isinstance(changes["seo"], dict):
+            raise HTTPException(status_code=422, detail="seo must be an object")
+        seo = changes["seo"]
+        seo = {k: seo[k] for k in ("title", "description") if k in seo}
+        if any(not isinstance(v, str) for v in seo.values()):
+            raise HTTPException(status_code=422, detail="seo title and description must be strings")
+        if len(seo.get("title", "")) > 70 or len(seo.get("description", "")) > 320:
+            raise HTTPException(status_code=422, detail="SEO metadata exceeds allowed length")
+        changes["seo"] = seo
     if not changes:
         raise HTTPException(status_code=400, detail="No permitted SEO changes supplied")
     shop = await _shop(current, db)

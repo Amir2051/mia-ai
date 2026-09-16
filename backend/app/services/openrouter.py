@@ -93,17 +93,9 @@ class OpenRouterService:
     async def select_model(self) -> str:
         if self.config.model:
             return self.config.model
-        models = await self.list_models()
-        free: list[dict[str, Any]] = []
-        for model in models:
-            pricing = model.get("pricing") or {}
-            if str(pricing.get("prompt", "")) == "0" and str(pricing.get("completion", "")) == "0":
-                free.append(model)
-        if not free:
-            raise OpenRouterError("No currently listed free OpenRouter model is available")
-        free.sort(key=lambda item: (str(item.get("created", "")), str(item.get("id", ""))), reverse=True)
-        return str(free[0]["id"])
-
+        # OpenRouter's router alias is the stable server-side default. It selects
+        # an available model without coupling Mia to a rapidly changing model id.
+        return "openrouter/free"
     async def chat_json(
         self,
         messages: list[dict[str, str]],
