@@ -13,6 +13,7 @@ const CustomerDetail = lazy(() => import('./pages/CustomerDetail'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Marketing = lazy(() => import('./pages/Marketing'));
 const Settings = lazy(() => import('./pages/Settings'));
+const Mia = lazy(() => import('./pages/Mia'));
 
 function Loading() {
   return <p>Loading...</p>;
@@ -34,6 +35,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/mia" element={<Mia />} />
           <Route path="/products" element={<Products />} />
           <Route path="/products/:id" element={<ProductDetail />} />
           <Route path="/imports" element={<Imports />} />

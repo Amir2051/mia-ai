@@ -132,9 +132,16 @@ def create_app() -> FastAPI:
         # Shopify loads embedded apps inside an admin iframe.
         # X-Frame-Options: DENY would block that iframe.
         response.headers["Content-Security-Policy"] = (
-            "frame-ancestors 'self' "
-            "https://admin.shopify.com "
-            "https://*.myshopify.com"
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.shopify.com https://static.cloudflareinsights.com; "
+            "style-src 'self' 'unsafe-inline' https://cdn.shopify.com; "
+            "img-src 'self' data: blob: https://cdn.shopify.com https://*.shopify.com https://*.myshopify.com; "
+            "font-src 'self' data: https://cdn.shopify.com; "
+            "connect-src 'self' https://drivenest.info https://*.myshopify.com https://admin.shopify.com https://static.cloudflareinsights.com https://cloudflareinsights.com wss://*.shopifycloud.com; "
+            "frame-src 'self' https://admin.shopify.com https://*.myshopify.com; "
+            "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com; "
+            "base-uri 'self'; "
+            "object-src 'none'"
         )
 
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -183,6 +190,7 @@ def create_app() -> FastAPI:
         products,
         settings as settings_router,
         webhooks,
+        mia,
     )
 
     application.include_router(
@@ -237,6 +245,12 @@ def create_app() -> FastAPI:
         webhooks.router,
         prefix="/api",
         tags=["webhooks"],
+    )
+
+    application.include_router(
+        mia.router,
+        prefix="/api/mia",
+        tags=["mia"],
     )
 
     @application.get("/health", tags=["health"])

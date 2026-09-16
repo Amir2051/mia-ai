@@ -29,6 +29,7 @@ export default function AppLayout() {
         <nav className="nav">
           {[
             { to: '/dashboard', label: 'Dashboard' },
+            { to: '/mia', label: '✦ Mia Intelligence' },
             { to: '/products', label: 'Products' },
             { to: '/imports', label: 'Imports' },
             { to: '/orders', label: 'Orders' },
