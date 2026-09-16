@@ -42,6 +42,10 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "AsyncSessionLocal", session_local)
+    # main.py imports the engine object directly, so patch that reference too.
+    # Otherwise the TestClient lifespan can initialize the real PostgreSQL
+    # engine before the SQLite test engine is used, causing event-loop errors.
+    monkeypatch.setattr(main_mod, "engine", engine)
 
     application = main_mod.create_app()
 
