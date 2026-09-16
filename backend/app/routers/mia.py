@@ -42,7 +42,7 @@ async def _context(shop: Shop) -> Dict[str, Any]:
     customers_data: Dict[str, Any] = {}
     warnings = []
     try:
-        products_data = await ProductService(client).list_products(first=50)
+        products_data = await ProductService(client).list_products(first=250)
     except ShopifyAPIError as exc:
         warnings.append("Products could not be loaded")
     try:
