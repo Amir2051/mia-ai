@@ -50,6 +50,24 @@ api.interceptors.response.use(
     const detail =
       typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail);
 
+    const config = (error as { config?: { _miaRetried?: boolean } }).config;
+    const retryableShopifySession =
+      (error as { response?: { status?: number; headers?: Record<string, string> } }).response?.status === 401 &&
+      !config?._miaRetried;
+
+    if (retryableShopifySession && window.shopify?.idToken) {
+      config!._miaRetried = true;
+      return window.shopify.idToken().then((token) => {
+        if (token) {
+          const original = error as { config?: { headers?: Record<string, string> } };
+          original.config = original.config ?? {};
+          original.config.headers = original.config.headers ?? {};
+          original.config.headers.Authorization = `Bearer ${token}`;
+        }
+        return api.request((error as { config: any }).config);
+      });
+    }
+
     if (axiosError instanceof Error) {
       Object.defineProperty(axiosError, 'message', {
         value: detail,

@@ -63,11 +63,26 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         except (TypeError, ValueError): pass
     inventory = sum(int(p.get("totalInventory") or 0) for p in products)
     low_stock = [p for p in products if p.get("totalInventory") is not None and int(p.get("totalInventory") or 0) <= 5]
+    product_rows = []
+    for p in products:
+        variants = []
+        for edge in ((p.get("variants") or {}).get("edges") or []):
+            v = edge.get("node") or {}
+            variants.append({
+                "sku": v.get("sku"),
+                "price": v.get("price"),
+                "inventory": v.get("inventoryQuantity"),
+            })
+        product_rows.append({
+            "id": p.get("id"), "title": p.get("title"),
+            "status": p.get("status"), "inventory": p.get("totalInventory"),
+            "variants": variants,
+        })
     return {
         "shop": shop.shop_domain,
         "counts": {"products": len(products), "orders": len(orders), "customers": len(customers), "inventory_units": inventory},
         "revenue": round(revenue, 2),
-        "products": [{"id": p.get("id"), "title": p.get("title"), "status": p.get("status"), "inventory": p.get("totalInventory")} for p in products],
+        "products": product_rows,
         "customers": [{"id": c.get("id"), "name": " ".join(x for x in [c.get("firstName"), c.get("lastName")] if x), "orders": c.get("numberOfOrders"), "spent": (c.get("amountSpent") or {}).get("amount")} for c in customers],
         "orders": [{"id": o.get("id"), "name": o.get("name"), "createdAt": o.get("createdAt"), "amount": ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount")} for o in orders],
         "low_stock": [{"id": p.get("id"), "title": p.get("title"), "inventory": p.get("totalInventory")} for p in low_stock],
@@ -93,10 +108,27 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
             top = sorted(customers, key=lambda x: float(x.get("spent") or 0), reverse=True)[:5]
             names = ", ".join((c["name"] or "Unnamed customer") for c in top)
             answer = f"I found {len(customers)} customer records in the current Mia data window. Highest-spend customers in that window: {names}."
-    elif any(k in q for k in ["product", "products", "inventory", "stock"]):
-        answer = f"Mia has live access to {counts['products']} products and {counts['inventory_units']} inventory units in the current data window."
+    elif any(k in q for k in ["product", "products", "inventory", "stock", "analyz"]):
+        products = ctx["products"]
+        status_counts = {}
+        priced = []
+        for p in products:
+            status = p.get("status") or "UNKNOWN"
+            status_counts[status] = status_counts.get(status, 0) + 1
+            for v in p.get("variants") or []:
+                try:
+                    priced.append(float(v.get("price")))
+                except (TypeError, ValueError):
+                    pass
+        status_text = ", ".join(f"{k}: {v}" for k, v in sorted(status_counts.items())) or "none"
+        answer = f"Here’s a live product snapshot for {ctx['shop']}: {counts['products']} products with {counts['inventory_units']} total inventory units. Status mix: {status_text}."
+        if priced:
+            answer += f" Variant prices currently range from ${min(priced):,.2f} to ${max(priced):,.2f}."
         if ctx["low_stock"]:
-            answer += " Low-stock products: " + ", ".join(f"{p['title']} ({p['inventory']})" for p in ctx["low_stock"][:5]) + "."
+            answer += " Attention needed: " + ", ".join(f"{p['title']} ({p['inventory']} units)" for p in ctx["low_stock"][:5]) + "."
+        else:
+            answer += " I did not find products at or below the current 5-unit low-stock threshold."
+        answer += " I can next break this down by product, SKU, price, inventory risk, or sales performance."
     elif any(k in q for k in ["order", "orders", "sales", "revenue", "money"]):
         answer = f"The current Shopify data window contains {counts['orders']} orders and ${ctx['revenue']:,.2f} in order value."
     elif any(k in q for k in ["what can you do", "help", "capabilities"]):
