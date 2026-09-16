@@ -57,7 +57,20 @@ api.interceptors.response.use(
 
     if (retryableShopifySession && window.shopify?.idToken) {
       config!._miaRetried = true;
-      return window.shopify.idToken().then((token) => {
+      return new Promise<string>((resolve, reject) => {
+        let attempt = 0;
+        const refresh = async () => {
+          try {
+            const token = await window.shopify!.idToken();
+            if (token) return resolve(token);
+          } catch (refreshError) {
+            if (attempt >= 5) return reject(refreshError);
+          }
+          attempt += 1;
+          setTimeout(refresh, Math.min(250 * attempt, 1000));
+        };
+        refresh();
+      }).then((token) => {
         if (token) {
           const original = error as { config?: { headers?: Record<string, string> } };
           original.config = original.config ?? {};
