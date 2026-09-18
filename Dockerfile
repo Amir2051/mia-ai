@@ -10,7 +10,9 @@ RUN npm run build
 FROM python:3.13-slim AS runtime
 WORKDIR /app
 
+ARG BUILD_ID=unknown
 ENV ENVIRONMENT=production \
+    BUILD_ID=$BUILD_ID \
     PYTHONPATH=/app/backend \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

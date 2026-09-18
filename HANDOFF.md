@@ -9,7 +9,7 @@
 - Shopify Admin API version: `2026-07`
 
 ## Current state
-Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/Vite, PostgreSQL, Shopify managed installation, App Bridge ID-token authentication, and server-side token exchange.
+Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/Vite, PostgreSQL, Shopify managed installation, App Bridge ID-token authentication, and server-side token exchange. The app does not implement an `/auth/callback` OAuth route; the obsolete callback URL has been removed from `shopify.app.toml`.
 
 The latest Shopify app configuration was deployed and released as version **mia-ai-9** on 2026-09-18.
 
