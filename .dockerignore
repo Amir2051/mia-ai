@@ -1,0 +1,15 @@
+backend/.env
+backend/.env.*
+backend/migration_database_url.txt
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+.git/
+.github/
+.shopify/
+*.pyc
+*.pyo
+*.db
+*.sqlite

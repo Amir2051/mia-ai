@@ -13,6 +13,8 @@ sys.path.insert(0, str(backend_dir))
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
+    import asyncio
+
     from fastapi.testclient import TestClient
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
@@ -42,10 +44,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "AsyncSessionLocal", session_local)
-    # main.py imports the engine object directly, so patch that reference too.
-    # Otherwise the TestClient lifespan can initialize the real PostgreSQL
-    # engine before the SQLite test engine is used, causing event-loop errors.
-    monkeypatch.setattr(main_mod, "engine", engine)
+
+    async def create_test_schema():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(create_test_schema())
 
     application = main_mod.create_app()
 

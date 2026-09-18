@@ -280,7 +280,6 @@ export default function Imports() {
       .filter((tag) => tag.length > 0);
 
   const handlePreview = async () => {
-    console.log('[Imports] handlePreview entry');
     if (!fileContent) {
       setError('Upload a CSV before previewing.');
       return;
@@ -296,17 +295,10 @@ export default function Imports() {
       status: importConfig.status,
       duplicate_action: importConfig.duplicate_action,
     };
-    console.log('[Imports] preview request', {
-      url: '/api/imports/preview',
-      method: 'POST',
-      body: previewBody,
-      bodyPreview: typeof fileContent === 'string' ? fileContent.slice(0, 200) : fileContent,
-    });
 
     setError(null);
     try {
       const res = await api.post('/imports/preview', previewBody);
-      console.log('[Imports] preview response', res.data);
       const importId = res.data?.data?.import?.id;
       if (importId) {
         setCurrentImport({
@@ -331,15 +323,12 @@ export default function Imports() {
       if (typeof message !== 'string') {
         message = JSON.stringify(message);
       }
-      console.error('[Imports] preview error', { typeof_error: typeof err, err, status, data, detail, message });
       setError(String(message));
     }
   };
 
   const handleRun = async () => {
-    console.log('[Imports] handleRun entry');
     if (!currentImport?.import?.id) {
-      console.warn('[Imports] handleRun aborted: missing currentImport id');
       setError('Missing import. Please preview the CSV first.');
       return;
     }
@@ -347,7 +336,6 @@ export default function Imports() {
     setRunning(true);
     setProgress({ processed: 0, created: 0, failed: 0, skipped: 0 });
     setError(null);
-    console.log('[Imports] API request', `/imports/${currentImport.import.id}/run`);
 
     try {
       const runPayload: Record<string, unknown> = {
@@ -362,7 +350,6 @@ export default function Imports() {
       }
 
       const res = await api.post(`/imports/${currentImport.import.id}/run`, runPayload);
-      console.log('[Imports] API response', res.data);
       const runData = (res.data?.data ?? null) as RunResponse | null;
       const summary = runData?.import?.summary ?? {};
       setCurrentImport(runData);
@@ -382,10 +369,8 @@ export default function Imports() {
       if (typeof message !== 'string') {
         message = JSON.stringify(message);
       }
-      console.error('[Imports] API error', { typeof_error: typeof err, err, status, data, detail, message });
       setError(String(message));
     } finally {
-      console.log('[Imports] handleRun complete');
       setRunning(false);
     }
   };
