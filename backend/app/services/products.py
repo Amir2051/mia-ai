@@ -76,53 +76,106 @@ class ProductService:
                 title
                 handle
                 descriptionHtml
+                productType
+                vendor
                 tags
                 status
-
-                variants(first: 20) {
+                variants(first: 250) {
                     edges {
+                        cursor
                         node {
                             id
                             sku
                             price
                             compareAtPrice
                             inventoryQuantity
-                            selectedOptions {
-                                name
-                                value
-                            }
+                            selectedOptions { name value }
                         }
                     }
+                    pageInfo { hasNextPage endCursor }
                 }
-
-                images(first: 20) {
+                images(first: 250) {
                     edges {
-                        node {
-                            id
-                            url
-                            altText
-                        }
+                        cursor
+                        node { id url altText }
                     }
+                    pageInfo { hasNextPage endCursor }
                 }
-
-                metafields(first: 20) {
+                metafields(first: 250) {
                     edges {
-                        node {
-                            namespace
-                            key
-                            type
-                            value
-                        }
+                        cursor
+                        node { namespace key type value }
                     }
+                    pageInfo { hasNextPage endCursor }
                 }
             }
         }
         """
 
-        return await self.api.graphql(
-            gql,
-            {"id": product_id},
-        )
+        result = await self.api.graphql(gql, {"id": product_id})
+        product = result.get("product") or {}
+        if not product:
+            return result
+
+        async def collect_connection(
+            field: str,
+            page_query: str,
+        ) -> list[dict]:
+            connection = product.get(field) or {}
+            items = list(connection.get("edges") or [])
+            after = (connection.get("pageInfo") or {}).get("endCursor")
+            has_next = bool((connection.get("pageInfo") or {}).get("hasNextPage"))
+            while has_next and after:
+                page = await self.api.graphql(page_query, {"id": product_id, "after": after})
+                page_product = page.get("product") or {}
+                page_connection = page_product.get(field) or {}
+                items.extend(page_connection.get("edges") or [])
+                page_info = page_connection.get("pageInfo") or {}
+                next_after = page_info.get("endCursor")
+                if not page_info.get("hasNextPage") or not next_after or next_after == after:
+                    break
+                after = next_after
+                has_next = True
+            return items
+
+        variants_query = """
+        query ProductVariantsPage($id: ID!, $after: String) {
+            product(id: $id) {
+                variants(first: 250, after: $after) {
+                    edges { cursor node { id sku price compareAtPrice inventoryQuantity selectedOptions { name value } } }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }
+        """
+        images_query = """
+        query ProductImagesPage($id: ID!, $after: String) {
+            product(id: $id) {
+                images(first: 250, after: $after) {
+                    edges { cursor node { id url altText } }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }
+        """
+        metafields_query = """
+        query ProductMetafieldsPage($id: ID!, $after: String) {
+            product(id: $id) {
+                metafields(first: 250, after: $after) {
+                    edges { cursor node { namespace key type value } }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }
+        """
+
+        product["variants"]["edges"] = await collect_connection("variants", variants_query)
+        product["variants"]["pageInfo"] = {"hasNextPage": False, "endCursor": None}
+        product["images"]["edges"] = await collect_connection("images", images_query)
+        product["images"]["pageInfo"] = {"hasNextPage": False, "endCursor": None}
+        product["metafields"]["edges"] = await collect_connection("metafields", metafields_query)
+        product["metafields"]["pageInfo"] = {"hasNextPage": False, "endCursor": None}
+        return result
 
     async def create_product(
         self,
@@ -153,7 +206,10 @@ class ProductService:
         product_id: str,
         input_data: dict,
     ) -> dict:
+        # Shopify productUpdate handles product-level fields only. Variant price and
+        # inventory must be updated through the variant/inventory mutations.
         product_input = dict(input_data)
+        variants = product_input.pop("variants", None) or []
         product_input["id"] = product_id
 
         gql = """
@@ -164,6 +220,10 @@ class ProductService:
                     handle
                     title
                     status
+                    productType
+                    vendor
+                    tags
+                    descriptionHtml
                 }
                 userErrors {
                     field
@@ -173,10 +233,120 @@ class ProductService:
         }
         """
 
-        return await self.api.graphql(
-            gql,
-            {"product": product_input},
-        )
+        result = await self.api.graphql(gql, {"product": product_input})
+        product_update = result.get("productUpdate") or {}
+        user_errors = product_update.get("userErrors") or []
+        if user_errors:
+            raise ShopifyAPIError(
+                "Shopify productUpdate failed",
+                status_code=200,
+                response={"data": result, "userErrors": user_errors},
+            )
+
+        if variants:
+            variant_updates = []
+            for variant in variants:
+                variant_id = variant.get("id")
+                if not variant_id:
+                    continue
+                variant_input = {"id": variant_id}
+                if "price" in variant and variant.get("price") not in (None, ""):
+                    variant_input["price"] = variant["price"]
+                if "compareAtPrice" in variant and variant.get("compareAtPrice") not in (None, ""):
+                    variant_input["compareAtPrice"] = variant["compareAtPrice"]
+                if "sku" in variant and variant.get("sku") not in (None, ""):
+                    variant_input["inventoryItem"] = {"sku": str(variant["sku"])}
+                if len(variant_input) > 1:
+                    variant_updates.append(variant_input)
+
+            if variant_updates:
+                variant_gql = """
+                mutation UpdateVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+                    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                        product { id }
+                        productVariants { id sku price compareAtPrice }
+                        userErrors { field message }
+                    }
+                }
+                """
+                variant_result = await self.api.graphql(
+                    variant_gql,
+                    {"productId": product_id, "variants": variant_updates},
+                )
+                variant_payload = variant_result.get("productVariantsBulkUpdate") or {}
+                variant_errors = variant_payload.get("userErrors") or []
+                if variant_errors:
+                    raise ShopifyAPIError(
+                        "Shopify variant update failed",
+                        status_code=200,
+                        response={"data": variant_result, "userErrors": variant_errors},
+                    )
+                result["productVariantsBulkUpdate"] = variant_payload
+
+            # inventoryQuantity is not a ProductVariantsBulkInput field. It is an
+            # inventory-level value, so resolve the variant's inventory item/location
+            # and update it with inventorySetQuantities.
+            quantity_variants = [v for v in variants if v.get("id") and "inventoryQuantity" in v and v.get("inventoryQuantity") not in (None, "")]
+            if quantity_variants:
+                inventory_gql = """
+                query VariantInventory($id: ID!) {
+                    productVariant(id: $id) {
+                        id
+                        inventoryItem {
+                            id
+                            inventoryLevels(first: 250) {
+                                nodes { location { id } }
+                            }
+                        }
+                    }
+                }
+                """
+                inventory_quantities = []
+                for variant in quantity_variants:
+                    variant_result = await self.api.graphql(inventory_gql, {"id": variant["id"]})
+                    node = (variant_result.get("productVariant") or {})
+                    inventory_item = node.get("inventoryItem") or {}
+                    inventory_item_id = inventory_item.get("id")
+                    levels = ((inventory_item.get("inventoryLevels") or {}).get("nodes") or [])
+                    if inventory_item_id:
+                        for level in levels:
+                            location_id = ((level.get("location") or {}).get("id"))
+                            if location_id:
+                                inventory_quantities.append({
+                                    "inventoryItemId": inventory_item_id,
+                                    "locationId": location_id,
+                                    "quantity": int(variant["inventoryQuantity"]),
+                                })
+                if inventory_quantities:
+                        set_inventory_gql = """
+                        mutation SetInventory($input: InventorySetQuantitiesInput!) {
+                            inventorySetQuantities(input: $input) {
+                                inventoryAdjustmentGroup { reason
+                                    changes { name delta }
+                                }
+                                userErrors { field message }
+                            }
+                        }
+                        """
+                        inv_result = await self.api.graphql(set_inventory_gql, {
+                            "input": {
+                                "name": "available",
+                                "reason": "correction",
+                                "ignoreCompareQuantity": True,
+                                "quantities": inventory_quantities,
+                            }
+                        })
+                        inv_payload = inv_result.get("inventorySetQuantities") or {}
+                        inv_errors = inv_payload.get("userErrors") or []
+                        if inv_errors:
+                            raise ShopifyAPIError(
+                                "Shopify inventory update failed",
+                                status_code=200,
+                                response={"data": inv_result, "userErrors": inv_errors},
+                            )
+                        result["inventorySetQuantities"] = inv_payload
+
+        return result
 
     async def archive_product(
         self,
@@ -676,7 +846,6 @@ class ImportService:
 
         parsed = self.parse_csv(content)
         validation = self.validate_import_rows(parsed["rows"], mapping)
-        print(f"IMPORT_TRACE shop_id={shop_id} parsed_rows={parsed['count']} valid={len(validation.get('valid', []))} errors={len(validation.get('errors', []))}")
 
         record = ProductImport(
             shop_id=shop_id,
@@ -700,7 +869,6 @@ class ImportService:
         await self.db.flush()
         await self.db.refresh(record)
         await self.db.commit()
-        print(f"IMPORT_TRACE shop_id={shop_id} created_import_id={record.id}")
 
         created = 0
         failed = 0
@@ -742,13 +910,10 @@ class ImportService:
                         k: mapped[k] for k in ["title", "vendor", "productType", "status", "tags"]
                         if k in mapped
                     }
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} calling_create_product title={safe_mapped_keys.get('title')!r}")
                     result = await self.api_client.create_product(mapped)
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} create_product_result_type={type(result).__name__} keys={list((result or {}).keys())}")
                     product_create = result.get("productCreate") or {}
                     product = product_create.get("product") or {}
                     shopify_product_id = product.get("id")
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} extracted_product_id={shopify_product_id}")
                     if shopify_product_id:
                         shopify_product_ids.append(shopify_product_id)
                         created += 1
@@ -773,7 +938,6 @@ class ImportService:
                         )
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} create_product_exception={type(exc).__name__}: {exc}")
                     details.append(
                         {
                             "row": item["row"],
@@ -801,7 +965,6 @@ class ImportService:
             status = "completed"
             sync_status = "completed"
 
-        print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} before_update status={status} sync_status={sync_status} shopify_product_ids={shopify_product_ids}")
         record.status = status
         record.sync_status = sync_status
         record.error = None
@@ -812,7 +975,6 @@ class ImportService:
         await self.db.flush()
         await self.db.refresh(record)
         await self.db.commit()
-        print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} after_commit status={record.status} sync_status={record.sync_status} shopify_product_id={record.shopify_product_id}")
 
         return {
             "import": {
