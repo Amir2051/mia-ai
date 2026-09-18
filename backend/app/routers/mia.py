@@ -94,12 +94,38 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         products = []
         warnings.append("Products could not be loaded")
     try:
-        orders = _nodes(await OrderService(_client(shop)).list_orders(first=50), "orders")
+        order_service = OrderService(_client(shop))
+        orders: list[Dict[str, Any]] = []
+        after = None
+        for _ in range(100):
+            page_data = await order_service.list_orders(first=250, after=after)
+            connection = page_data.get("orders") or {}
+            orders.extend(_nodes(page_data, "orders"))
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor == after:
+                break
+            after = next_cursor
     except ShopifyAPIError:
         orders = []
         warnings.append("Orders could not be loaded")
     try:
-        customers = _nodes(await CustomerService(_client(shop)).list_customers(first=50), "customers")
+        customer_service = CustomerService(_client(shop))
+        customers: list[Dict[str, Any]] = []
+        after = None
+        for _ in range(100):
+            page_data = await customer_service.list_customers(first=250, after=after)
+            connection = page_data.get("customers") or {}
+            customers.extend(_nodes(page_data, "customers"))
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor == after:
+                break
+            after = next_cursor
     except ShopifyAPIError:
         customers = []
         warnings.append("Customer data is unavailable until Shopify grants the required protected-data access")

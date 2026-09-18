@@ -9,7 +9,7 @@ type SEOResult = {
   social_description: string; seo_score: number; issues: string[]; recommendations: string[];
 };
 type MarketingResult = {
-  product_id: string; product_title: string; image_url?: string | null;
+  product_id: string; product_title: string; image_url?: string | null; enhanced_image_url?: string | null;
   facebook: { copy: string; cta: string };
   instagram: { copy: string; cta: string };
   tiktok: { copy: string; cta: string };
@@ -78,7 +78,20 @@ export default function Marketing() {
     try {
       const res = await api.post('/seo/creative', { product_id: productId });
       setCreative(res.data.image);
-    } catch (err: any) { setError(err?.response?.data?.detail || err?.message || 'AI creative generation failed'); }
+    } catch (err: any) { setError(err?.response?.data?.detail || err?.message || 'Product image enhancement failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function generateFullCampaign() {
+    if (!productId) return;
+    setBusy(true); setError(null); setAnalysis(null);
+    try {
+      const res = await api.post('/seo/full-campaign', { product_id: productId });
+      setCurrent(res.data.product);
+      setResult(res.data.seo);
+      setMarketing(res.data.marketing);
+      setCreative(res.data.creative?.image || null);
+    } catch (err: any) { setError(err?.response?.data?.detail || err?.message || 'Full SEO + Marketing campaign failed'); }
     finally { setBusy(false); }
   }
 
@@ -97,7 +110,10 @@ export default function Marketing() {
     setBusy(true); setError(null);
     try {
       const res = await api.post('/seo/apply', { product_id: productId, changes, confirmed: true, apply_handle: applyEverything });
-      setCurrent(res.data.product); setResult(null); setAnalysis(null);
+      setCurrent(res.data.product); setResult(null);
+      const verify = await api.post('/seo/analyze', { product_id: productId });
+      setCurrent(verify.data.product);
+      setAnalysis(verify.data);
     } catch (err: any) { setError(err?.response?.data?.detail || err?.message || 'SEO update failed'); }
     finally { setBusy(false); }
   }
@@ -122,8 +138,8 @@ export default function Marketing() {
           <button onClick={analyze} disabled={busy || !productId} style={buttonStyle(false)}>{busy ? 'Working…' : 'Analyze SEO'}</button>
           <button onClick={generate} disabled={busy || !productId} style={buttonStyle(true)}>✦ Generate Real SEO</button>
           <button onClick={generateMarketing} disabled={busy || !productId} style={buttonStyle(true)}>🚀 Generate Marketing</button>
-          <button onClick={generateCreative} disabled={busy || !productId} style={buttonStyle(true)}>🎨 Generate AI Creative</button>
-          <button onClick={async () => { await generate(); await generateMarketing(); }} disabled={busy || !productId} style={buttonStyle(true)}>⚡ Full SEO + Marketing Campaign</button>
+          <button onClick={generateCreative} disabled={busy || !productId} style={buttonStyle(true)}>✨ Enhance Product Image</button>
+          <button onClick={generateFullCampaign} disabled={busy || !productId} style={buttonStyle(true)}>⚡ Full SEO + Marketing Campaign + Enhanced Image</button>
         </div>
         {selected && <div style={{ marginTop: 12, fontSize: 12, color: '#64748b' }}>Shopify product ID: {selected.id} · Status: {selected.status || '—'}</div>}
       </div>
@@ -145,7 +161,7 @@ export default function Marketing() {
         <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}><button onClick={() => applyChanges(false)} disabled={busy} style={buttonStyle(true)}>✓ Apply SEO to Shopify</button><button onClick={() => applyChanges(true)} disabled={busy} style={buttonStyle(false)}>Apply SEO + Handle</button><button onClick={generate} disabled={busy} style={buttonStyle(false)}>Regenerate</button></div>
       </>}
 
-      {creative && <div style={{ ...cardStyle(), marginTop: 18, background: 'linear-gradient(135deg,#f5f3ff,#ecfeff)' }}><h2 style={headingStyle()}>🎨 AI-Generated Product Creative</h2><p style={{ color: '#475569' }}>Generated from the selected Shopify product and its live product image when available.</p><img src={creative} alt={current?.title || selected?.title || 'AI generated product creative'} style={{ width: '100%', maxWidth: 720, borderRadius: 16, display: 'block' }} /><a href={creative} download="mia-product-creative.png" style={{ ...buttonStyle(false), display: 'inline-block', marginTop: 12, textDecoration: 'none' }}>Open / Save Creative</a></div>}
+      {creative && <div style={{ ...cardStyle(), marginTop: 18 }}><h2 style={headingStyle()}>✨ Enhanced Shopify Product Image</h2><img src={creative} alt={current?.title || selected?.title || 'Enhanced Shopify product image'} style={{ width: '100%', maxWidth: 720, borderRadius: 16, display: 'block' }} /><a href={creative} download="mia-product-creative.png" style={{ ...buttonStyle(false), display: 'inline-block', marginTop: 12, textDecoration: 'none' }}>Open / Save Enhanced Image</a></div>}
       {marketing && <MarketingPanel result={marketing} />}
     </div>
   );
@@ -156,8 +172,8 @@ function MarketingPanel({ result }: { result: MarketingResult }) {
     <div style={{ ...cardStyle(), background: 'linear-gradient(135deg,#111827,#172554)', color: 'white', marginBottom: 14 }}>
       <div className="eyebrow" style={{ color: '#67e8f9' }}>MIA CREATIVE ENGINE · READY TO POST</div>
       <h2 style={{ fontSize: 22, margin: '6px 0' }}>{result.product_title}</h2>
-      <p style={{ opacity: .82 }}>Real channel copy generated from this product. Use the Shopify image below as the source creative, or use Mia's creative prompt with an image generator.</p>
-      {result.image_url && <img src={result.image_url} alt={result.product_title} style={{ width: 240, height: 240, objectFit: 'cover', borderRadius: 14, marginTop: 10 }} />}
+      <p style={{ opacity: .82 }}>Real channel copy generated from this product, ready for review and posting.</p>
+      {(result.enhanced_image_url || result.image_url) && <img src={result.enhanced_image_url || result.image_url || undefined} alt={result.product_title} style={{ width: 240, height: 240, objectFit: 'cover', borderRadius: 14, marginTop: 10 }} />}
       <div style={{ marginTop: 12 }}>{result.hashtags.map(h => <span key={h} style={{ display: 'inline-block', margin: 3, padding: '4px 8px', borderRadius: 999, background: 'rgba(255,255,255,.12)' }}>{h}</span>)}</div>
     </div>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 14 }}>
@@ -166,7 +182,7 @@ function MarketingPanel({ result }: { result: MarketingResult }) {
       <CopyCard title="TikTok · Ready to Post" text={result.tiktok.copy} cta={result.tiktok.cta} />
       <CopyCard title="Paid Ad · Ready to Launch" text={`${result.ad.primary_text}\n\nHeadline: ${result.ad.headline}\nDescription: ${result.ad.description}\nCTA: ${result.ad.cta}`} />
       <CopyCard title="Email Campaign" text={`Subject: ${result.email.subject}\n\n${result.email.body}`} />
-      <CopyCard title="Creative Brief / Image Prompt" text={result.creative_prompt} />
+      <CopyCard title="Creative Direction" text="Product-focused creative guidance for campaigns and promotional content." />
     </div>
   </div>;
 }

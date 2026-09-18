@@ -164,3 +164,38 @@ def test_map_import_to_product_removes_none_values():
     assert "productType" not in result
     assert result["tags"] == []
     assert result["status"] == "DRAFT"
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_get_product_paginates_variants_images_and_metafields():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        async def graphql(self, query, variables=None):
+            self.calls.append((query, variables))
+            after = (variables or {}).get("after")
+            if after is None:
+                return {"product": {
+                    "id": "gid://shopify/Product/1",
+                    "title": "Large Catalog Product",
+                    "variants": {"edges": [{"cursor": "v1", "node": {"id": "v1"}}], "pageInfo": {"hasNextPage": True, "endCursor": "v1"}},
+                    "images": {"edges": [{"cursor": "i1", "node": {"id": "i1"}}], "pageInfo": {"hasNextPage": True, "endCursor": "i1"}},
+                    "metafields": {"edges": [{"cursor": "m1", "node": {"key": "a"}}], "pageInfo": {"hasNextPage": True, "endCursor": "m1"}},
+                }}
+            if "ProductVariantsPage" in query:
+                return {"product": {"variants": {"edges": [{"cursor": "v2", "node": {"id": "v2"}}], "pageInfo": {"hasNextPage": False, "endCursor": "v2"}}}}
+            if "ProductImagesPage" in query:
+                return {"product": {"images": {"edges": [{"cursor": "i2", "node": {"id": "i2"}}], "pageInfo": {"hasNextPage": False, "endCursor": "i2"}}}}
+            if "ProductMetafieldsPage" in query:
+                return {"product": {"metafields": {"edges": [{"cursor": "m2", "node": {"key": "b"}}], "pageInfo": {"hasNextPage": False, "endCursor": "m2"}}}}
+            raise AssertionError("unexpected query")
+
+    client = FakeClient()
+    product = await ProductService(client).get_product("gid://shopify/Product/1")
+    data = product["product"]
+    assert [e["node"]["id"] for e in data["variants"]["edges"]] == ["v1", "v2"]
+    assert [e["node"]["id"] for e in data["images"]["edges"]] == ["i1", "i2"]
+    assert [e["node"]["key"] for e in data["metafields"]["edges"]] == ["a", "b"]

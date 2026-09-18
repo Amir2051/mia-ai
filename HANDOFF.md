@@ -1,51 +1,88 @@
-# Mia AI — Handoff Guide
+# Mia AI — Production Handoff
 
-This guide is intended for another Hermes agent or developer taking over the Mia AI project from this environment.
+## Project
+- Repository: `Amir2051/mia-ai`
+- Local path: `/home/ronzoro/Downloads/mia-ai/mia-ai`
+- Production URL: `https://drivenest.info`
+- Shopify app: Mia AI
+- Shopify client ID: `9c422dedf9e850a1f8fb3078ca747fa7`
+- Shopify Admin API version: `2026-07`
 
-## Project Location
+## Current state
+Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/Vite, PostgreSQL, Shopify managed installation, App Bridge ID-token authentication, and server-side token exchange.
 
+The latest Shopify app configuration was deployed and released as version **mia-ai-9** on 2026-09-18.
+
+The production web container is served through Cloudflare at `https://drivenest.info`.
+
+## Verified
+- Backend: 80 tests passed.
+- Frontend TypeScript build: passed.
+- Frontend ESLint: passed.
+- npm production audit: 0 vulnerabilities.
+- npm full audit: 0 vulnerabilities.
+- Production `/health`: HTTP 200.
+- Production HTTPS/HSTS/security headers: verified.
+- PostgreSQL Alembic head: `0004_postgres_rls`.
+- Shopify app version deployment: successful.
+- App Bridge script is loaded from Shopify's official CDN.
+- Mandatory compliance topics are configured.
+- Unauthenticated API probes do not expose merchant data.
+- Settings mutation requires an authenticated Shopify session.
+
+## Production configuration
+Required server secrets remain environment-only:
+- `SHOPIFY_API_SECRET`
+- `SECRET_KEY`
+- `TOKEN_ENCRYPTION_KEY`
+- `DATABASE_URL`
+- `OPENROUTER_API_KEY`
+
+Production must use PostgreSQL, HTTPS, secure/HttpOnly/SameSite=None cookies, and only the production origin in CORS.
+
+## Shopify scopes
+Current declared scopes:
+`read_customers,read_inventory,read_orders,read_products,write_products`
+
+The app uses Shopify managed installation and embedded ID-token authentication.
+
+## Customer-data limitation
+The app requests `read_customers`, but Shopify protected customer data is separately controlled. Production stores may return ACCESS_DENIED for protected fields until the app receives the required protected customer-data approval. Mia handles this state gracefully instead of exposing an error page.
+
+To enable production customer names/email/phone data, complete the Protected Customer Data request in the Shopify Partner Dashboard and request only the fields the app legitimately needs.
+
+## Remaining manual acceptance
+A real merchant/dev-store session is still required for final end-to-end acceptance of:
+1. Install/reinstall from Shopify Admin.
+2. Embedded launch and App Bridge ID-token exchange.
+3. Product read/update/create.
+4. CSV import preview and run.
+5. Orders and analytics.
+6. Customer data after protected-data approval.
+7. Webhook delivery and uninstall.
+8. OpenRouter SEO/marketing generation with the production key.
+
+These are runtime acceptance steps, not unresolved code placeholders.
+
+## Deployment
+Build and restart the production container with Docker Compose after source changes:
+
+```bash
+docker compose up -d --build
 ```
-/opt/data/mia-ai/
-```
 
-## What Is Ready
+The container entrypoint runs Alembic migrations before Uvicorn. The image now includes a Docker healthcheck against `/health`.
 
-- Complete backend architecture: FastAPI app shell, Shopify abstraction, auth interfaces, database models, services, health endpoints, and pytest tests.
-- Complete frontend architecture: React app shell with Polaris layout, route pages for all required modules, API service layer, and query hooks.
-- Local database schema and migration-ready models.
-- Test suite for margin calculations, product mapping, auth config, and Shopify client behavior.
-- Documentation including README, security review, and this handoff guide.
+## CI
+GitHub Actions runs:
+- Alembic migrations
+- Backend pytest
+- Frontend build
+- npm security audits
+- Production Docker image build
 
-## What Is Still Pending
-
-- Real Shopify Partner credentials for Mia AI (`418029862913`)
-- Shopify CLI linking to the existing Partner app
-- OAuth flow completion and session persistence
-- Shopify API client activation with access token
-- Product/order/customer live routes
-- Webhook endpoints and HMAC verification
-- Import supplier integrations
-- Embedded app installation on a dev store
-
-## Portability Notes
-
-- No machine-specific paths are required. Copy the entire `mia-ai/` directory.
-- Use Node.js 18+ and Python 3.11+.
-- Backend runs on `http://localhost:8000`.
-- Frontend dev server runs on `http://localhost:5173` and proxies `/api` to the backend.
-
-## Next Steps
-
-1. Supply Shopify Partner credentials via environment variables.
-2. Link local app to existing Mia AI app via Shopify CLI.
-3. Connect a Shopify development store.
-4. Complete OAuth and test embedded Admin flow.
-5. Implement live data routes.
-6. Validate install/auth/products/orders/customers/webhooks/session persistence.
-7. Stop before production deployment until approval.
-
-## Safety Reminders
-
-- Do not modify SafeNestT infrastructure.
-- Do not install on the production Shopify store without approval.
-- Do not commit `.env` files or real secrets.
+## Security reminders
+- Never commit `.env`, Shopify secrets, OpenRouter keys, database credentials, or migration credentials.
+- Do not expose access tokens in logs or API responses.
+- Keep production and development Shopify configurations separate.
+- Re-run the production smoke tests after every deployment.

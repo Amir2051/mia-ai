@@ -146,9 +146,28 @@ async def list_products(
     )
 
     try:
-        data = await ProductService(
-            client
-        ).list_products(query=q)
+        service = ProductService(client)
+        # The UI must operate on the merchant's live Shopify catalog, not the
+        # subset created by CSV imports. Walk every Shopify product page.
+        products = []
+        after = None
+        for _ in range(100):
+            page = await service.list_products(query=q, first=250, after=after)
+            connection = page.get("products") or {}
+            products.extend(edge for edge in (connection.get("edges") or []) if edge.get("node"))
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor == after:
+                break
+            after = next_cursor
+        data = {
+            "products": {
+                "edges": products,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
 
     except NotImplementedError as exc:
         raise HTTPException(

@@ -9,7 +9,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
-from app.models.schemas import AuditLog, Shop, ShopSession, WebhookEvent
+from app.models.schemas import AppSetting, AuditLog, ProductImport, Shop, ShopSession, SyncJob, WebhookEvent
+from app.security.rls import set_shop_context
 from app.shopify.config import settings
 
 router = APIRouter()
@@ -91,13 +92,18 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         entity_type = "customer"
         entity_id = customer_id or None
     elif topic == "shop/redact":
-        # Shopify sends this after uninstall. Erase all Mia-owned shop data.
-        await db.execute(delete(WebhookEvent).where(WebhookEvent.shop_id == shop.id))
-        await db.execute(delete(AuditLog).where(AuditLog.shop_id == shop.id))
+        # Shopify sends this after uninstall. Erase every Mia-owned record.
+        shop_id = shop.id
+        await db.execute(delete(ShopSession).where(ShopSession.shop_id == shop_id))
+        await db.execute(delete(WebhookEvent).where(WebhookEvent.shop_id == shop_id))
+        await db.execute(delete(AuditLog).where(AuditLog.shop_id == shop_id))
+        await db.execute(delete(SyncJob).where(SyncJob.shop_id == shop_id))
+        await db.execute(delete(ProductImport).where(ProductImport.shop_id == shop_id))
+        await db.execute(delete(AppSetting).where(AppSetting.shop_id == shop_id))
         await db.delete(shop)
         action = "privacy.shop_redact"
         entity_type = "shop"
-        entity_id = str(shop.id)
+        entity_id = str(shop_id)
     else:
         object_key = "product" if topic.startswith("products/") else "order"
         raw_id = payload.get("id") or payload.get(f"{object_key}_id")
@@ -106,12 +112,13 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         entity_id = str(raw_id) if raw_id is not None else None
 
     if topic != "shop/redact":
+        # Audit only metadata; never persist Shopify/customer payloads.
         db.add(AuditLog(
             shop_id=shop.id,
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,
-            details_json=json.dumps(payload, separators=(",", ":")) if topic not in {"customers/data_request", "customers/redact"} else "{}",
+            details_json="{}",
         ))
 
 
@@ -133,7 +140,12 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
 
     shop_obj = await _get_shop_by_domain(db, shop_domain)
-    shop_id = shop_obj.id if shop_obj else None
+    if shop_obj is None:
+        # A valid Shopify compliance webhook can arrive after uninstall/redaction.
+        # Acknowledge it without touching tenant data so Shopify does not retry forever.
+        return {"status": "received", "shop_known": False}
+    await set_shop_context(db, shop_domain, shop_obj.id)
+    shop_id = shop_obj.id
 
     if event_id:
         existing = await db.execute(select(WebhookEvent).where(WebhookEvent.shop_id == shop_id, WebhookEvent.event_id == event_id).limit(1))
@@ -147,8 +159,8 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook JSON") from exc
 
-    safe_payload_text = "{}" if topic in {"customers/data_request", "customers/redact", "shop/redact"} else payload_text
-    event = WebhookEvent(shop_id=shop_id, topic=topic, event_id=event_id, payload_json=safe_payload_text, processed=False)
+    # Never persist raw Shopify webhook bodies; product/order payloads can contain PII.
+    event = WebhookEvent(shop_id=shop_id, topic=topic, event_id=event_id, payload_json="{}", processed=False)
     db.add(event)
     await db.flush()
 

@@ -77,9 +77,31 @@ async def list_orders(
     )
 
     try:
-        data = await OrderService(
-            client
-        ).list_orders(query=q)
+        service = OrderService(client)
+        orders = []
+        after = None
+        # Shopify caps each connection page at 250. Walk the full live order
+        # history so the Orders screen is not limited to the newest 250.
+        for _ in range(100):
+            page = await service.list_orders(query=q, first=250, after=after)
+            connection = page.get("orders") or {}
+            orders.extend(
+                edge for edge in (connection.get("edges") or [])
+                if edge.get("node")
+            )
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor == after:
+                break
+            after = next_cursor
+        data = {
+            "orders": {
+                "edges": orders,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
 
     except NotImplementedError as exc:
         raise HTTPException(

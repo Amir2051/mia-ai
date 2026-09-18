@@ -1,4 +1,5 @@
 from datetime import timedelta
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
 from app.models.schemas import Shop
+from app.security.rls import set_shop_context
 from app.security.tokens import encrypt_token
 from app.shopify.auth import AuthenticationError, AuthorizationError, ShopifyOAuthFlow, _validate_shop_domain, now_utc
 from app.shopify.config import settings
@@ -78,8 +80,11 @@ async def session(request: Request, response: Response, force: bool = Query(Fals
     if not shop_domain:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Shopify shop could not be determined", headers={"X-Shopify-Retry-Invalid-Session-Request": "1"})
 
+    await set_shop_context(db, shop_domain)
     result = await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))
     shop = result.scalar_one_or_none()
+    if shop is not None:
+        await set_shop_context(db, shop_domain, shop.id)
     if shop is not None and not force and not _needs_token_exchange(shop):
         return SessionResponse(shop_domain=shop.shop_domain, scopes=shop.scope, connected=True)
 

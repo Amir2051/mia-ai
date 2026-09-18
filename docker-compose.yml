@@ -5,6 +5,8 @@ services:
       - "8000:8000"
     env_file:
       - backend/.env
+    secrets:
+      - migration_database_url
     volumes:
       - mia-data:/app/data
     restart: unless-stopped
@@ -13,8 +15,13 @@ services:
       supabase_network_safenestt-platform:
         aliases:
           - db
+
 volumes:
   mia-data:
+
+secrets:
+  migration_database_url:
+    file: ./backend/migration_database_url.txt
 
 networks:
   supabase_network_safenestt-platform:

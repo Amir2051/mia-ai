@@ -25,24 +25,8 @@ direct_api_mode = "online"
 embedded_app_direct_api_access = true
 
 [access_scopes]
-# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+# Learn more about configuring app access scopes in the Shopify CLI docs.
 scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
 
-[[webhooks.subscriptions]]
-topics = ["app/uninstalled"]
-uri = "/api/webhooks"
-
-[[webhooks.subscriptions]]
-compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-uri = "/api/webhooks"
-
-[[webhooks.subscriptions]]
-topics = ["products/create", "products/update", "products/delete"]
-uri = "/api/webhooks"
-
-[[webhooks.subscriptions]]
-topics = ["orders/create", "orders/updated"]
-uri = "/api/webhooks"
-
-[build]
-automatically_update_urls_on_dev = false
+[auth]
+redirect_urls = [ "https://drivenest.info/auth/callback" ]

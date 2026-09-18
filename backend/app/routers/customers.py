@@ -108,9 +108,39 @@ async def list_customers(
     )
 
     try:
-        data = await CustomerService(
-            client
-        ).list_customers(query=q)
+        service = CustomerService(client)
+        customers = []
+        graphql_errors = []
+        after = None
+        # Shopify caps each connection page at 250. Walk the full live customer
+        # list so the Customers screen is not limited to the newest 250.
+        for _ in range(100):
+            page = await service.list_customers(query=q, first=250, after=after)
+            if page.get("_graphql_errors"):
+                graphql_errors.extend(page.get("_graphql_errors") or [])
+            connection = page.get("customers") or {}
+            customers.extend(
+                edge for edge in (connection.get("edges") or [])
+                if edge.get("node")
+            )
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            next_cursor = page_info.get("endCursor")
+            if not next_cursor or next_cursor == after:
+                break
+            after = next_cursor
+        data = {
+            "customers": {
+                "edges": customers,
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
+        # Shopify can return HTTP 200 with partial Customer data plus field-level
+        # protected-data errors. Preserve the usable rows and tell the UI exactly
+        # which protected access is still missing.
+        if graphql_errors:
+            data["_graphql_errors"] = graphql_errors
 
     except NotImplementedError as exc:
         raise HTTPException(
@@ -137,9 +167,17 @@ async def list_customers(
             detail=str(exc),
         ) from exc
 
+    response_message = None
+    available = True
+    if graphql_errors:
+        available = False
+        messages = [str(e.get("message")) for e in graphql_errors if isinstance(e, dict) and e.get("message")]
+        response_message = messages[0] if messages else "Shopify returned protected customer-data restrictions."
     return CustomerListResponse(
         data=data,
         connected=True,
+        available=available,
+        message=response_message,
     )
 
 

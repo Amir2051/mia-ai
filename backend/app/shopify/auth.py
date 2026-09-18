@@ -10,7 +10,8 @@ import hmac
 import secrets
 
 import httpx
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError as JWTError
 
 from app.shopify.config import settings
 

@@ -7,7 +7,7 @@ class OrderService:
     def __init__(self, api_client: ShopifyAPIClient):
         self.api = api_client
 
-    async def list_orders(self, query: str = '', first: int = 20, after: Optional[str] = None) -> dict:
+    async def list_orders(self, query: str = '', first: int = 250, after: Optional[str] = None) -> dict:
         # Keep the analytics order query independent from protected customer
         # profile fields. Customer details are fetched through the customer
         # service only when the UI actually needs them.
@@ -16,7 +16,7 @@ class OrderService:
             '  orders(first: $first, after: $after, reverse: true, query: $query) {'
             '    edges { cursor node { id name createdAt displayFinancialStatus displayFulfillmentStatus'
             '      totalPriceSet { shopMoney { amount currencyCode } }'
-            '      lineItems(first: 10) { edges { node { title quantity sku } } }'
+            '      lineItems(first: 250) { edges { node { title quantity sku originalUnitPriceSet { shopMoney { amount currencyCode } } } } }'
             '    } }'
             '    pageInfo { hasNextPage endCursor }'
             '  }'
@@ -33,7 +33,7 @@ class OrderService:
             '  order(id: $id) {'
             '    id name email'
             '    shippingAddress { name address1 address2 city province country zip phone }'
-            '    lineItems(first: 50) { edges { node { title quantity variant { sku } originalUnitPriceSet { shopMoney { amount currencyCode } } } } }'
+            '    lineItems(first: 250) { edges { node { title quantity variant { sku } originalUnitPriceSet { shopMoney { amount currencyCode } } } } }'
             '    transactions { id kind status amountSet { shopMoney { amount currencyCode } } }'
             '  }'
             '}'

@@ -98,7 +98,7 @@ class ProductImport(Base):
     status: Mapped[str] = mapped_column(String(50), default='pending')
     sync_status: Mapped[str] = mapped_column(String(50), default='pending')
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    shopify_product_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    shopify_product_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

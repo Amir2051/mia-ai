@@ -3,11 +3,13 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError as JWTError
 from sqlalchemy import select
 
 from app.models.database import get_db
 from app.models.schemas import Shop
+from app.security.rls import set_shop_context
 from app.shopify.auth import AuthenticationError, decode_access_token
 from app.shopify.config import settings
 
@@ -249,6 +251,8 @@ async def _optional_cookie_session(
     if not shop_domain:
         return None
 
+    await set_shop_context(db, shop_domain)
+
     result = await db.execute(
         select(Shop).where(
             Shop.shop_domain == shop_domain
@@ -259,6 +263,8 @@ async def _optional_cookie_session(
 
     if not shop or not shop.is_active:
         return None
+
+    await set_shop_context(db, shop_domain, shop.id)
 
     return CurrentUser(
         shop_domain=shop_domain,
@@ -293,6 +299,7 @@ async def get_current_shop(
             )
 
             shop_domain = payload["shop_domain"]
+            await set_shop_context(db, shop_domain)
             user_id = str(
                 payload.get("sub")
             )
@@ -313,6 +320,8 @@ async def get_current_shop(
                         "X-Shopify-Retry-Invalid-Session-Request": "1",
                     },
                 )
+
+            await set_shop_context(db, shop_domain, shop.id)
 
             if not shop.is_active:
                 raise HTTPException(

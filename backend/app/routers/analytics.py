@@ -51,7 +51,40 @@ def _raise_shopify_error(exc: ShopifyAPIError, shop: Shop) -> None:
     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify data is temporarily unavailable. Please try again.") from exc
 
 async def _load_orders(shop: Shop) -> dict:
-    return await OrderService(await _shop_client(shop)).list_orders()
+    service = OrderService(await _shop_client(shop))
+    edges = []
+    after = None
+    page_info = {"hasNextPage": False, "endCursor": None}
+    for _ in range(100):
+        page = await service.list_orders(first=250, after=after)
+        connection = page.get("orders") or {}
+        edges.extend(connection.get("edges") or [])
+        page_info = connection.get("pageInfo") or page_info
+        if not page_info.get("hasNextPage"):
+            break
+        next_cursor = page_info.get("endCursor")
+        if not next_cursor or next_cursor == after:
+            break
+        after = next_cursor
+    return {"orders": {"edges": edges, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+
+
+async def _load_customers(shop: Shop) -> dict:
+    service = CustomerService(await _shop_client(shop))
+    edges = []
+    after = None
+    for _ in range(100):
+        page = await service.list_customers(first=250, after=after)
+        connection = page.get("customers") or {}
+        edges.extend(connection.get("edges") or [])
+        page_info = connection.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        next_cursor = page_info.get("endCursor")
+        if not next_cursor or next_cursor == after:
+            break
+        after = next_cursor
+    return {"customers": {"edges": edges, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
 
 @router.get("/", response_model=AnalyticsResponse)
 async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
@@ -71,7 +104,7 @@ async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop),
     # Analytics does not require customer rows, so treat that failure as an empty response.
     customer_data: Dict[str, Any] = {}
     try:
-        customer_data = await CustomerService(await _shop_client(shop)).list_customers()
+        customer_data = await _load_customers(shop)
     except ShopifyAPIError:
         customer_data = {}
 

@@ -129,7 +129,7 @@ def compute_top_products(
                 .get("amount")
             )
             if price is not None:
-                product_stats[key]["revenue"] += Decimal(str(price))
+                product_stats[key]["revenue"] += Decimal(str(price)) * Decimal(str(item.get("quantity") or 0))
 
     ranked = sorted(
         product_stats.values(),

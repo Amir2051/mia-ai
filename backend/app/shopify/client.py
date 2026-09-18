@@ -49,7 +49,7 @@ class ShopifyAPIClient:
         ]
         return messages[:5], codes[:5]
 
-    async def graphql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def graphql(self, query: str, variables: Optional[Dict[str, Any]] = None, *, allow_graphql_errors: bool = False) -> Dict[str, Any]:
         token = self._require_token()
         payload: Dict[str, Any] = {"query": query}
         if variables is not None:
@@ -91,9 +91,13 @@ class ShopifyAPIClient:
                 messages,
                 codes,
             )
-            raise ShopifyAPIError("Shopify GraphQL error", status_code=200, response=response_data)
+            if not allow_graphql_errors:
+                raise ShopifyAPIError("Shopify GraphQL error", status_code=200, response=response_data)
 
-        return response_data.get("data", {})
+        data = response_data.get("data", {}) or {}
+        if allow_graphql_errors and (messages or codes):
+            data["_graphql_errors"] = response_data.get("errors") or []
+        return data
 
     async def rest(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         token = self._require_token()
@@ -218,7 +222,7 @@ class ShopifyAPIClient:
         """
         return await self.graphql(gql, {"id": product_id})
 
-    async def list_products(self, query: str = "", first: int = 20, after: Optional[str] = None) -> Dict[str, Any]:
+    async def list_products(self, query: str = "", first: int = 250, after: Optional[str] = None) -> Dict[str, Any]:
         gql = """
         query ListProducts($query: String, $first: Int!, $after: String) {
             products(first: $first, query: $query, after: $after) {

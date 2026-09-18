@@ -52,7 +52,7 @@ def test_compute_top_products_ranks_by_units_and_revenue():
     assert top_products[0]["title"] == "Dress"
     assert top_products[0]["sku"] == "SKU-1"
     assert top_products[0]["units_sold"] == 3
-    assert top_products[0]["revenue"] == 40.0
+    assert top_products[0]["revenue"] == 60.0
 
 
 def test_compute_recent_sales_orders_by_date():

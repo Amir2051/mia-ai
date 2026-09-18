@@ -122,17 +122,35 @@ export default function ProductDetail() {
   const analyzeWithMia = async () => {
     if (!product?.id) return;
     setActionLoading('analyze'); setSaveError(null);
-    try { const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/analyze`); setAnalysis(res.data?.analysis || null); }
-    catch (err) { setSaveError((err as Error)?.message || 'Mia could not analyze this product'); }
-    finally { setActionLoading(null); }
+    try {
+      const res = await api.post('/seo/analyze', { product_id: product.id });
+      setAnalysis(res.data || null);
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || err?.message || 'Mia could not analyze this product');
+    } finally { setActionLoading(null); }
   };
 
   const enhanceWithMia = async () => {
     if (!product?.id) return;
-    setActionLoading('enhance'); setSaveError(null);
-    try { const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/enhance`); setEnhancement(res.data || null); setMarketing(res.data?.marketing || null); }
-    catch (err) { setSaveError((err as Error)?.message || 'Mia could not enhance this product'); }
-    finally { setActionLoading(null); }
+    setActionLoading('enhance'); setSaveError(null); setEnhancement(null);
+    try {
+      const res = await api.post('/seo/generate', { product_id: product.id });
+      const result = res.data?.result;
+      if (!result) throw new Error('Mia returned no SEO result');
+      setEnhancement({
+        proposal: {
+          title: result.optimized_title,
+          descriptionHtml: result.optimized_description_html,
+          tags: result.tags,
+          seoTitle: result.seo_title,
+          seoDescription: result.meta_description,
+          imageAltText: result.image_alt_text,
+          positioning: 'AI-generated from the live Shopify product and ready for your approval.'
+        }
+      });
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || err?.message || 'Mia could not generate an AI enhancement');
+    } finally { setActionLoading(null); }
   };
 
   const applyMiaChanges = async () => {
@@ -140,10 +158,23 @@ export default function ProductDetail() {
     setActionLoading('apply'); setSaveError(null); setSaveSuccess(null);
     try {
       const proposal = enhancement.proposal;
-      const res = await api.post(`/mia/product/${encodeURIComponent(product.id)}/apply`, { changes: { title: proposal.title, descriptionHtml: proposal.descriptionHtml, tags: proposal.tags, productType: proposal.productType } });
-      if (res.data?.connected) { setSaveSuccess('Mia changes approved and written to Shopify.'); setEnhancement(null); loadProduct(); }
-    } catch (err) { const detail = (err as any)?.response?.data?.detail || (err as Error)?.message || 'Mia could not apply the approved changes'; setSaveError(detail); }
-    finally { setActionLoading(null); }
+      const res = await api.post('/seo/apply', {
+        product_id: product.id,
+        changes: {
+          title: proposal.title,
+          descriptionHtml: proposal.descriptionHtml,
+          seo: { title: proposal.seoTitle, description: proposal.seoDescription },
+          tags: proposal.tags,
+          image_alt_text: proposal.imageAltText,
+        },
+        confirmed: true,
+        apply_handle: false,
+      });
+      if (res.data?.success) { setSaveSuccess('Mia AI changes approved and written to Shopify.'); setEnhancement(null); loadProduct(); }
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Mia could not apply the approved changes';
+      setSaveError(detail);
+    } finally { setActionLoading(null); }
   };
 
   const generateMarketing = async () => {
@@ -151,10 +182,10 @@ export default function ProductDetail() {
     setMarketingLoading(true);
     setSaveError(null);
     try {
-      const res = await api.get(`/mia/product/${encodeURIComponent(product.id)}/marketing`);
-      setMarketing(res.data?.marketing || null);
-    } catch (err) {
-      setSaveError((err as Error)?.message || 'Mia could not generate marketing for this product');
+      const res = await api.post('/seo/marketing', { product_id: product.id });
+      setMarketing(res.data?.result || null);
+    } catch (err: any) {
+      setSaveError(err?.response?.data?.detail || err?.message || 'Mia could not generate AI marketing for this product');
     } finally {
       setMarketingLoading(false);
     }

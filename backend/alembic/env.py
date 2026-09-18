@@ -32,7 +32,7 @@ def _sync_database_url(url: str) -> str:
 # Use the application's configured database URL rather than the placeholder
 # URL in alembic.ini. Alembic uses a synchronous engine, so normalize the
 # application's async driver URLs before creating that engine.
-database_url = os.getenv("DATABASE_URL")
+database_url = os.getenv("MIGRATION_DATABASE_URL") or os.getenv("DATABASE_URL")
 if database_url:
     config.set_main_option(
         "sqlalchemy.url",

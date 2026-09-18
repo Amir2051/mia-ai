@@ -19,7 +19,6 @@ jobs:
       SHOPIFY_API_KEY: ci-key
       SHOPIFY_API_SECRET: ci-secret
       SHOPIFY_APP_URL: https://drivenest.info
-      TOKEN_ENCRYPTION_KEY: sqwL_E8x8bK6F3ns0vBl7yx2nnp1dry_lgnroooYDtU=
       CORS_ORIGINS: https://drivenest.info
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +26,8 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
+      - name: Generate ephemeral test encryption key
+        run: python -c "from cryptography.fernet import Fernet; print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
       - run: alembic -c alembic.ini upgrade head
       - run: pytest -q
 
@@ -44,3 +45,13 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm audit --audit-level=moderate
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build --tag mia-ai:ci .

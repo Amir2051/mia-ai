@@ -38,3 +38,9 @@ frontend/.vite/
 Thumbs.db
 .vscode/
 .idea/
+
+# Production migration credential (Docker Compose secret source)
+backend/migration_database_url.txt
+
+# Build artifacts
+*.tsbuildinfo

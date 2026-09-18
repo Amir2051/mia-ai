@@ -99,9 +99,21 @@ def _build_seo_suggestion(product: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _products(shop: Shop) -> List[Dict[str, Any]]:
-    data = await ProductService(_shop_client(shop)).list_products()
-    edges = (((data.get("products") or {}).get("edges")) or [])
-    return [edge.get("node", {}) for edge in edges[:5]]
+    service = ProductService(_shop_client(shop))
+    products: List[Dict[str, Any]] = []
+    after = None
+    for _ in range(100):
+        data = await service.list_products(first=250, after=after)
+        connection = data.get("products") or {}
+        products.extend(edge.get("node", {}) for edge in (connection.get("edges") or []) if edge.get("node"))
+        page = connection.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        next_cursor = page.get("endCursor")
+        if not next_cursor or next_cursor == after:
+            break
+        after = next_cursor
+    return products
 
 
 @router.get('/', response_model=MarketingResponse)

@@ -13,6 +13,7 @@ from app.security.tokens import decrypt_token
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
+from app.shopify.config import settings
 
 router = APIRouter()
 
@@ -81,6 +82,29 @@ def _shopify_error(exc: ShopifyAPIError) -> None:
     raise HTTPException(status_code=502, detail="Shopify data is temporarily unavailable") from exc
 
 
+def _score_product_seo(product: dict[str, Any]) -> tuple[int, list[str], list[str]]:
+    title = str(product.get("seo_title") or "").strip()
+    description = str(product.get("seo_description") or "").strip()
+    body = str(product.get("descriptionHtml") or "").strip()
+    tags = product.get("tags") or []
+    issues: list[str] = []
+    recommendations = ["Use one clear primary keyword", "Keep title and meta description specific to the product"]
+    score = 100
+    if not title:
+        score -= 30; issues.append("Missing SEO title")
+    elif not 30 <= len(title) <= 70:
+        score -= 15; issues.append("SEO title length could be improved")
+    if not description:
+        score -= 30; issues.append("Missing meta description")
+    elif not 120 <= len(description) <= 170:
+        score -= 15; issues.append("Meta description length could be improved")
+    if not tags:
+        score -= 10; issues.append("No Shopify tags")
+    if not body:
+        score -= 15; issues.append("Product description is empty")
+    return max(0, score), issues, recommendations
+
+
 @router.post("/analyze")
 async def analyze_seo(
     body: ProductRequest,
@@ -93,25 +117,8 @@ async def analyze_seo(
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     # Deterministic analysis does not require an AI call.
-    title = product.get("seo_title") or ""
-    description = product.get("seo_description") or ""
-    issues: list[str] = []
-    recommendations: list[str] = []
-    score = 100
-    if not title:
-        score -= 30; issues.append("Missing SEO title")
-    elif not 30 <= len(title) <= 70:
-        score -= 15; issues.append("SEO title length could be improved")
-    if not description:
-        score -= 30; issues.append("Missing meta description")
-    elif not 120 <= len(description) <= 170:
-        score -= 15; issues.append("Meta description length could be improved")
-    if not product.get("tags"):
-        score -= 10; issues.append("No Shopify tags")
-    if not product.get("descriptionHtml"):
-        score -= 15; issues.append("Product description is empty")
-    recommendations.extend(["Use one clear primary keyword", "Keep title and meta description specific to the product"])
-    return {"product": product, "seo_score": max(0, score), "issues": issues, "recommendations": recommendations}
+    score, issues, recommendations = _score_product_seo(product)
+    return {"product": product, "seo_score": score, "issues": issues, "recommendations": recommendations}
 
 
 @router.post("/generate")
@@ -123,12 +130,18 @@ async def generate_seo(
     shop = await _shop(current, db)
     try:
         product = await _get_product(_client(shop), body.product_id)
+        await db.commit()
         result, model, latency = await SEOService(OpenRouterService()).generate(product, model=body.model)
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"product": product, "result": result.model_dump(), "model": model, "latency_ms": round(latency, 2)}
+    generated = result.model_dump()
+    # Report the score against the generated fields, using the same deterministic
+    # scoring rules as Analyze rather than trusting a model-supplied score.
+    generated_product = {**product, "seo_title": result.seo_title, "seo_description": result.meta_description, "descriptionHtml": result.optimized_description_html, "tags": result.tags}
+    generated["seo_score"], generated["issues"], generated["recommendations"] = _score_product_seo(generated_product)
+    return {"product": product, "result": generated, "model": model, "latency_ms": round(latency, 2)}
 
 
 @router.post("/apply")
@@ -139,7 +152,7 @@ async def apply_seo(
 ):
     if not body.confirmed:
         raise HTTPException(status_code=400, detail="Explicit confirmation is required before applying SEO changes")
-    allowed = {"title", "descriptionHtml", "seo", "tags", "image_alt_text"}
+    allowed = {"title", "descriptionHtml", "seo", "tags", "handle", "image_alt_text"}
     changes = {key: value for key, value in body.changes.items() if key in allowed}
     if "title" in changes:
         if not isinstance(changes["title"], str) or len(changes["title"]) > 255:
@@ -158,7 +171,10 @@ async def apply_seo(
     elif "handle" in body.changes:
         if not isinstance(body.changes["handle"], str):
             raise HTTPException(status_code=422, detail="handle must be a string")
-        changes["handle"] = normalize_handle(body.changes["handle"])
+        normalized_handle = normalize_handle(body.changes["handle"])
+        if not normalized_handle:
+            raise HTTPException(status_code=422, detail="handle must contain at least one letter or number")
+        changes["handle"] = normalized_handle
     image_alt_text = changes.pop("image_alt_text", None)
     if image_alt_text is not None:
         if not isinstance(image_alt_text, list) or len(image_alt_text) > 50:
@@ -216,15 +232,76 @@ async def generate_product_creative(
     shop = await _shop(current, db)
     try:
         product = await _get_product(_client(shop), body.product_id)
+        await db.commit()
         marketing_result, _, _ = await generate_marketing(OpenRouterService(), product, model=body.model)
-        prompt = marketing_result.creative_prompt
-        reference = marketing_result.image_url
-        image, model, latency = await OpenRouterService().generate_image(prompt, reference_url=reference, model=body.model)
+        image = marketing_result.enhanced_image_url or marketing_result.image_url
+        model = settings.openrouter_image_model if marketing_result.enhanced_image_url else None
+        latency = 0.0
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"product": product, "image": image, "model": model, "latency_ms": round(latency, 2), "used_reference_image": bool(reference)}
+    return {
+        "product": product,
+        "image": image,
+        "model": model,
+        "latency_ms": round(latency, 2),
+        "used_reference_image": True,
+        "image_source": "shopify",
+        "image_status": {
+            "image_enhancement_source": marketing_result.image_enhancement_source,
+            "error": marketing_result.image_enhancement_error,
+            "retry_after_seconds": marketing_result.image_retry_after_seconds,
+        },
+    }
+
+
+@router.post("/full-campaign")
+async def generate_full_campaign(
+    body: GenerateRequest,
+    current: CurrentUser = Depends(get_current_shop),
+    db=Depends(get_db),
+):
+    """Generate the complete SEO + marketing + creative package in one live-store workflow."""
+    shop = await _shop(current, db)
+    client = _client(shop)
+    try:
+        product = await _get_product(client, body.product_id)
+        # Release the tenant DB transaction before the long-running external AI calls.
+        # The dependency otherwise holds a PostgreSQL connection open for the entire
+        # 60-120s workflow, which can leave the transaction's connection stale/closed
+        # before FastAPI attempts the dependency's final commit. No DB work follows.
+        await db.commit()
+        ai = OpenRouterService()
+        seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model)
+        marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model)
+        image = marketing_result.enhanced_image_url or marketing_result.image_url
+        image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
+        image_latency = None
+        image_error = marketing_result.image_enhancement_error
+        if not image:
+            image_error = "No Shopify product image is available"
+        image_status_source = marketing_result.image_enhancement_source
+    except ShopifyAPIError as exc:
+        _shopify_error(exc)
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "product": product,
+        "seo": seo_result.model_dump(),
+        "marketing": marketing_result.model_dump(),
+        "creative": {
+            "image": image,
+            "model": image_model,
+            "latency_ms": round(image_latency, 2) if image_latency is not None else None,
+            "error": image_error,
+            "image_enhancement_source": image_status_source,
+            "retry_after_seconds": marketing_result.image_retry_after_seconds,
+        },
+        "models": {"seo": seo_model, "marketing": marketing_model},
+        "latency_ms": round(seo_latency + marketing_latency + (image_latency or 0), 2),
+        "partial_success": bool(image_error),
+    }
 
 
 @router.post("/marketing")
@@ -236,6 +313,7 @@ async def generate_product_marketing(
     shop = await _shop(current, db)
     try:
         product = await _get_product(_client(shop), body.product_id)
+        await db.commit()
         result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model)
     except ShopifyAPIError as exc:
         _shopify_error(exc)

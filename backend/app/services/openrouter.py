@@ -106,6 +106,10 @@ class OpenRouterService:
         selected_model = model or await self.select_model()
         payload = {
             "model": selected_model,
+            # Let OpenRouter fail over when the pinned model/provider is temporarily
+            # unavailable. This keeps production marketing/SEO requests from
+            # surfacing transient 502/503/504 provider failures to the UI.
+            "models": [selected_model, "openrouter/free"] if selected_model != "openrouter/free" else ["openrouter/free"],
             "messages": messages,
             "temperature": temperature,
             "response_format": {"type": "json_object"},
@@ -163,11 +167,53 @@ class OpenRouterService:
             raise OpenRouterError("OpenRouter returned malformed chat content") from exc
         return str(content), selected_model, latency_ms
 
+    async def _select_free_image_model(self) -> str:
+        response = await self._request("GET", "/images/models")
+        if response.status_code >= 400:
+            raise OpenRouterError(f"OpenRouter image-model discovery failed: HTTP {response.status_code}")
+        try:
+            models = response.json().get("data") or []
+        except (ValueError, TypeError) as exc:
+            raise OpenRouterError("OpenRouter returned invalid image-model metadata") from exc
+        candidates: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            architecture = item.get("architecture") or {}
+            if "image" not in (architecture.get("input_modalities") or []):
+                continue
+            if "image" not in (architecture.get("output_modalities") or []):
+                continue
+            # The image-model listing does not expose definitive pricing; endpoint
+            # records do. Query each candidate until a zero-cost output endpoint is found.
+            author, _, slug = str(model_id or "").partition("/")
+            if not author or not slug:
+                continue
+            endpoint_response = await self._request("GET", f"/images/models/{author}/{slug}/endpoints")
+            if endpoint_response.status_code >= 400:
+                continue
+            try:
+                endpoints = endpoint_response.json().get("endpoints") or []
+            except (ValueError, TypeError):
+                continue
+            for endpoint in endpoints:
+                pricing = endpoint.get("pricing") or []
+                if pricing and all(float(p.get("cost_usd", 1)) == 0 for p in pricing):
+                    candidates.append(str(model_id))
+                    break
+        if not candidates:
+            raise OpenRouterError("No free OpenRouter image-generation model is currently available")
+        return sorted(candidates)[0]
+
     async def generate_image(self, prompt: str, *, reference_url: Optional[str] = None, model: Optional[str] = None) -> tuple[str, str, float]:
         selected_model = model or settings.openrouter_image_model
+        if selected_model == "openrouter/free-image":
+            selected_model = await self._select_free_image_model()
         payload: dict[str, Any] = {"model": selected_model, "prompt": prompt, "n": 1, "aspect_ratio": "1:1", "resolution": "1K"}
         if reference_url:
-            payload["input_references"] = [reference_url]
+            # OpenRouter Image API expects image references as typed image_url objects.
+            payload["input_references"] = [{"type": "image_url", "image_url": {"url": reference_url}}]
         started = time.perf_counter()
         response = await self._request("POST", "/images", json=payload)
         latency_ms = (time.perf_counter() - started) * 1000

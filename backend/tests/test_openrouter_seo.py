@@ -56,6 +56,64 @@ async def test_openrouter_api_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_image_uses_reference_image(monkeypatch):
+    from app.shopify.config import settings
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "openrouter_image_model", "test/image-model")
+    service = OpenRouterService()
+    captured = {}
+
+    async def fake_request(method, path, **kwargs):
+        captured.update(method=method, path=path, payload=kwargs["json"])
+        return FakeResponse(200, {"data": [{"b64_json": "ZmFrZQ==", "media_type": "image/png"}]})
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    image_url, model, latency = await service.generate_image(
+        "Enhance this existing product photo", reference_url="https://cdn.example/product.png"
+    )
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/images"
+    assert captured["payload"]["model"] == "test/image-model"
+    assert captured["payload"]["input_references"] == [{
+        "type": "image_url",
+        "image_url": {"url": "https://cdn.example/product.png"},
+    }]
+    assert image_url == "data:image/png;base64,ZmFrZQ=="
+    assert model == "test/image-model"
+    assert latency >= 0
+
+
+@pytest.mark.asyncio
+async def test_generate_image_without_reference_omits_input_references(monkeypatch):
+    from app.shopify.config import settings
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "openrouter_image_model", "test/image-model")
+    service = OpenRouterService()
+
+    async def fake_request(method, path, **kwargs):
+        assert path == "/images"
+        assert "input_references" not in kwargs["json"]
+        return FakeResponse(200, {"data": [{"b64_json": "ZmFrZQ==", "media_type": "image/webp"}]})
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    image_url, _, _ = await service.generate_image("Generate a product image")
+    assert image_url == "data:image/webp;base64,ZmFrZQ=="
+
+
+@pytest.mark.asyncio
+async def test_generate_image_rejects_upstream_failure(monkeypatch):
+    from app.shopify.config import settings
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    service = OpenRouterService()
+
+    async def fake_request(*args, **kwargs): return FakeResponse(402, {"error": "credits"})
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    with pytest.raises(OpenRouterError, match="image-model discovery failed: HTTP 402"):
+        await service.generate_image("Enhance this image", reference_url="https://cdn.example/product.png")
+
+
+@pytest.mark.asyncio
 async def test_malformed_ai_json(monkeypatch):
     from app.shopify.config import settings
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")

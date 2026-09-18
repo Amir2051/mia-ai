@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     openrouter_model: str = 'nvidia/nemotron-3-super-120b-a12b:free'
     openrouter_timeout_seconds: float = 45.0
     openrouter_retries: int = 2
-    openrouter_image_model: str = 'meta/muse-image'
+    # Internal selector; resolves to a currently available free image model when one exists.
+    openrouter_image_model: str = 'openrouter/free-image'
+    openrouter_image_timeout_seconds: float = 90.0
 
     @property
     def is_production(self) -> bool:
@@ -66,6 +68,10 @@ class Settings(BaseSettings):
                 issues.append('SHOPIFY_APP_URL not set to production domain')
             if self.session_cookie_secure is False:
                 issues.append('SESSION_COOKIE_SECURE must be True in production')
+            if self.session_cookie_httponly is not True:
+                issues.append('SESSION_COOKIE_HTTPONLY must be True in production')
+            if (self.session_cookie_samesite or '').strip().lower() != 'none':
+                issues.append('SESSION_COOKIE_SAMESITE must be None in production for embedded Shopify iframe compatibility')
             if 'localhost' in self.cors_origins:
                 issues.append('localhost in CORS_ORIGINS is not safe for production')
             if self.database_url.startswith('sqlite'):
