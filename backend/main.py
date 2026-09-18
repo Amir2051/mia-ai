@@ -10,13 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.models.database import Base, engine
 from app.shopify.config import settings
-
-try:
-    from sqlalchemy import text
-except Exception:  # pragma: no cover
-    text = None
 
 
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
@@ -35,14 +29,6 @@ def _configure_logging() -> None:
         logger.addHandler(handler)
 
     logger.setLevel(__import__("logging").INFO)
-
-
-async def _init_db() -> None:
-    if text is None:
-        return
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
@@ -68,7 +54,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    await _init_db()
+    # Production schema changes are managed exclusively by Alembic.
     yield
 
 
@@ -292,6 +278,29 @@ def create_app() -> FastAPI:
             include_in_schema=False,
         )
         async def spa_fallback(full_path: str):
+            # Never turn probes for dotfiles or sensitive server files into a
+            # successful SPA response.
+            path_parts = [part for part in full_path.split("/") if part]
+            sensitive_names = {
+                ".env",
+                ".env.local",
+                ".env.production",
+                ".env.development",
+                ".env.test",
+                ".env.testing",
+                ".env.staging",
+                ".env.example",
+                ".git",
+                "backend",
+                "node_modules",
+                "docker-compose.yml",
+                "Dockerfile",
+            }
+            if any(part.startswith(".") or part in sensitive_names for part in path_parts):
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"detail": "Not found"},
+                )
             return FileResponse(
                 index_html,
                 headers={"Cache-Control": "no-store"},

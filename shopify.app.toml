@@ -1,17 +1,32 @@
-name = "Mia AI"
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
 client_id = "9c422dedf9e850a1f8fb3078ca747fa7"
+name = "Mia AI"
 application_url = "https://drivenest.info"
 embedded = true
 
-[access_scopes]
-scopes = "read_products,write_products,read_orders,read_customers,read_inventory"
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  uri = "/api/webhooks"
+  topics = [
+  "products/update",
+  "products/create",
+  "products/delete",
+  "orders/create",
+  "orders/updated",
+  "app/uninstalled"
+]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
 [access.admin]
 direct_api_mode = "online"
 embedded_app_direct_api_access = true
 
-[webhooks]
-api_version = "2026-07"
+[access_scopes]
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
 
 [[webhooks.subscriptions]]
 topics = ["app/uninstalled"]

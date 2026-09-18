@@ -71,7 +71,7 @@ export default function Dashboard() {
         setDashboard(res.data as DashboardSummary);
         setDashboardError(null);
       })
-      .catch((_err) => {
+      .catch(() => {
         if (cancelled) return;
         setDashboard(null);
         setDashboardError(
