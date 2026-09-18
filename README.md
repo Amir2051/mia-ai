@@ -15,7 +15,7 @@ Production Shopify embedded admin application for the existing Mia AI Partner ap
 - Orders and customers
 - Analytics and marketing architecture
 - Settings
-- Shopify App Bridge ID-token authentication and OAuth fallback
+- Shopify App Bridge ID-token authentication with Shopify managed installation
 - Encrypted Shopify token storage
 - HMAC-verified, deduplicated Shopify webhooks
 
@@ -64,6 +64,16 @@ Cloudflare should proxy `drivenest.info` to the production origin. Keep the Shop
 ## Database migrations
 
 Schema changes are managed by Alembic. Application startup does **not** call `create_all()`.
+
+## Docker Compose
+
+`docker-compose.yml` is self-contained: it starts its own PostgreSQL 16 service and an isolated `mia-ai-network`. It does not read `backend/.env`, depend on the SafeNestT platform network, or require an external database container. Supply production secrets through environment variables when deploying; the compose defaults are development placeholders and must not be used for production credentials.
+
+The local Docker CLI on this host provides the Compose v2 functionality through the `docker-compose` command. Validate the file independently with:
+
+```bash
+docker-compose config
+```
 
 ```bash
 cd backend

@@ -6,6 +6,10 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request, status
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.models import database as database_module
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -251,9 +255,25 @@ def create_app() -> FastAPI:
 
     @application.get("/health", tags=["health"])
     async def health():
+        build_id = os.getenv("BUILD_ID") or os.getenv("GIT_COMMIT_SHA") or "unknown"
+        try:
+            async with database_module.AsyncSessionLocal() as db:
+                await db.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "status": "degraded",
+                    "app": settings.app_name,
+                    "build_id": build_id,
+                    "database": "unavailable",
+                },
+            )
         return {
             "status": "ok",
             "app": settings.app_name,
+            "build_id": build_id,
+            "database": "ok",
         }
 
     frontend_dist = os.path.join(

@@ -18,7 +18,11 @@ def test_spa_routes_return_frontend_entrypoint_when_built(client: TestClient):
 def test_health(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["app"] == "Mia AI"
+    assert body["database"] == "ok"
+    assert body["build_id"]
 
 
 def test_auth_session_without_authentication(client: TestClient):

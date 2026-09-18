@@ -1,28 +1,52 @@
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mia}
+      POSTGRES_USER: ${POSTGRES_USER:-mia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mia} -d ${POSTGRES_DB:-mia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - mia-net
+
   mia-ai:
     build: .
     ports:
       - "8000:8000"
-    env_file:
-      - backend/.env
-    secrets:
-      - migration_database_url
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mia}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-mia}
+      SHOPIFY_API_KEY: ${SHOPIFY_API_KEY:-}
+      SHOPIFY_API_SECRET: ${SHOPIFY_API_SECRET:-}
+      SHOPIFY_APP_URL: ${SHOPIFY_APP_URL:-https://drivenest.info}
+      SHOPIFY_SCOPES: ${SHOPIFY_SCOPES:-read_products,write_products,read_orders,read_customers,read_inventory}
+      SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-2026-07}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://drivenest.info}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      BUILD_ID: ${BUILD_ID:-local-compose}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - mia-data:/app/data
     restart: unless-stopped
     networks:
-      default:
-      supabase_network_safenestt-platform:
-        aliases:
-          - db
+      - mia-net
 
 volumes:
   mia-data:
-
-secrets:
-  migration_database_url:
-    file: ./backend/migration_database_url.txt
+  postgres-data:
 
 networks:
-  supabase_network_safenestt-platform:
-    external: true
+  mia-net:
+    name: mia-ai-network
