@@ -40,7 +40,7 @@ Set these values in the deployment environment; never commit the Shopify secret:
 ENVIRONMENT=production
 SECRET_KEY=<long-random-secret>
 DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/mia
-SHOPIFY_API_KEY=c3778df7ce03ca72b52ea21020c3570b
+SHOPIFY_API_KEY=9c422dedf9e850a1f8fb3078ca747fa7
 SHOPIFY_API_SECRET=<Shopify secret>
 SHOPIFY_APP_URL=https://drivenest.info
 SHOPIFY_SCOPES=read_products,write_products,read_orders,read_customers,read_inventory

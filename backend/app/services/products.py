@@ -676,7 +676,6 @@ class ImportService:
 
         parsed = self.parse_csv(content)
         validation = self.validate_import_rows(parsed["rows"], mapping)
-        print(f"IMPORT_TRACE shop_id={shop_id} parsed_rows={parsed['count']} valid={len(validation.get('valid', []))} errors={len(validation.get('errors', []))}")
 
         record = ProductImport(
             shop_id=shop_id,
@@ -700,7 +699,6 @@ class ImportService:
         await self.db.flush()
         await self.db.refresh(record)
         await self.db.commit()
-        print(f"IMPORT_TRACE shop_id={shop_id} created_import_id={record.id}")
 
         created = 0
         failed = 0
@@ -742,13 +740,10 @@ class ImportService:
                         k: mapped[k] for k in ["title", "vendor", "productType", "status", "tags"]
                         if k in mapped
                     }
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} calling_create_product title={safe_mapped_keys.get('title')!r}")
                     result = await self.api_client.create_product(mapped)
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} create_product_result_type={type(result).__name__} keys={list((result or {}).keys())}")
                     product_create = result.get("productCreate") or {}
                     product = product_create.get("product") or {}
                     shopify_product_id = product.get("id")
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} extracted_product_id={shopify_product_id}")
                     if shopify_product_id:
                         shopify_product_ids.append(shopify_product_id)
                         created += 1
@@ -773,7 +768,6 @@ class ImportService:
                         )
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
-                    print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} row={item['row']} create_product_exception={type(exc).__name__}: {exc}")
                     details.append(
                         {
                             "row": item["row"],
@@ -801,7 +795,6 @@ class ImportService:
             status = "completed"
             sync_status = "completed"
 
-        print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} before_update status={status} sync_status={sync_status} shopify_product_ids={shopify_product_ids}")
         record.status = status
         record.sync_status = sync_status
         record.error = None
@@ -812,7 +805,6 @@ class ImportService:
         await self.db.flush()
         await self.db.refresh(record)
         await self.db.commit()
-        print(f"IMPORT_TRACE shop_id={shop_id} import_id={record.id} after_commit status={record.status} sync_status={record.sync_status} shopify_product_id={record.shopify_product_id}")
 
         return {
             "import": {
