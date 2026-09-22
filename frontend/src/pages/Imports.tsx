@@ -294,6 +294,8 @@ export default function Imports() {
       tags: normalizeTags(importConfig.tags || ''),
       status: importConfig.status,
       duplicate_action: importConfig.duplicate_action,
+      mapping,
+      validate_only: true,
     };
 
     setError(null);
