@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from app.models.schemas import ProductImport
 from app.services.products import ImportService
+from app.shopify.client import ShopifyAPIError
 
 
 VALID_DUPLICATE_ACTIONS = {"skip", "update", "create", "fail"}
@@ -92,8 +93,6 @@ class CsvImportService(ImportService):
             processed += 1
             source_mapped = dict(item["mapped"])
             duplicate = None
-            if not validate_only and self.api_client is not None:
-                duplicate = await self.find_duplicate_product(source_mapped)
             prepared = self._prepare_product(source_mapped, default_status)
 
             if validate_only or self.api_client is None:
@@ -101,6 +100,23 @@ class CsvImportService(ImportService):
                 continue
 
             try:
+                # Duplicate lookup is part of the row operation. Previously an upstream
+                # Shopify error here escaped the row-level handler and became a generic
+                # HTTP 500 for the entire import. Treat it as a row failure instead.
+                if self.api_client is not None:
+                    try:
+                        duplicate = await self.find_duplicate_product(source_mapped)
+                    except ShopifyAPIError as exc:
+                        failed += 1
+                        details.append({
+                            "row": item["row"],
+                            "status": "failed",
+                            "error": str(exc),
+                            "mapped": prepared,
+                            "shopify_product_id": None,
+                        })
+                        continue
+
                 if duplicate:
                     duplicate_id = duplicate.get("id")
                     match = duplicate.get("match")
