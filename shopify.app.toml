@@ -25,8 +25,8 @@ direct_api_mode = "online"
 embedded_app_direct_api_access = true
 
 [access_scopes]
-# Learn more about configuring app access scopes in the Shopify CLI docs.
-scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
+# read_reports is required by ShopifyQL/analytics access in the embedded admin.
+scopes = "read_customers,read_inventory,read_orders,read_products,write_products,read_reports"
 
 [auth]
 redirect_urls = [ "https://drivenest.info/auth/callback" ]
