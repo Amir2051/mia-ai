@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth.dependencies import (
     CurrentUser,
@@ -14,6 +15,7 @@ from app.auth.dependencies import (
 from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
+from app.security.rls import set_shop_context
 from app.services.products import ImportService
 from app.services.csv_imports import CsvImportService
 from app.shopify.client import (
@@ -42,7 +44,7 @@ async def list_imports(
 ):
     if not current:
         return ImportResponse(data=None, connected=False)
-    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
+    await set_shop_context(db, current.shop_domain)\n    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportResponse(data=None, connected=False)
