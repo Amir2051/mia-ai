@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,6 +23,7 @@ from app.shopify.client import (
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 class ImportResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
@@ -152,6 +154,9 @@ async def preview_import(request: Request, payload: ImportPreviewRequest, curren
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("csv_import_preview_failed shop=%s", current.shop_domain)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="CSV import preview failed") from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
@@ -186,6 +191,9 @@ async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None,
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("csv_import_run_failed shop=%s import_id=%s", current.shop_domain, import_id)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="CSV import run failed") from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
