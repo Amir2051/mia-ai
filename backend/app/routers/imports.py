@@ -44,7 +44,8 @@ async def list_imports(
 ):
     if not current:
         return ImportResponse(data=None, connected=False)
-    await set_shop_context(db, current.shop_domain)\n    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
+    await set_shop_context(db, current.shop_domain)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportResponse(data=None, connected=False)
@@ -212,9 +213,16 @@ async def create_import(payload: ImportCreateRequest, current: Optional[CurrentU
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         data = await ImportService(db_session=db, shop=shop).create_import(payload.dict(exclude_none=True))
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        logger.exception("csv_import_create_db_failed shop=%s", current.shop_domain)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Import could not be saved to the database") from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("csv_import_create_failed shop=%s", current.shop_domain)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Import creation failed") from exc
     return ImportCreateResponse(data=data, connected=True)
