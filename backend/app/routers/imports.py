@@ -174,14 +174,14 @@ async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None,
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     client = ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
     import_service = CsvImportService(db_session=db, shop=shop, api_client=client)
-    existing = await import_service.get_import(import_id)
-    if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
-    run_payload = (payload.dict(exclude_none=True) if payload else {}) or {}
-    run_payload["validate_only"] = False
-    if not run_payload.get("content"):
-        run_payload["content"] = existing.get("description") or ""
     try:
+        existing = await import_service.get_import(import_id)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
+        run_payload = (payload.dict(exclude_none=True) if payload else {}) or {}
+        run_payload["validate_only"] = False
+        if not run_payload.get("content"):
+            run_payload["content"] = existing.get("description") or ""
         data = await import_service.update_import_from_csv(import_id=import_id, payload=run_payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
