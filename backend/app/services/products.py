@@ -752,7 +752,11 @@ class ImportService:
         from io import StringIO
 
         reader = csv.DictReader(StringIO(content))
-        rows = [\n            {key: (value or "").strip() for key, value in row.items() if key is not None}\n            for row in reader\n            if any((value or "").strip() for value in row.values() if value is not None)\n        ]
+        rows = [
+            {key: (value or "").strip() for key, value in row.items() if key is not None}
+            for row in reader
+            if any((value or "").strip() for value in row.values() if value is not None)
+        ]
         columns = reader.fieldnames or []
         return {
             "rows": rows,
