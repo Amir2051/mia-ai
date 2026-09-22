@@ -14,20 +14,23 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "product_imports",
-        "shopify_product_id",
-        existing_type=sa.String(length=255),
-        type_=sa.Text(),
-        existing_nullable=True,
-    )
+    # SQLite does not support ALTER COLUMN TYPE directly. Batch mode uses
+    # SQLite's table-rebuild strategy while remaining a normal ALTER on
+    # databases such as PostgreSQL.
+    with op.batch_alter_table("product_imports") as batch_op:
+        batch_op.alter_column(
+            "shopify_product_id",
+            existing_type=sa.String(length=255),
+            type_=sa.Text(),
+            existing_nullable=True,
+        )
 
 
 def downgrade() -> None:
-    op.alter_column(
-        "product_imports",
-        "shopify_product_id",
-        existing_type=sa.Text(),
-        type_=sa.String(length=255),
-        existing_nullable=True,
-    )
+    with op.batch_alter_table("product_imports") as batch_op:
+        batch_op.alter_column(
+            "shopify_product_id",
+            existing_type=sa.Text(),
+            type_=sa.String(length=255),
+            existing_nullable=True,
+        )
