@@ -44,13 +44,35 @@ async def list_imports(
 ):
     if not current:
         return ImportResponse(data=None, connected=False)
-    await set_shop_context(db, current.shop_domain)
-    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
-    shop = result.scalar_one_or_none()
+    try:
+        await set_shop_context(db, current.shop_domain)
+        result = await db.execute(
+            select(Shop).where(Shop.shop_domain == current.shop_domain)
+        )
+        shop = result.scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        logger.exception(
+            "csv_import_list_context_failed shop=%s",
+            current.shop_domain,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Import listing context could not be established",
+        ) from exc
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportResponse(data=None, connected=False)
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         access_token = decrypt_token(shop.access_token_encrypted)
+    except SQLAlchemyError as exc:
+        logger.exception(
+            "csv_import_list_shop_context_failed shop=%s",
+            current.shop_domain,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Import listing context could not be established",
+        ) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     client = ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
@@ -67,11 +89,13 @@ async def list_imports(
 async def get_import(import_id: str, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportResponse(data=None, connected=False)
+    await set_shop_context(db, current.shop_domain)
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportResponse(data=None, connected=False)
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
@@ -135,11 +159,13 @@ class ImportRunRequest(BaseModel):
 async def preview_import(request: Request, payload: ImportPreviewRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
+    await set_shop_context(db, current.shop_domain)
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportCreateResponse(data=None, connected=False)
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
@@ -167,11 +193,13 @@ async def preview_import(request: Request, payload: ImportPreviewRequest, curren
 async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
+    await set_shop_context(db, current.shop_domain)
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportCreateResponse(data=None, connected=False)
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         access_token = decrypt_token(shop.access_token_encrypted)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
@@ -204,16 +232,23 @@ async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None,
 async def create_import(payload: ImportCreateRequest, current: Optional[CurrentUser] = Depends(get_current_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
+    await set_shop_context(db, current.shop_domain)
     result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
     shop = result.scalar_one_or_none()
     if not shop or not shop.access_token_encrypted or not shop.is_active:
         return ImportCreateResponse(data=None, connected=False)
     try:
+        await set_shop_context(db, current.shop_domain, shop.id)
         access_token = decrypt_token(shop.access_token_encrypted)
+    except SQLAlchemyError as exc:
+        logger.exception("csv_import_create_context_failed shop=%s", current.shop_domain)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Import context could not be established",
+        ) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
     try:
-        await set_shop_context(db, current.shop_domain, shop.id)
         data = await ImportService(db_session=db, shop=shop).create_import(payload.dict(exclude_none=True))
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
