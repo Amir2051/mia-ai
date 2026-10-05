@@ -179,6 +179,7 @@ def create_app() -> FastAPI:
         webhooks,
         legal,
         mia,
+        social,
     )
 
     application.include_router(
@@ -242,6 +243,12 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(legal.router, tags=["legal"] )
+
+    application.include_router(
+        social.router,
+        prefix="/api/social",
+        tags=["social"],
+    )
 
     application.include_router(
         mia.router,
