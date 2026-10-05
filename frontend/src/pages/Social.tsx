@@ -16,6 +16,8 @@ export default function Social() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [monitoring, setMonitoring] = useState<Record<number, unknown>>({});
   const [link, setLink] = useState('');
 
   const load = async () => {
@@ -35,7 +37,7 @@ export default function Social() {
     load();
     const params = new URLSearchParams(window.location.search);
     if (params.get('connected') === '1') {
-      setMessage('Meta account connected successfully.');
+      setStatusMessage('Meta account connected successfully.');
       window.history.replaceState({}, '', '/social');
     }
   }, []);
@@ -63,9 +65,19 @@ export default function Social() {
       });
       setMessage('');
       setLink('');
-      setMessage('Facebook post published.');
+      setStatusMessage('Facebook post published.');
     } catch (err: any) {
       setError(err?.response?.data?.detail || err?.message || 'Facebook publish failed');
+    }
+  };
+
+  const monitorFacebook = async (accountId: number) => {
+    setError('');
+    try {
+      const res = await api.get(`/social/meta/facebook/${accountId}/monitor`);
+      setMonitoring((prev) => ({ ...prev, [accountId]: res.data }));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'Unable to load Facebook activity');
     }
   };
 
@@ -77,7 +89,7 @@ export default function Social() {
       </p>
 
       {error && <p style={{ color: '#d72c0d' }}>Error: {error}</p>}
-      {message && <p style={{ color: '#008060' }}>{message}</p>}
+      {statusMessage && <p style={{ color: '#008060' }}>{statusMessage}</p>}
 
       <button
         onClick={connectMeta}
@@ -115,6 +127,17 @@ export default function Social() {
                 >
                   Publish to Facebook
                 </button>
+                <button
+                  onClick={() => monitorFacebook(account.id)}
+                  style={{ marginTop: 8, marginLeft: 8, padding: '9px 14px', border: '1px solid #e1e3e5', borderRadius: 6, background: 'white' }}
+                >
+                  Monitor activity
+                </button>
+                {monitoring[account.id] && (
+                  <pre style={{ marginTop: 10, padding: 10, background: '#f6f6f7', overflow: 'auto', fontSize: 11 }}>
+                    {JSON.stringify(monitoring[account.id], null, 2)}
+                  </pre>
+                )}
               </div>
             )}
           </div>
