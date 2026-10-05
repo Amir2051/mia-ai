@@ -153,7 +153,7 @@ export default function Social() {
                 </button>
                 {monitoring[account.id] && (
                   <pre style={{ marginTop: 10, padding: 10, background: '#f6f6f7', overflow: 'auto', fontSize: 11 }}>
-                    {JSON.stringify(monitoring[account.id], null, 2)}
+                    {JSON.stringify(monitoring[account.id], null, 2) as string}
                   </pre>
                 )}
               </div>
