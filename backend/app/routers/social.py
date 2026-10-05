@@ -178,6 +178,66 @@ async def meta_callback(
     )
 
 
+@router.post("/meta/test-connect")
+async def meta_test_connect(
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
+    db=Depends(get_db),
+):
+    if not current:
+        raise HTTPException(status_code=401, detail="Missing Shopify session")
+    if not settings.meta_test_access_token:
+        raise HTTPException(status_code=503, detail="META_TEST_ACCESS_TOKEN is not configured")
+    await set_shop_context(db, current.shop_domain)
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
+    shop = result.scalar_one_or_none()
+    if not shop or not shop.is_active:
+        raise HTTPException(status_code=401, detail="Shopify shop is not connected")
+
+    try:
+        client = MetaClient(settings.meta_test_access_token)
+        profile = await client.me()
+        pages = await client.pages()
+    except MetaAPIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    await set_shop_context(db, current.shop_domain, shop.id)
+    saved = 0
+    for page in pages.get("data") or []:
+        page_id = str(page.get("id") or "")
+        if not page_id:
+            continue
+        page_token = str(page.get("access_token") or settings.meta_test_access_token)
+        metadata = dict(page)
+        metadata.pop("access_token", None)
+        metadata["meta_user_id"] = profile.get("id")
+        metadata["meta_user_name"] = profile.get("name")
+        existing = await db.execute(select(SocialAccount).where(
+            SocialAccount.shop_id == shop.id,
+            SocialAccount.provider == "meta",
+            SocialAccount.external_account_id == page_id,
+        ))
+        account = existing.scalar_one_or_none()
+        if account is None:
+            db.add(SocialAccount(
+                shop_id=shop.id,
+                provider="meta",
+                account_type="facebook_page",
+                external_account_id=page_id,
+                account_name=str(page.get("name") or page_id),
+                access_token_encrypted=encrypt_token(page_token),
+                metadata_json=serialize_meta_metadata(metadata),
+                is_active=True,
+            ))
+        else:
+            account.account_name = str(page.get("name") or page_id)
+            account.access_token_encrypted = encrypt_token(page_token)
+            account.metadata_json = serialize_meta_metadata(metadata)
+            account.is_active = True
+        saved += 1
+    await db.commit()
+    return {"status": "connected", "provider": "meta", "profile": profile, "pages_saved": saved}
+
+
 @router.post("/meta/facebook/publish")
 async def publish_facebook(
     payload: MetaPublishRequest,
