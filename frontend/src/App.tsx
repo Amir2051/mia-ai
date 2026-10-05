@@ -14,6 +14,7 @@ const Analytics = lazy(() => import('./pages/Analytics'));
 const Marketing = lazy(() => import('./pages/Marketing'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Mia = lazy(() => import('./pages/Mia'));
+const Social = lazy(() => import('./pages/Social'));
 
 function Loading() {
   return <p>Loading...</p>;
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="/customers/:id" element={<CustomerDetail />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/marketing" element={<Marketing />} />
+          <Route path="/social" element={<Social />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>
