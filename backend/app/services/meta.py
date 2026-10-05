@@ -27,7 +27,7 @@ class MetaClient:
             raise MetaAPIError("META_APP_ID is not configured", 500)
         params = {
             "client_id": settings.meta_app_id,
-            "redirect_uri": settings.meta_redirect_uri,
+            "redirect_uri": settings.meta_redirect_uri or f"{settings.shopify_app_url.rstrip('/')}/api/social/meta/callback",
             "state": state,
             "response_type": "code",
             "scope": settings.meta_oauth_scopes,
@@ -78,7 +78,7 @@ class MetaClient:
             {
                 "client_id": settings.meta_app_id,
                 "client_secret": settings.meta_app_secret,
-                "redirect_uri": settings.meta_redirect_uri,
+                "redirect_uri": settings.meta_redirect_uri or f"{settings.shopify_app_url.rstrip('/')}/api/social/meta/callback",
                 "code": code,
             },
         )
