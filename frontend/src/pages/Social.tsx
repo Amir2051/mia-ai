@@ -17,7 +17,7 @@ export default function Social() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
-  const [monitoring, setMonitoring] = useState<Record<number, unknown>>({});
+  const [monitoring, setMonitoring] = useState<Record<number, string>>({});
   const [link, setLink] = useState('');
 
   const load = async () => {
@@ -86,7 +86,7 @@ export default function Social() {
     setError('');
     try {
       const res = await api.get(`/social/meta/facebook/${accountId}/monitor`);
-      setMonitoring((prev) => ({ ...prev, [accountId]: res.data }));
+      setMonitoring((prev) => ({ ...prev, [accountId]: JSON.stringify(res.data, null, 2) }));
     } catch (err: any) {
       setError(err?.response?.data?.detail || err?.message || 'Unable to load Facebook activity');
     }
@@ -153,7 +153,7 @@ export default function Social() {
                 </button>
                 {monitoring[account.id] && (
                   <pre style={{ marginTop: 10, padding: 10, background: '#f6f6f7', overflow: 'auto', fontSize: 11 }}>
-                    {JSON.stringify(monitoring[account.id], null, 2) as string}
+                    {monitoring[account.id]}
                   </pre>
                 )}
               </div>
