@@ -36,6 +36,7 @@ export default function AppLayout() {
             { to: '/customers', label: 'Customers' },
             { to: '/analytics', label: 'Analytics' },
             { to: '/marketing', label: 'Marketing' },
+            { to: '/social', label: 'Social Media' },
             { to: '/settings', label: 'Settings' },
           ].map((item) => (
             <NavLink
