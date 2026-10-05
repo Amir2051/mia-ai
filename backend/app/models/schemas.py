@@ -50,6 +50,7 @@ class Shop(Base):
     sessions: Mapped[list['ShopSession']] = relationship(back_populates='shop', cascade='all, delete-orphan')
     imports: Mapped[list['ProductImport']] = relationship(back_populates='shop', cascade='all, delete-orphan')
     settings: Mapped[list['AppSetting']] = relationship(back_populates='shop', cascade='all, delete-orphan')
+    social_accounts: Mapped[list['SocialAccount']] = relationship(back_populates='shop', cascade='all, delete-orphan')
 
 
 class ShopSession(Base):
