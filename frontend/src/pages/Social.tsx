@@ -42,6 +42,17 @@ export default function Social() {
     }
   }, []);
 
+  const connectMetaTestToken = async () => {
+    setError('');
+    try {
+      const res = await api.post('/social/meta/test-connect');
+      setStatusMessage(`Meta test account connected. Pages saved: ${res.data?.pages_saved ?? 0}`);
+      await load();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'Unable to connect configured Meta test token');
+    }
+  };
+
   const connectMeta = async () => {
     setError('');
     try {
@@ -90,6 +101,13 @@ export default function Social() {
 
       {error && <p style={{ color: '#d72c0d' }}>Error: {error}</p>}
       {statusMessage && <p style={{ color: '#008060' }}>{statusMessage}</p>}
+
+      <button
+        onClick={connectMetaTestToken}
+        style={{ marginLeft: 8, padding: '10px 16px', border: '1px solid #e1e3e5', borderRadius: 6, background: 'white', fontWeight: 600 }}
+      >
+        Connect configured test token
+      </button>
 
       <button
         onClick={connectMeta}
