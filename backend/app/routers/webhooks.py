@@ -139,6 +139,9 @@ async def receive_webhook(request: Request, response: Response, db=Depends(get_d
     if not hmac_header or not _verify_webhook_signature(hmac_header, body):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
 
+    # Establish the tenant domain before the first Shop query. PostgreSQL RLS
+    # evaluates policies during SELECT, so querying first would hide the tenant row.
+    await set_shop_context(db, shop_domain)
     shop_obj = await _get_shop_by_domain(db, shop_domain)
     if shop_obj is None:
         # A valid Shopify compliance webhook can arrive after uninstall/redaction.
