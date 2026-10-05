@@ -97,25 +97,71 @@ const parseCsvLine = (line: string): string[] => {
 };
 
 const parseCsvForPreview = (content: string): { columns: string[]; rows: Array<Record<string, string>> } => {
-  const lines = content
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0);
+  // RFC 4180-style parser: supports quoted commas, escaped quotes, and
+  // newlines inside quoted fields so the client preview matches the
+  // server-side Python CSV parser.
+  const records: string[][] = [];
+  let record: string[] = [];
+  let value = '';
+  let quoted = false;
 
-  if (lines.length < 2) {
+  const normalizedContent = content.replace(/^\uFEFF/, '');
+
+  for (let index = 0; index < normalizedContent.length; index += 1) {
+    const character = normalizedContent[index];
+
+    if (character === '"') {
+      if (quoted && normalizedContent[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (character === ',' && !quoted) {
+      record.push(value.trim());
+      value = '';
+      continue;
+    }
+
+    if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && normalizedContent[index + 1] === '\n') {
+        index += 1;
+      }
+      record.push(value.trim());
+      value = '';
+      if (record.some((field) => field.length > 0)) {
+        records.push(record);
+      }
+      record = [];
+      continue;
+    }
+
+    value += character;
+  }
+
+  if (value.length > 0 || record.length > 0) {
+    record.push(value.trim());
+    if (record.some((field) => field.length > 0)) {
+      records.push(record);
+    }
+  }
+
+  if (records.length < 2) {
     throw new Error('CSV must include a header row and at least one data row.');
   }
 
-  const columns = parseCsvLine(lines[0]).map((column) => column.trim()).filter(Boolean);
+  const columns = records[0].map((column) => column.trim()).filter(Boolean);
   if (columns.length === 0) {
     throw new Error('CSV header row is empty.');
   }
 
-  const rows = lines.slice(1).map((line) => {
-    const values = parseCsvLine(line);
+  const rows = records.slice(1).map((values) => {
     const row: Record<string, string> = {};
-    columns.forEach((column, index) => {
-      row[column] = values[index] ?? '';
+    columns.forEach((column, columnIndex) => {
+      row[column] = values[columnIndex] ?? '';
     });
     return row;
   });
