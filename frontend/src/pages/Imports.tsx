@@ -69,6 +69,60 @@ type Step = 'upload' | 'configure' | 'preview' | 'results';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const ACCEPTED_TYPES = ['.csv', 'text/csv'];
 
+const parseCsvLine = (line: string): string[] => {
+  const values: string[] = [];
+  let value = '';
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+
+    if (character === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === ',' && !quoted) {
+      values.push(value.trim());
+      value = '';
+    } else {
+      value += character;
+    }
+  }
+
+  values.push(value.trim());
+  return values;
+};
+
+const parseCsvForPreview = (content: string): { columns: string[]; rows: Array<Record<string, string>> } => {
+  const lines = content
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length < 2) {
+    throw new Error('CSV must include a header row and at least one data row.');
+  }
+
+  const columns = parseCsvLine(lines[0]).map((column) => column.trim()).filter(Boolean);
+  if (columns.length === 0) {
+    throw new Error('CSV header row is empty.');
+  }
+
+  const rows = lines.slice(1).map((line) => {
+    const values = parseCsvLine(line);
+    const row: Record<string, string> = {};
+    columns.forEach((column, index) => {
+      row[column] = values[index] ?? '';
+    });
+    return row;
+  });
+
+  return { columns, rows };
+};
+
 export default function Imports() {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -203,21 +257,15 @@ export default function Imports() {
         return;
       }
 
-      const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
-      if (lines.length < 2) {
-        setFileError('CSV must include a header row and at least one data row.');
+      let parsed: { columns: string[]; rows: Array<Record<string, string>> };
+      try {
+        parsed = parseCsvForPreview(content);
+      } catch (parseError) {
+        setFileError(parseError instanceof Error ? parseError.message : 'Unable to parse CSV file.');
         return;
       }
 
-      const columns = lines[0].split(',').map((column) => column.trim()).filter(Boolean);
-      const rows = lines.slice(1).map((line) => {
-        const values = line.split(',');
-        const row: Record<string, string> = {};
-        columns.forEach((column, index) => {
-          row[column] = values[index]?.trim() ?? '';
-        });
-        return row;
-      });
+      const { columns, rows } = parsed;
 
       setFile(inputFile);
       setFileName(inputFile.name);
