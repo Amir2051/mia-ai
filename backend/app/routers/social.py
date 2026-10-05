@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -171,7 +172,10 @@ async def meta_callback(
             account.is_active = True
         saved += 1
     await db.commit()
-    return {"status": "connected", "provider": "meta", "profile": profile, "pages_saved": saved}
+    return RedirectResponse(
+        url=f"{settings.shopify_app_url.rstrip('/')}/social?connected=1&pages={saved}",
+        status_code=303,
+    )
 
 
 @router.post("/meta/facebook/publish")
