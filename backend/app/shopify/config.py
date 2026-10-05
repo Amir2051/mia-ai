@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     openrouter_image_model: str = 'openrouter/free-image'
     openrouter_image_timeout_seconds: float = 90.0
 
+    # Meta/Facebook + Instagram integration. Secrets are environment variables.
+    meta_app_id: str = ''
+    meta_app_secret: str = ''
+    meta_graph_api_base_url: str = 'https://graph.facebook.com'
+    meta_graph_api_version: str = ''
+    meta_oauth_version: str = 'v24.0'
+    meta_redirect_uri: str = ''
+    meta_oauth_scopes: str = 'pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish'
+
     @property
     def is_production(self) -> bool:
         return (self.environment or '').strip().lower() == 'production'
