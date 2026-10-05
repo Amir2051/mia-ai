@@ -130,6 +130,25 @@ class WebhookEvent(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class SocialAccount(Base):
+    __tablename__ = 'social_accounts'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey('shops.id', ondelete='CASCADE'))
+    provider: Mapped[str] = mapped_column(String(50))
+    account_type: Mapped[str] = mapped_column(String(100))
+    external_account_id: Mapped[str] = mapped_column(String(255))
+    account_name: Mapped[str] = mapped_column(String(255))
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    shop: Mapped['Shop'] = relationship(back_populates='social_accounts')
+
+
 class AppSetting(Base):
     __tablename__ = 'app_settings'
 
