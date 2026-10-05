@@ -190,7 +190,7 @@ async def preview_import(request: Request, payload: ImportPreviewRequest, curren
 
 
 @router.post("/{import_id}/run", response_model=ImportCreateResponse)
-async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
+async def run_import(import_id: int, request: Request, payload: Optional[ImportRunRequest] = None, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return ImportCreateResponse(data=None, connected=False)
     await set_shop_context(db, current.shop_domain)
@@ -222,9 +222,31 @@ async def run_import(import_id: int, payload: Optional[ImportRunRequest] = None,
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        request_id = getattr(request.state, "request_id", "n/a")
+        await db.rollback()
+        logger.exception(
+            "csv_import_run_db_failed shop=%s import_id=%s request_id=%s",
+            current.shop_domain,
+            import_id,
+            request_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CSV import database operation failed (request {request_id})",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("csv_import_run_failed shop=%s import_id=%s", current.shop_domain, import_id)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="CSV import run failed") from exc
+        request_id = getattr(request.state, "request_id", "n/a")
+        logger.exception(
+            "csv_import_run_failed shop=%s import_id=%s request_id=%s",
+            current.shop_domain,
+            import_id,
+            request_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CSV import run failed (request {request_id})",
+        ) from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
