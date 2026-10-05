@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     # Meta/Facebook + Instagram integration. Secrets are environment variables.
     meta_app_id: str = ''
     meta_app_secret: str = ''
+    meta_test_access_token: str = ''
     meta_graph_api_base_url: str = 'https://graph.facebook.com'
     meta_graph_api_version: str = ''
     meta_oauth_version: str = 'v24.0'
