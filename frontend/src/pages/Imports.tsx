@@ -69,33 +69,6 @@ type Step = 'upload' | 'configure' | 'preview' | 'results';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const ACCEPTED_TYPES = ['.csv', 'text/csv'];
 
-const parseCsvLine = (line: string): string[] => {
-  const values: string[] = [];
-  let value = '';
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-
-    if (character === '"') {
-      if (quoted && line[index + 1] === '"') {
-        value += '"';
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (character === ',' && !quoted) {
-      values.push(value.trim());
-      value = '';
-    } else {
-      value += character;
-    }
-  }
-
-  values.push(value.trim());
-  return values;
-};
-
 const parseCsvForPreview = (content: string): { columns: string[]; rows: Array<Record<string, string>> } => {
   // RFC 4180-style parser: supports quoted commas, escaped quotes, and
   // newlines inside quoted fields so the client preview matches the
