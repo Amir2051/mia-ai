@@ -183,9 +183,29 @@ async def preview_import(request: Request, payload: ImportPreviewRequest, curren
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        request_id = getattr(request.state, "request_id", "n/a")
+        await db.rollback()
+        logger.exception(
+            "csv_import_preview_db_failed shop=%s request_id=%s",
+            current.shop_domain,
+            request_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CSV import preview database operation failed (request {request_id})",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("csv_import_preview_failed shop=%s", current.shop_domain)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="CSV import preview failed") from exc
+        request_id = getattr(request.state, "request_id", "n/a")
+        logger.exception(
+            "csv_import_preview_failed shop=%s request_id=%s",
+            current.shop_domain,
+            request_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CSV import preview failed (request {request_id})",
+        ) from exc
     return ImportCreateResponse(data=data, connected=True)
 
 
