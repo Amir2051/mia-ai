@@ -99,32 +99,6 @@ class ShopifyAPIClient:
             data["_graphql_errors"] = response_data.get("errors") or []
         return data
 
-    async def rest(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        token = self._require_token()
-        url = f"{self.base_url}{path}"
-        headers = {"X-Shopify-Access-Token": token}
-        if body is not None:
-            headers["Content-Type"] = "application/json"
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.request(method, url, params=params, json=body, headers=headers)
-
-        try:
-            response_data = response.json()
-        except ValueError:
-            response_data = {"raw": response.text}
-
-        if response.status_code >= 400:
-            logger.warning(
-                "shopify_rest_error shop=%s method=%s path=%s http_status=%s",
-                self.shop_domain,
-                method,
-                path,
-                response.status_code,
-            )
-            raise ShopifyAPIError(f"Shopify REST error: HTTP {response.status_code}", status_code=response.status_code, response=response_data)
-        return response_data
-
     async def import_product(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         from app.services.products import ProductService
         return await self.create_product(ProductService(self).map_import_to_product(payload))
