@@ -26,7 +26,7 @@ embedded_app_direct_api_access = true
 
 [access_scopes]
 # read_reports is required by ShopifyQL/analytics access in the embedded admin.
-scopes = "read_customers,read_inventory,read_orders,read_products,write_products,read_reports"
+scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
 
 [auth]
 redirect_urls = [ "https://drivenest.info/auth/callback" ]
