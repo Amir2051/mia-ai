@@ -32,8 +32,18 @@ def upgrade():
     op.create_index("ix_social_accounts_shop_id", "social_accounts", ["shop_id"])
     op.create_index("ix_social_accounts_provider_external", "social_accounts", ["provider", "external_account_id"], unique=True)
 
+    op.execute("ALTER TABLE social_accounts ENABLE ROW LEVEL SECURITY")
+    op.execute("DROP POLICY IF EXISTS mia_social_accounts_isolation ON social_accounts")
+    op.execute("""
+        CREATE POLICY mia_social_accounts_isolation ON social_accounts
+        USING (shop_id = NULLIF(current_setting('app.shop_id', true), '')::bigint)
+        WITH CHECK (shop_id = NULLIF(current_setting('app.shop_id', true), '')::bigint)
+    """)
+
 
 def downgrade():
+    op.execute("DROP POLICY IF EXISTS mia_social_accounts_isolation ON social_accounts")
+    op.execute("ALTER TABLE social_accounts DISABLE ROW LEVEL SECURITY")
     op.drop_index("ix_social_accounts_provider_external", table_name="social_accounts")
     op.drop_index("ix_social_accounts_shop_id", table_name="social_accounts")
     op.drop_table("social_accounts")
