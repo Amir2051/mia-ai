@@ -16,9 +16,9 @@ The latest Shopify app configuration was deployed and released as version **mia-
 The production web container is served through Cloudflare at `https://mia.drivenest.info`.
 
 ## Verified
-- Backend: 80 tests passed.
-- Frontend TypeScript build: passed.
-- Frontend ESLint: passed.
+- Backend: 88 tests passed.
+- Frontend: lint, 7 tests and TypeScript build pass.
+- npm audit: 0 vulnerabilities.
 - npm production audit: 0 vulnerabilities.
 - npm full audit: 0 vulnerabilities.
 - Production `/health`: HTTP 200.
@@ -29,6 +29,15 @@ The production web container is served through Cloudflare at `https://mia.driven
 - Mandatory compliance topics are configured.
 - Unauthenticated API probes do not expose merchant data.
 - Settings mutation requires an authenticated Shopify session.
+
+## Frontend
+
+The admin UI is built with Shopify Polaris and App Bridge:
+- Navigation is the App Bridge `ui-nav-menu`, shown in the Shopify admin sidebar (not an in-app sidebar).
+- `src/lib/session.tsx` loads `/api/auth/session` once for the whole app.
+- Product and AI-generated HTML always renders through `src/components/SafeHtml.tsx` (DOMPurify).
+- Shopify ids contain slashes; route them with `idPath()` from `src/lib/format.ts`.
+- Opening the app URL outside Shopify Admin shows a short "open it from Shopify" message by design.
 
 ## Production configuration
 Required server secrets remain environment-only:
@@ -65,10 +74,10 @@ A real merchant/dev-store session is still required for final end-to-end accepta
 These are runtime acceptance steps, not unresolved code placeholders.
 
 ## Deployment
-Build and restart the production container with Docker Compose after source changes:
+Build and restart the production container with Docker Compose after source changes (on the Kali host the command is `docker-compose`):
 
 ```bash
-docker compose up -d --build
+docker-compose up -d --build mia-ai
 ```
 
 The container entrypoint runs Alembic migrations before Uvicorn. The image now includes a Docker healthcheck against `/health`.

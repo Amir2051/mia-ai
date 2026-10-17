@@ -24,7 +24,7 @@ Production Shopify embedded admin application for the existing Mia AI Partner ap
 ```text
 mia-ai/
 ├── backend/       # FastAPI + SQLAlchemy + Alembic
-├── frontend/      # React + TypeScript + Vite
+├── frontend/      # React + TypeScript + Vite, Shopify Polaris UI
 ├── docker-entrypoint.sh
 ├── Dockerfile
 └── shopify.app.toml
@@ -77,7 +77,7 @@ cd backend && pytest -q
 cd frontend && npm run build
 ```
 
-GitHub Actions also runs backend migrations/tests and the frontend build for pushes and pull requests to `main`.
+GitHub Actions also runs backend migrations/tests and the frontend lint, tests and build for pushes and pull requests to `main`.
 
 ## Shopify configuration
 
