@@ -1,162 +1,113 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { BlockStack, Box, Button, Card, InlineGrid, InlineStack, Layout, Page, Text } from '@shopify/polaris';
 import api from '../services/api';
+import StatCard from '../components/StatCard';
+import { ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
+import { Field } from '../components/MiaResults';
+import { errorMessage, formatDateTime, formatMoney, formatNumber, formatShopMoney, idPath } from '../lib/format';
+import { useSession } from '../lib/session';
+import { customerEmail, customerName, type CustomerNode } from './Customers';
 
-type Customer = {
-  id?: string | null;
-  displayName?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  defaultEmailAddress?: { emailAddress?: string | null } | null;
-  defaultPhoneNumber?: { phoneNumber?: string | null } | null;
-  numberOfOrders?: number | null;
-  amountSpent?: {
-    amount?: string | null;
-    currencyCode?: string | null;
-  } | null;
+type Customer = CustomerNode & {
   orders?: {
     edges: Array<{
       node: {
         id?: string | null;
         name?: string | null;
         createdAt?: string | null;
-        totalPriceSet?: {
-          shopMoney?: {
-            amount?: string | null;
-            currencyCode?: string | null;
-          } | null;
-        } | null;
+        totalPriceSet?: { shopMoney?: { amount?: string | null; currencyCode?: string | null } | null } | null;
       };
     }>;
   };
 };
 
 export default function CustomerDetail() {
-  const { id } = useParams();
-  const [connected, setConnected] = useState(false);
+  const { id = '' } = useParams();
+  const customerId = decodeURIComponent(id);
+  const session = useSession();
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [customer, setCustomer] = useState<Customer | null>(null);
 
-  useEffect(() => {
-    api.get('/auth/session')
-      .then((res) => setConnected(!!res.data?.connected))
-      .catch(() => setConnected(false));
-  }, []);
-
-  useEffect(() => {
-    if (!connected) {
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
-
-    const customerId = decodeURIComponent(id ?? '');
-    api.get(`/customers/${encodeURIComponent(customerId)}`)
+    api
+      .get(`/customers/${encodeURIComponent(customerId)}`)
       .then((res) => {
-        if (cancelled) return;
         const payload = res.data?.data;
-        const customerData = payload?.customer ?? payload;
-        if (customerData) {
-          const normalized = {
-            ...customerData,
-            email: customerData.email ?? customerData.defaultEmailAddress?.emailAddress ?? null,
-            phone: customerData.phone ?? customerData.defaultPhoneNumber?.phoneNumber ?? null,
-            displayName: customerData.displayName ?? ([customerData.firstName, customerData.lastName].filter(Boolean).join(' ') || null),
-          };
-          setCustomer(normalized as Customer);
-        } else {
-          setCustomer(null);
-        }
+        setCustomer((payload?.customer ?? payload) || null);
       })
-      .catch((err) => {
-        if (!cancelled) setError((err as Error)?.message || 'Failed to load customer');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .catch((err) => setError(errorMessage(err, 'Could not load this customer')))
+      .finally(() => setLoading(false));
+  }, [customerId]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [connected, id]);
+  useEffect(() => {
+    if (session.connected) load();
+  }, [session.connected, load]);
 
-  if (!connected) {
-    return <p style={{ color: '#616161' }}>Connect Shopify to view live customer data.</p>;
+  if (session.loading || (session.connected && loading)) return <PageSkeleton withAside />;
+  if (!session.connected) return <NotConnected title="Customer" />;
+  if (error || !customer) {
+    return (
+      <Page backAction={{ content: 'Customers', url: '/customers' }} title="Customer">
+        <ErrorBanner message={error || 'This customer could not be found.'} onRetry={load} />
+      </Page>
+    );
   }
 
-  if (loading) {
-    return <p>Loading...</p>;
-  }
-
-  if (error) {
-    return <p style={{ color: '#d72c0d' }}>Error: {error}</p>;
-  }
-
-  if (!customer) {
-    return <p style={{ color: '#616161' }}>Customer not found.</p>;
-  }
-
-  const recentOrders = customer.orders?.edges ?? [];
-  const totalAmount = customer.amountSpent?.amount;
+  const orders = customer.orders?.edges ?? [];
   const currency = customer.amountSpent?.currencyCode || 'USD';
-
-  const formatCurrency = (amount?: string | null, currencyCode = currency) => {
-    if (!amount) return '—';
-    const value = Number(amount);
-    if (!Number.isFinite(value)) return '—';
-    try {
-      return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: currencyCode,
-        maximumFractionDigits: 2,
-      }).format(value);
-    } catch {
-      return `${currencyCode} ${value.toFixed(2)}`;
-    }
-  };
-
-  const formatDate = (value?: string | null) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleString();
-  };
+  const phone = customer.phone ?? customer.defaultPhoneNumber?.phoneNumber ?? null;
 
   return (
-    <div>
-      <h1 style={{ fontSize: 24, marginBottom: 12 }}>{customer.displayName || customer.email || 'Customer'}</h1>
-      <div style={{ marginBottom: 12 }}>
-        <Link to="/customers" style={{ color: '#005bd3' }}>Back to customers</Link>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-        <div style={{ border: '1px solid #e1e3e5', borderRadius: 8, padding: 16 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Details</h2>
-          <div style={{ color: '#616161' }}>{customer.email || '—'}</div>
-          <div style={{ color: '#616161' }}>{customer.phone ? `Phone: ${customer.phone}` : 'No phone'}</div>
-          <div style={{ color: '#616161' }}>Orders: {customer.numberOfOrders ?? '—'}</div>
-          <div style={{ color: '#616161' }}>Spent: {formatCurrency(totalAmount, currency)}</div>
-        </div>
-
-        <div style={{ border: '1px solid #e1e3e5', borderRadius: 8, padding: 16 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Recent orders</h2>
-          {recentOrders.length === 0 && <p style={{ color: '#616161' }}>No orders found.</p>}
-          {recentOrders.map((orderEdge) => (
-            <div key={orderEdge.node.id || Math.random()} style={{ padding: '10px 0', borderBottom: '1px solid #f1f2f4' }}>
-              <Link to={`/orders/${orderEdge.node.id}`} style={{ color: '#005bd3', textDecoration: 'none', fontWeight: 600 }}>
-                {orderEdge.node.name || 'Untitled'}
-              </Link>
-              <div style={{ color: '#616161', fontSize: 12 }}>
-                {formatDate(orderEdge.node.createdAt)} · {formatCurrency(orderEdge.node.totalPriceSet?.shopMoney?.amount, orderEdge.node.totalPriceSet?.shopMoney?.currencyCode || 'USD')}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+    <Page backAction={{ content: 'Customers', url: '/customers' }} title={customerName(customer)}>
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            <InlineGrid columns={{ xs: 1, sm: 2 }} gap="400">
+              <StatCard label="Amount spent" value={formatMoney(customer.amountSpent?.amount ?? null, currency)} />
+              <StatCard label="Orders" value={formatNumber(customer.numberOfOrders ?? 0)} />
+            </InlineGrid>
+            <Card padding="0">
+              <Box padding="400">
+                <Text as="h2" variant="headingMd">Recent orders</Text>
+              </Box>
+              {orders.length === 0 ? (
+                <Box padding="400" paddingBlockStart="0">
+                  <Text as="p" tone="subdued">No orders yet.</Text>
+                </Box>
+              ) : (
+                orders.map(({ node }, index) => (
+                  <Box key={node.id || index} padding="400" borderBlockStartWidth="025" borderColor="border">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <BlockStack gap="050">
+                        {node.id ? (
+                          <Button variant="plain" url={idPath('/orders', node.id)}>{node.name || 'Order'}</Button>
+                        ) : (
+                          <Text as="span" fontWeight="semibold">{node.name || 'Order'}</Text>
+                        )}
+                        <Text as="span" variant="bodySm" tone="subdued">{formatDateTime(node.createdAt)}</Text>
+                      </BlockStack>
+                      <Text as="span" numeric>{formatShopMoney(node.totalPriceSet, currency)}</Text>
+                    </InlineStack>
+                  </Box>
+                ))
+              )}
+            </Card>
+          </BlockStack>
+        </Layout.Section>
+        <Layout.Section variant="oneThird">
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">Contact</Text>
+              <Field label="Email" value={customerEmail(customer) || 'Not shared by Shopify'} />
+              <Field label="Phone" value={phone || 'Not shared by Shopify'} />
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }

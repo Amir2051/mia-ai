@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { forwardRef, type AnchorHTMLAttributes, type ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, Link as RouterLink } from 'react-router-dom';
+import { AppProvider, type AppProviderProps } from '@shopify/polaris';
+import enTranslations from '@shopify/polaris/locales/en.json';
+import '@shopify/polaris/build/esm/styles.css';
 import App from './App';
+import { SessionProvider } from './lib/session';
 import './styles.css';
 
 const waitForAppBridge = (timeoutMs = 15000): Promise<boolean> => {
@@ -56,19 +60,52 @@ const bootstrapShopifySession = async (): Promise<boolean> => {
   }
 };
 
+/** Polaris links (Page backAction, Link url, Button url) route client-side. */
+type AdapterLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'> & {
+  url: string;
+  external?: boolean;
+  children?: ReactNode;
+};
+
+const AdapterLink = forwardRef<HTMLAnchorElement, AdapterLinkProps>(function AdapterLink(
+  { url, external, children, ...rest },
+  ref,
+) {
+  if (external || /^https?:\/\//.test(url)) {
+    return (
+      <a ref={ref} href={url} target="_blank" rel="noopener noreferrer" {...rest}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <RouterLink ref={ref} to={url} {...rest}>
+      {children}
+    </RouterLink>
+  );
+});
+
+function setStatus(rootElement: HTMLElement, message: string) {
+  rootElement.innerHTML = '';
+  const status = document.createElement('p');
+  status.className = 'boot-status';
+  status.textContent = message;
+  rootElement.appendChild(status);
+}
+
 waitForAppBridge().then(async (ready) => {
   const rootElement = document.getElementById('root');
   if (!rootElement) return;
 
   if (!ready) {
-    rootElement.innerHTML = '<p>Loading Shopify…</p>';
+    setStatus(rootElement, 'Mia runs inside your Shopify admin. Open it from Apps in Shopify.');
     return;
   }
 
   const sessionReady = await bootstrapShopifySession();
 
   if (!sessionReady) {
-    rootElement.innerHTML = '<p>Waiting for Shopify session…</p>';
+    setStatus(rootElement, 'Connecting to Shopify…');
     setTimeout(() => window.location.reload(), 1500);
     return;
   }
@@ -76,7 +113,11 @@ waitForAppBridge().then(async (ready) => {
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <BrowserRouter>
-        <App />
+        <AppProvider i18n={enTranslations} linkComponent={AdapterLink as AppProviderProps['linkComponent']}>
+          <SessionProvider>
+            <App />
+          </SessionProvider>
+        </AppProvider>
       </BrowserRouter>
     </React.StrictMode>,
   );

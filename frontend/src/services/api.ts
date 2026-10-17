@@ -1,13 +1,5 @@
 import axios from 'axios';
 
-declare global {
-  interface Window {
-    shopify?: {
-      idToken: () => Promise<string>;
-    };
-  }
-}
-
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,

@@ -1,163 +1,154 @@
-import { useState, useEffect } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { Badge, BlockStack, Box, Card, Divider, InlineStack, Layout, Page, Text } from '@shopify/polaris';
 import api from '../services/api';
+import { ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
+import { errorMessage, financialTone, formatDateTime, formatShopMoney, fulfillmentTone, humanize } from '../lib/format';
+import { useSession } from '../lib/session';
 
-type LineItem = {
-  title?: string | null;
-  quantity?: number | null;
-  originalUnitPriceSet?: {
-    shopMoney?: {
-      amount?: string | null;
-      currencyCode?: string | null;
-    } | null;
-  } | null;
-};
-
+type MoneySet = { shopMoney?: { amount?: string | null; currencyCode?: string | null } | null } | null;
 type Order = {
   id?: string | null;
   name?: string | null;
   createdAt?: string | null;
-  financialStatus?: string | null;
-  fulfillmentStatus?: string | null;
-  customer?: {
-    displayName?: string | null;
-    email?: string | null;
-  } | null;
-  lineItems?: {
-    edges: Array<{
-      node: LineItem;
-    }>;
-  };
-  totalPriceSet?: {
-    shopMoney?: {
-      amount?: string | null;
-      currencyCode?: string | null;
-    } | null;
-  } | null;
+  displayFinancialStatus?: string | null;
+  displayFulfillmentStatus?: string | null;
+  subtotalPriceSet?: MoneySet;
+  totalShippingPriceSet?: MoneySet;
+  totalTaxSet?: MoneySet;
+  totalPriceSet?: MoneySet;
+  lineItems?: { edges: Array<{ node: { title?: string | null; quantity?: number | null; sku?: string | null; originalUnitPriceSet?: MoneySet } }> };
+  transactions?: Array<{ id?: string; kind?: string | null; status?: string | null; amountSet?: MoneySet }>;
 };
 
+function lineTotal(set: MoneySet, quantity: number): MoneySet {
+  const amount = Number(set?.shopMoney?.amount);
+  if (!Number.isFinite(amount)) return set;
+  return { shopMoney: { amount: String(amount * quantity), currencyCode: set?.shopMoney?.currencyCode } };
+}
+
+function Row({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <InlineStack align="space-between">
+      <Text as="span" fontWeight={strong ? 'semibold' : undefined} tone={strong ? undefined : 'subdued'}>{label}</Text>
+      <Text as="span" fontWeight={strong ? 'semibold' : undefined} numeric>{value}</Text>
+    </InlineStack>
+  );
+}
+
 export default function OrderDetail() {
-  const { id } = useParams();
-  const [connected, setConnected] = useState(false);
+  const { id = '' } = useParams();
+  const orderId = decodeURIComponent(id);
+  const session = useSession();
+  const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [order, setOrder] = useState<Order | null>(null);
 
-  useEffect(() => {
-    api.get('/auth/session')
-      .then((res) => setConnected(!!res.data?.connected))
-      .catch(() => setConnected(false));
-  }, []);
-
-  useEffect(() => {
-    if (!connected) {
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
-
-    api.get(`/orders/${id}`)
+    api
+      .get(`/orders/${encodeURIComponent(orderId)}`)
       .then((res) => {
-        if (cancelled) return;
-        setOrder((res.data?.data as Order) || null);
+        const data = res.data?.data;
+        setOrder((data?.order ?? data) || null);
       })
-      .catch((err) => {
-        if (!cancelled) setError((err as Error)?.message || 'Failed to load order');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .catch((err) => setError(errorMessage(err, 'Could not load this order')))
+      .finally(() => setLoading(false));
+  }, [orderId]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [connected, id]);
+  useEffect(() => {
+    if (session.connected) load();
+  }, [session.connected, load]);
 
-  if (!connected) {
-    return <p style={{ color: '#616161' }}>Connect Shopify to view live order data.</p>;
-  }
-
-  if (loading) {
-    return <p>Loading...</p>;
-  }
-
-  if (error) {
-    return <p style={{ color: '#d72c0d' }}>Error: {error}</p>;
-  }
-
-  if (!order) {
-    return <p style={{ color: '#616161' }}>Order not found.</p>;
+  if (session.loading || (session.connected && loading)) return <PageSkeleton withAside />;
+  if (!session.connected) return <NotConnected title="Order" />;
+  if (error || !order) {
+    return (
+      <Page backAction={{ content: 'Orders', url: '/orders' }} title="Order">
+        <ErrorBanner message={error || 'This order could not be found.'} onRetry={load} />
+      </Page>
+    );
   }
 
   const lineItems = order.lineItems?.edges ?? [];
-  const totalAmount = order.totalPriceSet?.shopMoney?.amount;
-  const currency = order.totalPriceSet?.shopMoney?.currencyCode || 'USD';
-
-  const formatCurrency = (amount?: string | null, currencyCode = currency) => {
-    if (!amount) return '—';
-    const value = Number(amount);
-    if (!Number.isFinite(value)) return '—';
-    try {
-      return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: currencyCode,
-        maximumFractionDigits: 2,
-      }).format(value);
-    } catch {
-      return `${currencyCode} ${value.toFixed(2)}`;
-    }
-  };
-
-  const formatDate = (value?: string | null) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleString();
-  };
 
   return (
-    <div>
-      <h1 style={{ fontSize: 24, marginBottom: 12 }}>{order.name || 'Order'}</h1>
-      <div style={{ marginBottom: 12 }}>
-        <Link to="/orders" style={{ color: '#005bd3' }}>Back to orders</Link>
-      </div>
+    <Page
+      backAction={{ content: 'Orders', url: '/orders' }}
+      title={order.name || 'Order'}
+      titleMetadata={
+        <InlineStack gap="100">
+          <Badge tone={financialTone(order.displayFinancialStatus)}>{humanize(order.displayFinancialStatus)}</Badge>
+          <Badge tone={fulfillmentTone(order.displayFulfillmentStatus)}>{humanize(order.displayFulfillmentStatus)}</Badge>
+        </InlineStack>
+      }
+      subtitle={formatDateTime(order.createdAt)}
+    >
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            <Card padding="0">
+              <Box padding="400">
+                <Text as="h2" variant="headingMd">{`Items (${lineItems.length})`}</Text>
+              </Box>
+              {lineItems.map(({ node }, index) => {
+                const quantity = node.quantity ?? 0;
+                return (
+                  <Box key={`${node.title}-${index}`} padding="400" borderBlockStartWidth="025" borderColor="border">
+                    <InlineStack align="space-between" blockAlign="center" gap="300" wrap={false}>
+                      <Box minWidth="0" width="100%">
+                        <BlockStack gap="050">
+                          <Text as="span" fontWeight="semibold" truncate>{node.title || 'Item'}</Text>
+                          {node.sku && <Text as="span" variant="bodySm" tone="subdued">{`SKU ${node.sku}`}</Text>}
+                        </BlockStack>
+                      </Box>
+                      <span className="mia-nowrap">
+                        <Text as="span" tone="subdued" numeric>{`${formatShopMoney(node.originalUnitPriceSet)} × ${quantity}`}</Text>
+                      </span>
+                      <span className="mia-nowrap">
+                        <Text as="span" numeric>{formatShopMoney(lineTotal(node.originalUnitPriceSet ?? null, quantity))}</Text>
+                      </span>
+                    </InlineStack>
+                  </Box>
+                );
+              })}
+            </Card>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-        <div style={{ border: '1px solid #e1e3e5', borderRadius: 8, padding: 16 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Order</h2>
-          <div style={{ color: '#616161' }}>Date: {formatDate(order.createdAt)}</div>
-          <div style={{ color: '#616161' }}>Total: {formatCurrency(totalAmount, currency)}</div>
-          <div style={{ color: '#616161' }}>Financial: {order.financialStatus || '—'}</div>
-          <div style={{ color: '#616161' }}>Fulfillment: {order.fulfillmentStatus || '—'}</div>
-        </div>
+            <Card>
+              <BlockStack gap="200">
+                <Text as="h2" variant="headingMd">Payment</Text>
+                {order.subtotalPriceSet && <Row label="Subtotal" value={formatShopMoney(order.subtotalPriceSet)} />}
+                {order.totalShippingPriceSet && <Row label="Shipping" value={formatShopMoney(order.totalShippingPriceSet)} />}
+                {order.totalTaxSet && <Row label="Taxes" value={formatShopMoney(order.totalTaxSet)} />}
+                <Divider />
+                <Row label="Total" value={formatShopMoney(order.totalPriceSet)} strong />
+              </BlockStack>
+            </Card>
+          </BlockStack>
+        </Layout.Section>
 
-        <div style={{ border: '1px solid #e1e3e5', borderRadius: 8, padding: 16 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Customer</h2>
-          <div style={{ color: '#616161' }}>{order.customer?.displayName || order.customer?.email || 'Guest'}</div>
-          <div style={{ color: '#616161' }}>{order.customer?.email || '—'}</div>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16, border: '1px solid #e1e3e5', borderRadius: 8, padding: 16 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Line items</h2>
-        {lineItems.length === 0 && <p style={{ color: '#616161' }}>No line items.</p>}
-        {lineItems.map((edge, index) => {
-          const item = edge.node;
-          const itemTotal = item.originalUnitPriceSet?.shopMoney?.amount;
-          const itemCurrency = item.originalUnitPriceSet?.shopMoney?.currencyCode || currency;
-
-          return (
-            <div key={`${item.title || 'item'}-${index}`} style={{ padding: '10px 0', borderBottom: '1px solid #f1f2f4' }}>
-              <div style={{ fontWeight: 600 }}>{item.title || 'Item'}</div>
-              <div style={{ color: '#616161' }}>Qty: {item.quantity ?? '—'}</div>
-              <div style={{ color: '#616161' }}>{formatCurrency(itemTotal, itemCurrency)}</div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+        <Layout.Section variant="oneThird">
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">Transactions</Text>
+              {(order.transactions ?? []).length === 0 ? (
+                <Text as="p" tone="subdued">No transactions recorded.</Text>
+              ) : (
+                (order.transactions ?? []).map((transaction, index) => (
+                  <InlineStack key={transaction.id || index} align="space-between" blockAlign="center">
+                    <BlockStack gap="050">
+                      <Text as="span">{humanize(transaction.kind)}</Text>
+                      <Text as="span" variant="bodySm" tone="subdued">{humanize(transaction.status)}</Text>
+                    </BlockStack>
+                    <Text as="span" numeric>{formatShopMoney(transaction.amountSet)}</Text>
+                  </InlineStack>
+                ))
+              )}
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }

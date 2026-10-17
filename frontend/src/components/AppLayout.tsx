@@ -1,72 +1,41 @@
-import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { useShopifyStatus } from '../hooks/useShopify';
+import { useEffect } from 'react';
+import { Outlet, useNavigate } from 'react-router-dom';
 
+/**
+ * Navigation lives in the Shopify admin sidebar (App Bridge ui-nav-menu),
+ * the same place merchants find every other app's pages.
+ */
 export default function AppLayout() {
-  const location = useLocation();
-  const { data, loading } = useShopifyStatus();
+  const navigate = useNavigate();
 
-  const connected = !!data?.connected;
-
-  const hideConnectionBanner = ['/', '/api/auth/session'].includes(location.pathname);
+  useEffect(() => {
+    // App Bridge fires shopify:navigate for nav-menu clicks; route them
+    // client-side so the app doesn't reload.
+    const onNavigate = (event: Event) => {
+      const href = (event.target as HTMLElement | null)?.getAttribute?.('href');
+      if (href) navigate(href);
+    };
+    document.addEventListener('shopify:navigate', onNavigate);
+    return () => document.removeEventListener('shopify:navigate', onNavigate);
+  }, [navigate]);
 
   return (
-    <div className="app-layout">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-name">Mia AI</div>
-
-          <div className="brand-badge">
-            {loading ? 'Checking…' : connected ? 'Connected' : 'Disconnected'}
-          </div>
-
-          {connected && data?.shop_domain && (
-            <div style={{ fontSize: 12, color: '#616161', marginTop: 4 }}>
-              {data.shop_domain}
-            </div>
-          )}
-        </div>
-
-        <nav className="nav">
-          {[
-            { to: '/dashboard', label: 'Dashboard' },
-            { to: '/mia', label: '✦ Mia Intelligence' },
-            { to: '/products', label: 'Products' },
-            { to: '/imports', label: 'Imports' },
-            { to: '/orders', label: 'Orders' },
-            { to: '/customers', label: 'Customers' },
-            { to: '/analytics', label: 'Analytics' },
-            { to: '/marketing', label: 'Marketing' },
-            { to: '/social', label: 'Social Media' },
-            { to: '/settings', label: 'Settings' },
-          ].map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `nav-item ${isActive ? 'is-active' : ''}`
-              }
-              end={item.to === '/dashboard'}
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
-
-      <main className="main">
-        <NavLink to="/mia" className="mia-float" aria-label="Open Mia Intelligence" title="Ask Mia">
-          <span className="mia-float-core">✦</span>
-        </NavLink>
-        {!hideConnectionBanner && !loading && !connected && (
-          <div className="connection-banner">
-            Shopify is not connected yet. Go to Settings to connect your store.
-          </div>
-        )}
-
-        <div className="main-content">
-          <Outlet />
-        </div>
-      </main>
-    </div>
+    <>
+      <ui-nav-menu>
+        <a href="/dashboard" rel="home">
+          Dashboard
+        </a>
+        <a href="/mia">Ask Mia</a>
+        <a href="/marketing">SEO &amp; marketing</a>
+        <a href="/products">Products</a>
+        <a href="/imports">Imports</a>
+        <a href="/orders">Orders</a>
+        <a href="/customers">Customers</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/social">Social</a>
+        <a href="/settings">Settings</a>
+      </ui-nav-menu>
+      <Outlet />
+    </>
   );
 }

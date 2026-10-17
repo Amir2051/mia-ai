@@ -1,6 +1,8 @@
 import { Suspense, lazy } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { Card, EmptyState, Page } from '@shopify/polaris';
 import AppLayout from './components/AppLayout';
+import { EMPTY_STATE_IMAGE, PageSkeleton } from './components/states';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Products = lazy(() => import('./pages/Products'));
@@ -16,22 +18,25 @@ const Settings = lazy(() => import('./pages/Settings'));
 const Mia = lazy(() => import('./pages/Mia'));
 const Social = lazy(() => import('./pages/Social'));
 
-function Loading() {
-  return <p>Loading...</p>;
-}
-
 function NotFound() {
   return (
-    <div>
-      <h1 style={{ fontSize: 24 }}>404</h1>
-      <p>Page not found.</p>
-    </div>
+    <Page>
+      <Card>
+        <EmptyState
+          heading="This page doesn't exist"
+          action={{ content: 'Go to dashboard', url: '/dashboard' }}
+          image={EMPTY_STATE_IMAGE}
+        >
+          <p>Check the address, or pick a page from the Mia menu in your Shopify sidebar.</p>
+        </EmptyState>
+      </Card>
+    </Page>
   );
 }
 
 export default function App() {
   return (
-    <Suspense fallback={<Loading />}>
+    <Suspense fallback={<PageSkeleton />}>
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -1,166 +1,268 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Badge,
+  Banner,
+  BlockStack,
+  Box,
+  Button,
+  Card,
+  Collapsible,
+  EmptyState,
+  FormLayout,
+  InlineStack,
+  Layout,
+  Link,
+  Page,
+  Select,
+  Text,
+  TextField,
+} from '@shopify/polaris';
+import { SendIcon } from '@shopify/polaris-icons';
 import api from '../services/api';
+import { CardSkeleton, EMPTY_STATE_IMAGE, ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
+import { errorMessage, formatDateTime } from '../lib/format';
+import { showToast } from '../lib/toast';
+import { useSession } from '../lib/session';
 
-type Account = {
-  id: number;
-  provider: string;
-  account_type: string;
-  external_account_id: string;
-  account_name: string;
-  metadata?: Record<string, unknown>;
-  token_expires_at?: string | null;
-};
+type Account = { id: number; provider: string; account_type: string; account_name: string };
+type Post = { id: string; message?: string; created_time?: string; permalink_url?: string };
+
+const TYPE_LABELS: Record<string, string> = { facebook_page: 'Facebook Page', instagram_business: 'Instagram' };
 
 export default function Social() {
+  const session = useSession();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [accountId, setAccountId] = useState('');
   const [message, setMessage] = useState('');
-  const [statusMessage, setStatusMessage] = useState('');
-  const [monitoring, setMonitoring] = useState<Record<number, string>>({});
   const [link, setLink] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [posts, setPosts] = useState<Record<number, Post[]>>({});
+  const [loadingPosts, setLoadingPosts] = useState<number | null>(null);
+  const [devOpen, setDevOpen] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(() => {
     setLoading(true);
-    try {
-      const res = await api.get('/social/accounts');
-      setAccounts(res.data?.accounts ?? []);
-      setError('');
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'Unable to load social accounts');
-    } finally {
-      setLoading(false);
-    }
-  };
+    api
+      .get('/social/accounts')
+      .then((res) => {
+        const rows: Account[] = res.data?.accounts ?? [];
+        setAccounts(rows);
+        const firstPage = rows.find((account) => account.account_type === 'facebook_page');
+        if (firstPage) setAccountId((value) => value || String(firstPage.id));
+        setError(null);
+      })
+      .catch((err) => setError(errorMessage(err, 'Could not load your social accounts')))
+      .finally(() => setLoading(false));
+  }, []);
 
   useEffect(() => {
+    if (!session.connected) return;
     load();
     const params = new URLSearchParams(window.location.search);
     if (params.get('connected') === '1') {
-      setStatusMessage('Meta account connected successfully.');
+      setNotice('Your Meta account is connected.');
       window.history.replaceState({}, '', '/social');
     }
-  }, []);
+  }, [session.connected, load]);
 
-  const connectMetaTestToken = async () => {
-    setError('');
-    try {
-      const res = await api.post('/social/meta/test-connect');
-      setStatusMessage(`Meta test account connected. Pages saved: ${res.data?.pages_saved ?? 0}`);
-      await load();
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'Unable to connect configured Meta test token');
-    }
-  };
+  if (session.loading) return <PageSkeleton title="Social" withAside />;
+  if (!session.connected) return <NotConnected title="Social" />;
+
+  const pages = accounts.filter((account) => account.account_type === 'facebook_page');
 
   const connectMeta = async () => {
-    setError('');
+    setError(null);
     try {
       const res = await api.get('/social/meta/connect');
       const url = res.data?.authorization_url;
-      if (!url) throw new Error('Meta authorization URL was not returned');
-      window.location.href = url;
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'Unable to start Meta connection');
+      if (!url) throw new Error('Meta did not return a sign-in link');
+      // Meta's login page can't render inside the Shopify admin iframe.
+      window.open(url, '_top');
+    } catch (err) {
+      setError(errorMessage(err, 'Could not start the Meta connection'));
     }
   };
 
-  const publishFacebook = async (accountId: number) => {
-    if (!message.trim()) return;
-    setError('');
+  const connectTestToken = async () => {
+    setError(null);
     try {
-      await api.post('/social/meta/facebook/publish', {
-        account_id: accountId,
-        message: message.trim(),
-        link: link.trim() || null,
-      });
+      const res = await api.post('/social/meta/test-connect');
+      showToast(`Test account connected (${res.data?.pages_saved ?? 0} pages)`);
+      load();
+    } catch (err) {
+      setError(errorMessage(err, 'Could not connect the configured test token'));
+    }
+  };
+
+  const publish = async () => {
+    if (!message.trim() || !accountId) return;
+    setPublishing(true);
+    setError(null);
+    try {
+      await api.post('/social/meta/facebook/publish', { account_id: Number(accountId), message: message.trim(), link: link.trim() || null });
       setMessage('');
       setLink('');
-      setStatusMessage('Facebook post published.');
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'Facebook publish failed');
+      showToast('Posted to Facebook');
+      setPosts((value) => {
+        const next = { ...value };
+        delete next[Number(accountId)];
+        return next;
+      });
+    } catch (err) {
+      setError(errorMessage(err, 'Facebook did not accept the post'));
+    } finally {
+      setPublishing(false);
     }
   };
 
-  const monitorFacebook = async (accountId: number) => {
-    setError('');
+  const loadPosts = async (id: number) => {
+    setLoadingPosts(id);
+    setError(null);
     try {
-      const res = await api.get(`/social/meta/facebook/${accountId}/monitor`);
-      setMonitoring((prev) => ({ ...prev, [accountId]: JSON.stringify(res.data, null, 2) }));
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'Unable to load Facebook activity');
+      const res = await api.get(`/social/meta/facebook/${id}/monitor`);
+      setPosts((value) => ({ ...value, [id]: (res.data?.data ?? []) as Post[] }));
+    } catch (err) {
+      setError(errorMessage(err, 'Could not load recent posts'));
+    } finally {
+      setLoadingPosts(null);
     }
   };
 
   return (
-    <div>
-      <h1 style={{ fontSize: 24, marginBottom: 8 }}>Social Media</h1>
-      <p style={{ color: '#616161', marginBottom: 16 }}>
-        Connect Meta accounts to publish to Facebook Pages and linked Instagram professional accounts from Mia.
-      </p>
+    <Page
+      title="Social"
+      subtitle="Publish to your Facebook Page and keep an eye on recent posts"
+      primaryAction={accounts.length ? { content: 'Connect another account', onAction: connectMeta } : undefined}
+    >
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            {notice && <Banner tone="success" onDismiss={() => setNotice(null)}><p>{notice}</p></Banner>}
+            {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
-      {error && <p style={{ color: '#d72c0d' }}>Error: {error}</p>}
-      {statusMessage && <p style={{ color: '#008060' }}>{statusMessage}</p>}
-
-      <button
-        onClick={connectMetaTestToken}
-        style={{ marginLeft: 8, padding: '10px 16px', border: '1px solid #e1e3e5', borderRadius: 6, background: 'white', fontWeight: 600 }}
-      >
-        Connect configured test token
-      </button>
-
-      <button
-        onClick={connectMeta}
-        style={{ padding: '10px 16px', border: 'none', borderRadius: 6, background: '#1877f2', color: 'white', fontWeight: 600 }}
-      >
-        Connect Facebook / Instagram
-      </button>
-
-      <div style={{ marginTop: 20 }}>
-        <h2 style={{ fontSize: 16 }}>Connected accounts</h2>
-        {loading && <p>Loading...</p>}
-        {!loading && accounts.length === 0 && <p style={{ color: '#616161' }}>No social accounts connected.</p>}
-        {accounts.map((account) => (
-          <div key={account.id} style={{ marginTop: 10, padding: 14, border: '1px solid #e1e3e5', borderRadius: 8 }}>
-            <div style={{ fontWeight: 600 }}>{account.account_name}</div>
-            <div style={{ color: '#616161', fontSize: 12 }}>{account.provider} · {account.account_type}</div>
-            {account.account_type === 'facebook_page' && (
-              <div style={{ marginTop: 12 }}>
-                <textarea
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  placeholder="Write a Facebook post..."
-                  rows={4}
-                  style={{ width: '100%', padding: 8, border: '1px solid #e1e3e5', borderRadius: 6 }}
-                />
-                <input
-                  value={link}
-                  onChange={(e) => setLink(e.target.value)}
-                  placeholder="Optional link"
-                  style={{ width: '100%', marginTop: 8, padding: 8, border: '1px solid #e1e3e5', borderRadius: 6 }}
-                />
-                <button
-                  onClick={() => publishFacebook(account.id)}
-                  style={{ marginTop: 8, padding: '9px 14px', border: '1px solid #e1e3e5', borderRadius: 6, background: 'white', fontWeight: 600 }}
+            {loading ? (
+              <CardSkeleton />
+            ) : accounts.length === 0 ? (
+              <Card>
+                <EmptyState
+                  heading="Connect Facebook and Instagram"
+                  action={{ content: 'Connect with Meta', onAction: connectMeta }}
+                  image={EMPTY_STATE_IMAGE}
                 >
-                  Publish to Facebook
-                </button>
-                <button
-                  onClick={() => monitorFacebook(account.id)}
-                  style={{ marginTop: 8, marginLeft: 8, padding: '9px 14px', border: '1px solid #e1e3e5', borderRadius: 6, background: 'white' }}
-                >
-                  Monitor activity
-                </button>
-                {monitoring[account.id] && (
-                  <pre style={{ marginTop: 10, padding: 10, background: '#f6f6f7', overflow: 'auto', fontSize: 11 }}>
-                    {monitoring[account.id]}
-                  </pre>
+                  <p>Post Mia’s campaign copy straight to your Facebook Page and see how recent posts are doing.</p>
+                </EmptyState>
+              </Card>
+            ) : (
+              <>
+                {pages.length > 0 && (
+                  <Card>
+                    <BlockStack gap="300">
+                      <Text as="h2" variant="headingMd">New Facebook post</Text>
+                      <FormLayout>
+                        {pages.length > 1 && (
+                          <Select
+                            label="Page"
+                            options={pages.map((page) => ({ label: page.account_name, value: String(page.id) }))}
+                            value={accountId}
+                            onChange={setAccountId}
+                          />
+                        )}
+                        <TextField
+                          label="Post"
+                          value={message}
+                          onChange={setMessage}
+                          multiline={5}
+                          autoComplete="off"
+                          maxLength={5000}
+                          showCharacterCount
+                          helpText="Tip: generate copy in SEO & marketing, then paste it here."
+                        />
+                        <TextField label="Link (optional)" type="url" value={link} onChange={setLink} autoComplete="off" placeholder="https://" />
+                      </FormLayout>
+                      <InlineStack align="end">
+                        <Button variant="primary" icon={SendIcon} onClick={publish} loading={publishing} disabled={!message.trim()}>
+                          Publish to Facebook
+                        </Button>
+                      </InlineStack>
+                    </BlockStack>
+                  </Card>
                 )}
-              </div>
+
+                {pages.map((page) => (
+                  <Card key={page.id}>
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <Text as="h2" variant="headingMd">{`Recent posts · ${page.account_name}`}</Text>
+                        <Button onClick={() => loadPosts(page.id)} loading={loadingPosts === page.id}>
+                          {posts[page.id] ? 'Refresh' : 'Load posts'}
+                        </Button>
+                      </InlineStack>
+                      {posts[page.id] &&
+                        (posts[page.id].length === 0 ? (
+                          <Text as="p" tone="subdued">No posts yet.</Text>
+                        ) : (
+                          posts[page.id].slice(0, 10).map((post) => (
+                            <Box key={post.id} paddingBlockStart="300" borderBlockStartWidth="025" borderColor="border">
+                              <BlockStack gap="100">
+                                <Text as="p"><span className="mia-pre-wrap">{post.message || '(No text — media post)'}</span></Text>
+                                <InlineStack gap="200">
+                                  <Text as="span" variant="bodySm" tone="subdued">{formatDateTime(post.created_time)}</Text>
+                                  {post.permalink_url && <Link url={post.permalink_url} external>View on Facebook</Link>}
+                                </InlineStack>
+                              </BlockStack>
+                            </Box>
+                          ))
+                        ))}
+                    </BlockStack>
+                  </Card>
+                ))}
+              </>
             )}
-          </div>
-        ))}
-      </div>
-    </div>
+          </BlockStack>
+        </Layout.Section>
+
+        <Layout.Section variant="oneThird">
+          <BlockStack gap="400">
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">Connected accounts</Text>
+                {loading ? (
+                  <Text as="p" tone="subdued">Loading…</Text>
+                ) : accounts.length === 0 ? (
+                  <Text as="p" tone="subdued">None yet.</Text>
+                ) : (
+                  accounts.map((account) => (
+                    <InlineStack key={account.id} align="space-between" blockAlign="center" gap="200">
+                      <Text as="span">{account.account_name}</Text>
+                      <Badge>{TYPE_LABELS[account.account_type] || account.account_type}</Badge>
+                    </InlineStack>
+                  ))
+                )}
+              </BlockStack>
+            </Card>
+            <Card>
+              <BlockStack gap="200">
+                <InlineStack>
+                  <Button variant="plain" disclosure={devOpen ? 'up' : 'down'} onClick={() => setDevOpen((value) => !value)}>
+                    Developer options
+                  </Button>
+                </InlineStack>
+                <Collapsible open={devOpen} id="social-dev-options">
+                  <BlockStack gap="200">
+                    <Text as="p" variant="bodySm" tone="subdued">Connect the Meta test token configured on the server. For testing only.</Text>
+                    <InlineStack>
+                      <Button onClick={connectTestToken}>Connect test token</Button>
+                    </InlineStack>
+                  </BlockStack>
+                </Collapsible>
+              </BlockStack>
+            </Card>
+          </BlockStack>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }

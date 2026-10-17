@@ -1,31 +1,240 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  Badge,
+  BlockStack,
+  Box,
+  Button,
+  Card,
+  InlineStack,
+  Layout,
+  Page,
+  Select,
+  Spinner,
+  Text,
+  TextField,
+} from '@shopify/polaris';
+import { MagicIcon, SendIcon } from '@shopify/polaris-icons';
 import api from '../services/api';
+import { MarketingCopy, SeoSummary, type MarketingResult, type SeoResult } from '../components/MiaResults';
+import { ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
+import { errorMessage, formatNumber } from '../lib/format';
+import { useSession } from '../lib/session';
 
-type Product = { id:string; title:string; status?:string; inventory?:number; description?:string };
-type Context = { shop:string; revenue:number; counts:{products:number;orders:number;customers:number;inventory_units:number}; products:Product[]; low_stock:Array<{title:string;inventory:number}>; warnings:string[] };
-type Message = { role:'mia'|'user'; text:string; artifact?: any };
+type Product = { id: string; title: string; status?: string; inventory?: number };
+type Context = {
+  counts?: { products?: number; orders?: number; customers?: number; inventory_units?: number };
+  products?: Product[];
+  low_stock?: Array<{ title: string; inventory: number }>;
+  warnings?: string[];
+};
+type Artifact =
+  | { type: 'seo'; product?: { title?: string }; result: SeoResult }
+  | { type: 'marketing'; product?: { title?: string }; result: MarketingResult };
+type Message = { role: 'mia' | 'user'; text: string; artifact?: Artifact };
 
-export default function Mia(){
-  const [context,setContext]=useState<Context|null>(null);
-  const [selected,setSelected]=useState('');
-  const [messages,setMessages]=useState<Message[]>([{role:'mia',text:'I’m Mia — your live Shopify growth copilot. Select a product, then ask me to generate real SEO or ready-to-post marketing.'}]);
-  const [input,setInput]=useState(''); const [busy,setBusy]=useState(false); const [loading,setLoading]=useState(true);
-  useEffect(()=>{api.get('/mia/context').then(r=>{setContext(r.data); if(r.data?.products?.[0])setSelected(r.data.products[0].id);}).catch(()=>setContext(null)).finally(()=>setLoading(false));},[]);
-  async function send(e:FormEvent){e.preventDefault(); if(!input.trim()||busy)return; const q=input.trim(); setInput(''); await run(q);}
-  async function run(q:string){setMessages(m=>[...m,{role:'user',text:q}]);setBusy(true);try{const r=await api.post('/mia/chat',{message:selected?`${q}\n[Selected Shopify product: ${selected}]`:q});setMessages(m=>[...m,{role:'mia',text:r.data.answer,artifact:r.data.artifact}]);}catch(err:any){setMessages(m=>[...m,{role:'mia',text:err?.response?.data?.detail||'I could not complete that live Shopify/AI operation.'}]);}finally{setBusy(false);}}
-  const money=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
-  const product=context?.products?.find(p=>p.id===selected);
-  return <div className="mia-shell">
-    <section>
-      <div className="mia-hero"><div className="eyebrow">Mia Intelligence · LIVE SHOPIFY + AI</div><h1 className="mia-title">Your store, understood — and ready to grow.</h1><div className="mia-subtitle">Mia reads live Shopify products, sends the selected product to the server-side AI engine, and returns real SEO, marketing and creative work. Nothing is written to Shopify without approval.</div>
-      <div className="metric-grid">{[['Products',context?.counts.products??'—'],['Orders',context?.counts.orders??'—'],['Customers',context?.counts.customers??'—'],['Order value',context?money.format(context.revenue):'—']].map(([l,v])=><div className="metric-card" key={l as string}><div className="metric-label">{l}</div><div className="metric-value">{loading?'…':v}</div></div>)}</div></div>
-      <div className="panel" style={{marginTop:18}}><div className="panel-title">Product Copilot</div><select value={selected} onChange={e=>setSelected(e.target.value)} style={{width:'100%',padding:11,borderRadius:9,border:'1px solid #cbd5e1'}}>{(context?.products||[]).map(p=><option key={p.id} value={p.id}>{p.title} · {p.inventory ?? '—'} units</option>)}</select><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10}}><button className="glow-button" disabled={busy||!selected} onClick={()=>run(`Analyze this product and generate a real SEO package: ${product?.title||''}`)}>✦ Generate SEO</button><button className="glow-button" disabled={busy||!selected} onClick={()=>run(`Generate ready-to-post Facebook, Instagram, TikTok, email and paid-ad marketing for this product: ${product?.title||''}`)}>🚀 Create Marketing</button><button className="glow-button" disabled={busy||!selected} onClick={()=>run(`Analyze this product for weak description, SEO issues and conversion opportunities: ${product?.title||''}`)}>Analyze Product</button></div></div>
-      <div className="panel" style={{marginTop:18}}><div className="panel-title">Live catalog signals</div>{context?.low_stock?.length ? context.low_stock.slice(0,8).map(p=><div className="data-row" key={p.title}><span>{p.title}</span><strong>{p.inventory} left</strong></div>):<p>{loading?'Scanning store data…':'No low-stock products in the current data window.'}</p>}{context?.warnings?.map(w=><p key={w} style={{fontSize:12,color:'#b45309'}}>⚠ {w}</p>)}</div>
-    </section>
-    <aside className="panel chat"><div className="panel-title"><span style={{color:'#67e8f9'}}>●</span> Mia Copilot <span style={{float:'right',fontSize:11,color:'#7f8ba5'}}>LIVE SHOPIFY + AI</span></div><div className="chat-log">{messages.map((m,i)=><div key={i}><div className={`bubble ${m.role}`}>{m.text}</div>{m.artifact?.type==='seo'&&<SEOArtifact artifact={m.artifact}/>} {m.artifact?.type==='marketing'&&<MarketingArtifact artifact={m.artifact}/>}</div>)}{busy&&<div className="bubble mia">Mia is working with the live product and AI engine…</div>}</div><form className="chat-form" onSubmit={send}><input className="chat-input" value={input} onChange={e=>setInput(e.target.value)} placeholder="Ask Mia: generate SEO, Facebook marketing, TikTok, ads…"/><button className="glow-button" disabled={busy}>Ask</button></form></aside>
-  </div>
+const GREETING: Message = {
+  role: 'mia',
+  text: "Hi, I'm Mia. Pick a product and I'll write SEO, descriptions and ready-to-post campaigns from your live Shopify data. Nothing changes in your store until you approve it.",
+};
+
+const SUGGESTIONS = [
+  { label: 'Write an SEO package', prompt: (title: string) => `Analyze this product and generate a real SEO package: ${title}` },
+  { label: 'Create a campaign', prompt: (title: string) => `Generate ready-to-post Facebook, Instagram, TikTok, email and paid-ad marketing for this product: ${title}` },
+  { label: 'Find conversion issues', prompt: (title: string) => `Analyze this product for weak description, SEO issues and conversion opportunities: ${title}` },
+];
+
+export default function Mia() {
+  const session = useSession();
+  const [context, setContext] = useState<Context | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selected, setSelected] = useState('');
+  const [messages, setMessages] = useState<Message[]>([GREETING]);
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!session.connected) return;
+    api
+      .get('/mia/context')
+      .then((res) => {
+        setContext(res.data);
+        if (res.data?.products?.[0]) setSelected(res.data.products[0].id);
+      })
+      .catch((err) => setLoadError(errorMessage(err, 'Mia could not read your store right now.')))
+      .finally(() => setLoading(false));
+  }, [session.connected]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages, busy]);
+
+  if (session.loading) return <PageSkeleton title="Ask Mia" withAside />;
+  if (!session.connected) return <NotConnected title="Ask Mia" />;
+
+  const products = context?.products ?? [];
+  const product = products.find((p) => p.id === selected);
+
+  async function run(question: string) {
+    setMessages((current) => [...current, { role: 'user', text: question }]);
+    setBusy(true);
+    try {
+      const res = await api.post('/mia/chat', {
+        message: selected ? `${question}\n[Selected Shopify product: ${selected}]` : question,
+      });
+      setMessages((current) => [...current, { role: 'mia', text: res.data.answer, artifact: res.data.artifact }]);
+    } catch (err) {
+      setMessages((current) => [
+        ...current,
+        { role: 'mia', text: errorMessage(err, "I couldn't finish that. Please try again in a moment.") },
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function submit(event?: FormEvent) {
+    event?.preventDefault();
+    const question = input.trim();
+    if (!question || busy) return;
+    setInput('');
+    run(question);
+  }
+
+  return (
+    <Page title="Ask Mia" subtitle="Your AI growth assistant for this store" titleMetadata={<Badge tone="magic">AI</Badge>}>
+      <Layout>
+        <Layout.Section variant="oneThird">
+          <BlockStack gap="400">
+            {loadError && <ErrorBanner message={loadError} />}
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Product
+                </Text>
+                <Select
+                  label="Product Mia should work on"
+                  labelHidden
+                  disabled={loading || products.length === 0}
+                  options={
+                    products.length
+                      ? products.map((p) => ({ label: p.title, value: p.id }))
+                      : [{ label: loading ? 'Loading products…' : 'No products found', value: '' }]
+                  }
+                  value={selected}
+                  onChange={setSelected}
+                />
+                {product && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {formatNumber(product.inventory ?? 0)} in stock
+                  </Text>
+                )}
+                <BlockStack gap="200">
+                  {SUGGESTIONS.map((suggestion) => (
+                    <Button
+                      key={suggestion.label}
+                      icon={MagicIcon}
+                      textAlign="start"
+                      fullWidth
+                      disabled={busy || !product}
+                      onClick={() => product && run(suggestion.prompt(product.title))}
+                    >
+                      {suggestion.label}
+                    </Button>
+                  ))}
+                </BlockStack>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Store snapshot
+                </Text>
+                <InlineStack align="space-between">
+                  <Text as="span" tone="subdued">Products</Text>
+                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.products ?? 0)}</Text>
+                </InlineStack>
+                <InlineStack align="space-between">
+                  <Text as="span" tone="subdued">Orders</Text>
+                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.orders ?? 0)}</Text>
+                </InlineStack>
+                <InlineStack align="space-between">
+                  <Text as="span" tone="subdued">Units in stock</Text>
+                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.inventory_units ?? 0)}</Text>
+                </InlineStack>
+              </BlockStack>
+            </Card>
+
+            {!!context?.low_stock?.length && (
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    Low stock
+                  </Text>
+                  {context.low_stock.slice(0, 6).map((item) => (
+                    <InlineStack key={item.title} align="space-between" wrap={false} gap="200">
+                      <Box minWidth="0" width="100%">
+                        <Text as="span" truncate>
+                          {item.title}
+                        </Text>
+                      </Box>
+                      <span className="mia-nowrap">
+                        <Badge tone={item.inventory <= 0 ? 'critical' : 'warning'}>
+                          {item.inventory <= 0 ? 'Out of stock' : `${item.inventory} left`}
+                        </Badge>
+                      </span>
+                    </InlineStack>
+                  ))}
+                </BlockStack>
+              </Card>
+            )}
+          </BlockStack>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <div className="mia-chat-log" ref={logRef} aria-live="polite">
+                {messages.map((message, index) => (
+                  <BlockStack key={index} gap="200">
+                    <div className={`mia-bubble mia-bubble--${message.role}`}>{message.text}</div>
+                    {message.artifact?.type === 'seo' && (
+                      <SeoSummary result={message.artifact.result} title={message.artifact.product?.title} />
+                    )}
+                    {message.artifact?.type === 'marketing' && <MarketingCopy result={message.artifact.result} compact />}
+                  </BlockStack>
+                ))}
+                {busy && (
+                  <InlineStack gap="200" blockAlign="center">
+                    <Spinner size="small" accessibilityLabel="Mia is working" />
+                    <Text as="span" tone="subdued">
+                      Mia is working on it…
+                    </Text>
+                  </InlineStack>
+                )}
+              </div>
+              <form onSubmit={submit}>
+                <TextField
+                  label="Message Mia"
+                  labelHidden
+                  value={input}
+                  onChange={setInput}
+                  autoComplete="off"
+                  placeholder="Ask for SEO, a product description, a TikTok script…"
+                  disabled={busy}
+                  connectedRight={
+                    <Button submit variant="primary" icon={SendIcon} disabled={busy || !input.trim()} accessibilityLabel="Send">
+                      Send
+                    </Button>
+                  }
+                />
+              </form>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
+  );
 }
-
-function SEOArtifact({artifact}:{artifact:any}){const r=artifact.result;return <div className="panel" style={{margin:'8px 0',background:'#f8fafc'}}><strong>✦ Real SEO Package · {artifact.product?.title}</strong><p><b>SEO title:</b> {r.seo_title}</p><p><b>Meta description:</b> {r.meta_description}</p><p><b>Optimized title:</b> {r.optimized_title}</p><p><b>Keywords:</b> {r.keywords.join(', ')}</p><p><b>Image alt:</b> {r.image_alt_text.join(' · ')}</p><div dangerouslySetInnerHTML={{__html:r.optimized_description_html}}/><a href="/marketing" style={{display:'inline-block',marginTop:8}}>Open SEO workspace →</a></div>}
-
-function MarketingArtifact({artifact}:{artifact:any}){const r=artifact.result;return <div className="panel" style={{margin:'8px 0',background:'#0f172a',color:'white'}}><strong>🚀 Ready-to-Post Marketing · {artifact.product?.title}</strong>{r.image_url&&<img src={r.image_url} alt={artifact.product?.title} style={{width:'100%',maxHeight:220,objectFit:'cover',borderRadius:10,marginTop:8}}/>}<p><b>Facebook:</b> {r.facebook.copy}</p><p><b>Instagram:</b> {r.instagram.copy}</p><p><b>TikTok:</b> {r.tiktok.copy}</p><p><b>Ad:</b> {r.ad.primary_text}</p><p><b>Email:</b> {r.email.subject}</p><a href="/marketing" style={{color:'#67e8f9'}}>Open Marketing Studio →</a></div>}

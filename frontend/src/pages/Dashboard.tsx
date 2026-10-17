@@ -1,283 +1,233 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Badge,
+  BlockStack,
+  Box,
+  Button,
+  Card,
+  Icon,
+  IndexTable,
+  InlineGrid,
+  InlineStack,
+  Layout,
+  Page,
+  Text,
+} from '@shopify/polaris';
+import { ImportIcon, MagicIcon, MegaphoneIcon, ProductIcon } from '@shopify/polaris-icons';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import StatCard from '../components/StatCard';
+import { CardSkeleton, ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
+import { formatDateTime, formatMoney, formatNumber, idPath } from '../lib/format';
+import { useSession } from '../lib/session';
 
-type Session = {
-  connected: boolean;
-  shop_domain?: string | null;
-  scopes?: string | null;
+type Sale = { id?: string | null; name?: string | null; created_at?: string | null; amount?: number | null; currency?: string | null };
+type TopProduct = { title?: string | null; sku?: string | null; units_sold?: number | null; revenue?: number | null };
+type Summary = {
+  revenue?: number | null;
+  orders?: number | null;
+  customers?: number | null;
+  average_order_value?: number | null;
+  recent_sales?: Sale[] | null;
+  top_products?: TopProduct[] | null;
 };
-
-type DashboardSummary = {
-  revenue?: number;
-  orders?: number;
-  customers?: number;
-  average_order_value?: number;
-  recent_sales?: Array<{
-    id?: string | null;
-    name?: string | null;
-    created_at?: string | null;
-    amount?: number | null;
-    currency?: string | null;
-    customer?: Record<string, unknown> | null;
-  }>;
-};
+type MiaContext = { low_stock?: Array<{ title: string; inventory: number }>; counts?: { products?: number } };
 
 export default function Dashboard() {
-  const [session, setSession] = useState<Session | null>(null);
+  const session = useSession();
+  const navigate = useNavigate();
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [context, setContext] = useState<MiaContext | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
-  const [dashboardLoading, setDashboardLoading] = useState(false);
-  const [dashboardError, setDashboardError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    api.get('/auth/session')
-      .then((res) => {
-        if (cancelled) return;
-        setSession(res.data as Session);
-        setError(null);
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    Promise.allSettled([api.get('/analytics/'), api.get('/mia/context')])
+      .then(([analytics, mia]) => {
+        if (analytics.status === 'fulfilled') setSummary(analytics.value.data as Summary);
+        else setError('We could not load your Shopify sales right now.');
+        if (mia.status === 'fulfilled') setContext(mia.value.data as MiaContext);
       })
-      .catch((err) => {
-        if (cancelled) return;
-        setSession({ connected: false, shop_domain: null, scopes: null });
-        setError((err as Error)?.message || 'Failed to load session');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    if (!session?.connected) {
-      setDashboard(null);
-      return;
-    }
+    if (session.connected) load();
+  }, [session.connected, load]);
 
-    let cancelled = false;
-    setDashboardLoading(true);
-    setDashboardError(null);
+  if (session.loading) return <PageSkeleton title="Dashboard" withAside />;
+  if (!session.connected) return <NotConnected title="Dashboard" />;
 
-    api.get('/analytics/')
-      .then((res) => {
-        if (cancelled) return;
-        setDashboard(res.data as DashboardSummary);
-        setDashboardError(null);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setDashboard(null);
-        setDashboardError(
-          "We could not load your Shopify sales right now. Please try again shortly.",
-        );
-      })
-      .finally(() => {
-        if (!cancelled) setDashboardLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.connected, refreshKey]);
-
-  const formatCurrency = (value?: number | null, currency = 'USD') => {
-    if (typeof value !== 'number') return '—';
-    try {
-      return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency,
-        maximumFractionDigits: 2,
-      }).format(value);
-    } catch {
-      return `${currency} ${value.toFixed(2)}`;
-    }
-  };
-
-  const formatDate = (value?: string | null) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleString();
-  };
-
-  if (loading) {
-    return <p>Loading...</p>;
-  }
-
-  const connectionError = error && !session?.connected;
+  const currency = summary?.recent_sales?.find((sale) => sale.currency)?.currency || 'USD';
+  const sales = summary?.recent_sales ?? [];
+  const topProducts = summary?.top_products ?? [];
+  const lowStock = context?.low_stock ?? [];
 
   return (
-    <div>
-      <h1 style={{ fontSize: 24, marginBottom: 16 }}>Dashboard</h1>
+    <Page
+      title="Dashboard"
+      subtitle={session.shopDomain ?? undefined}
+      primaryAction={{ content: 'Ask Mia', icon: MagicIcon, url: '/mia' }}
+    >
+      <BlockStack gap="500">
+        {error && <ErrorBanner message={error} onRetry={load} />}
 
-      {connectionError && (
-        <div
-          style={{
-            padding: 12,
-            borderRadius: 6,
-            background: '#fff4f4',
-            color: '#d72c0d',
-            marginBottom: 16,
-          }}
-        >
-          {error}
-        </div>
-      )}
+        <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
+          <StatCard label="Revenue" value={formatMoney(summary?.revenue ?? 0, currency)} loading={loading} />
+          <StatCard label="Orders" value={formatNumber(summary?.orders ?? 0)} loading={loading} />
+          <StatCard label="Average order value" value={formatMoney(summary?.average_order_value ?? 0, currency)} loading={loading} />
+          <StatCard label="Customers" value={formatNumber(summary?.customers ?? 0)} loading={loading} />
+        </InlineGrid>
 
-      <div
-        style={{
-          padding: 16,
-          border: '1px solid #e1e3e5',
-          borderRadius: 8,
-          marginBottom: 16,
-        }}
-      >
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Connection status</h2>
-        <p>
-          {session?.connected
-            ? `Shopify connected: ${session.shop_domain || 'Unknown'}`
-            : 'Mia AI is not yet connected to Shopify.'}
-        </p>
-        {session?.scopes && (
-          <p style={{ color: '#616161', fontSize: 12 }}>
-            Permissions: {session.scopes}
-          </p>
-        )}
-      </div>
+        <Card>
+          <InlineStack align="space-between" blockAlign="center" gap="400" wrap>
+            <InlineStack gap="300" blockAlign="center" wrap={false}>
+              <Box background="bg-surface-magic" borderRadius="200" padding="200">
+                <Icon source={MagicIcon} tone="magic" />
+              </Box>
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  {lowStock.length > 0
+                    ? `${lowStock.length} product${lowStock.length === 1 ? ' is' : 's are'} running low`
+                    : 'Mia is ready to grow your catalog'}
+                </Text>
+                <Text as="p" tone="subdued">
+                  {lowStock.length > 0
+                    ? `${lowStock.slice(0, 2).map((p) => p.title).join(', ')}${lowStock.length > 2 ? ' and more' : ''} — restock or promote them before they sell out.`
+                    : 'Generate SEO packages, product descriptions and ready-to-post campaigns from your live products.'}
+                </Text>
+              </BlockStack>
+            </InlineStack>
+            <InlineStack gap="200">
+              {lowStock.length > 0 && <Button url="/products">Review products</Button>}
+              <Button variant="primary" url="/marketing">
+                Open SEO &amp; marketing
+              </Button>
+            </InlineStack>
+          </InlineStack>
+        </Card>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: 16,
-          marginBottom: 16,
-        }}
-      >
-        {[
-          { label: 'Revenue', value: formatCurrency(dashboard?.revenue ?? 0) },
-          { label: 'Orders', value: dashboard?.orders ?? 0 },
-          { label: 'Average order value', value: formatCurrency(dashboard?.average_order_value ?? 0) },
-        ].map((item) => (
-          <div
-            key={item.label}
-            style={{
-              padding: 16,
-              border: '1px solid #e1e3e5',
-              borderRadius: 8,
-            }}
-          >
-            <h3 style={{ fontSize: 14, color: '#616161', marginBottom: 8 }}>
-              {item.label}
-            </h3>
-            <p style={{ fontSize: 20, fontWeight: 600 }}>
-              {dashboardLoading ? '...' : item.value}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-        <div
-          style={{
-            padding: 16,
-            border: '1px solid #e1e3e5',
-            borderRadius: 8,
-          }}
-        >
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Recent sales</h2>
-          {dashboardLoading && <p>Loading...</p>}
-          {dashboardError && (
-            <div
-              style={{
-                padding: 12,
-                borderRadius: 6,
-                background: '#fff4f4',
-                color: '#d72c0d',
-                marginBottom: 16,
-              }}
-            >
-              {dashboardError}
-              <button
-                type="button"
-                onClick={() => setRefreshKey((value) => value + 1)}
-                style={{ display: "block", marginTop: 8 }}
-              >
-                Try again
-              </button>
-            </div>
-          )}
-          {session?.connected && !dashboardLoading && !dashboardError && !dashboard && (
-            <div
-              style={{
-                padding: 16,
-                border: '1px solid #e1e3e5',
-                borderRadius: 8,
-                color: '#616161',
-              }}
-            >
-              Connect Shopify to see real sales data.
-            </div>
-          )}
-          {session?.connected && !dashboardLoading && !dashboardError && dashboard && (
-            <>
-              {(dashboard?.recent_sales?.length ?? 0) === 0 && (
-                <p style={{ color: '#616161' }}>No recent sales.</p>
-              )}
-              {(dashboard?.recent_sales ?? []).map((sale) => (
-                <div
-                  key={sale.id}
-                  style={{
-                    padding: '10px 0',
-                    borderBottom: '1px solid #f1f2f4',
-                  }}
+        <Layout>
+          <Layout.Section>
+            {loading ? (
+              <CardSkeleton lines={8} />
+            ) : (
+              <Card padding="0">
+                <Box padding="400">
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h2" variant="headingMd">
+                      Recent orders
+                    </Text>
+                    <Button variant="plain" url="/orders">
+                      View all
+                    </Button>
+                  </InlineStack>
+                </Box>
+                <IndexTable
+                  resourceName={{ singular: 'order', plural: 'orders' }}
+                  itemCount={sales.length}
+                  selectable={false}
+                  headings={[{ title: 'Order' }, { title: 'Date' }, { title: 'Total', alignment: 'end' }]}
+                  emptyState={
+                    <Box padding="600">
+                      <Text as="p" alignment="center" tone="subdued">
+                        No orders yet. New orders will show up here.
+                      </Text>
+                    </Box>
+                  }
                 >
-                  <div style={{ fontWeight: 600 }}>{sale.name || 'Untitled order'}</div>
-                  <div style={{ color: '#616161', fontSize: 12 }}>
-                    {formatDate(sale.created_at)}
-                  </div>
-                  <div style={{ color: '#616161', fontSize: 12 }}>
-                    {formatCurrency(sale.amount, sale.currency || 'USD')}
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
+                  {sales.map((sale, index) => (
+                    <IndexTable.Row
+                      id={sale.id || String(index)}
+                      key={sale.id || index}
+                      position={index}
+                      onClick={() => sale.id && navigate(idPath('/orders', sale.id))}
+                    >
+                      <IndexTable.Cell>
+                        <Text as="span" fontWeight="semibold">
+                          {sale.name || 'Order'}
+                        </Text>
+                      </IndexTable.Cell>
+                      <IndexTable.Cell>{formatDateTime(sale.created_at)}</IndexTable.Cell>
+                      <IndexTable.Cell>
+                        <Text as="span" alignment="end" numeric>
+                          {formatMoney(sale.amount, sale.currency || currency)}
+                        </Text>
+                      </IndexTable.Cell>
+                    </IndexTable.Row>
+                  ))}
+                </IndexTable>
+              </Card>
+            )}
+          </Layout.Section>
 
-        <div
-          style={{
-            padding: 16,
-            border: '1px solid #e1e3e5',
-            borderRadius: 8,
-          }}
-        >
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Quick actions</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <Link to="/products" style={{ color: '#005bd3', textDecoration: 'none' }}>
-              Manage products
-            </Link>
-            <Link to="/orders" style={{ color: '#005bd3', textDecoration: 'none' }}>
-              View orders
-            </Link>
-            <Link to="/customers" style={{ color: '#005bd3', textDecoration: 'none' }}>
-              Review customers
-            </Link>
-            <Link to="/imports" style={{ color: '#005bd3', textDecoration: 'none' }}>
-              Import products
-            </Link>
-            <Link to="/marketing" style={{ color: '#005bd3', textDecoration: 'none' }}>
-              Marketing assistant
-            </Link>
-          </div>
-        </div>
-      </div>
-    </div>
+          <Layout.Section variant="oneThird">
+            <BlockStack gap="400">
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    Top products
+                  </Text>
+                  {loading ? (
+                    <Text as="p" tone="subdued">
+                      Loading…
+                    </Text>
+                  ) : topProducts.length === 0 ? (
+                    <Text as="p" tone="subdued">
+                      Sales by product appear after your first orders.
+                    </Text>
+                  ) : (
+                    topProducts.map((product, index) => (
+                      <InlineStack key={`${product.title}-${product.sku}-${index}`} align="space-between" blockAlign="center" wrap={false} gap="200">
+                        <Box minWidth="0" width="100%">
+                          <BlockStack gap="050">
+                            <Text as="span" fontWeight="medium" truncate>
+                              {product.title || 'Untitled product'}
+                            </Text>
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              {formatNumber(product.units_sold ?? 0)} sold
+                            </Text>
+                          </BlockStack>
+                        </Box>
+                        <Text as="span" numeric>
+                          {formatMoney(product.revenue ?? 0, currency)}
+                        </Text>
+                      </InlineStack>
+                    ))
+                  )}
+                </BlockStack>
+              </Card>
+
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    Shortcuts
+                  </Text>
+                  <Shortcut icon={ProductIcon} label="Manage products" url="/products" />
+                  <Shortcut icon={ImportIcon} label="Import products from CSV" url="/imports" />
+                  <Shortcut icon={MegaphoneIcon} label="Create a campaign" url="/marketing" badge="AI" />
+                </BlockStack>
+              </Card>
+            </BlockStack>
+          </Layout.Section>
+        </Layout>
+      </BlockStack>
+    </Page>
+  );
+}
+
+function Shortcut({ icon, label, url, badge }: { icon: typeof ProductIcon; label: string; url: string; badge?: string }) {
+  return (
+    <InlineStack gap="200" blockAlign="center" wrap={false}>
+      <Box>
+        <Icon source={icon} tone="subdued" />
+      </Box>
+      <Button variant="plain" url={url}>
+        {label}
+      </Button>
+      {badge && <Badge tone="magic">{badge}</Badge>}
+    </InlineStack>
   );
 }
