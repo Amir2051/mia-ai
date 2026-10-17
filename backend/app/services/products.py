@@ -619,8 +619,29 @@ class ImportService:
         default_status = payload.get("status") or "DRAFT"
         validate_only = bool(payload.get("validate_only"))
 
+        # Default mapping from Shopify product field names to CSV column names.
+        # The dict maps Shopify field names (targets) to CSV column names (sources).
+        # Example: "sku": "variant_sku" means take the "variant_sku" CSV column
+        # and map it to the Shopify product field "sku".
+        default_mapping = {
+            "title": "title",
+            "descriptionHtml": "body_html",
+            "vendor": "vendor",
+            "productType": "product_type",
+            "tags": "tags",
+            "status": "published",
+            "sku": "variant_sku",
+            "price": "variant_price",
+            "compareAtPrice": "variant_compare_at_price",
+            "inventoryQuantity": "variant_inventory_qty",
+            "weight": "variant_weight",
+            "image": "image",
+        }
+
+        full_mapping = {**default_mapping, **mapping}
+
         parsed = self.parse_csv(content)
-        validation = self.validate_import_rows(parsed["rows"], mapping)
+        validation = self.validate_import_rows(parsed["rows"], full_mapping)
 
         result = await self.db.execute(
             ProductImport.__table__.select()
@@ -766,6 +787,32 @@ class ImportService:
 
     def map_row_to_product(self, row: Dict[str, Any], mapping: Dict[str, str]) -> Dict[str, Any]:
         mapped: Dict[str, Any] = {}
+
+        # If no mapping is provided, map the CSV column names directly
+        # to the standard Shopify product field names.
+        if not mapping:
+            # Direct column name mapping (CSV headers are already in the expected format)
+            csv_to_shopify = {
+                "title": "title",
+                "body_html": "descriptionHtml",
+                "vendor": "vendor",
+                "product_type": "productType",
+                "tags": "tags",
+                "published": "status",
+                "variant_sku": "sku",
+                "variant_price": "price",
+                "variant_compare_at_price": "compareAtPrice",
+                "variant_inventory_qty": "inventoryQuantity",
+                "variant_weight": "weight",
+                "variant_title": "title",
+                "image": "image",
+            }
+            for csv_col, shopify_key in csv_to_shopify.items():
+                if csv_col in row and row[csv_col] not in (None, ""):
+                    mapped[shopify_key] = row[csv_col]
+            return mapped
+
+        # Use explicit mapping when provided
         for target, source_key in mapping.items():
             if source_key in row and row[source_key] not in (None, ""):
                 mapped[target] = row[source_key]
@@ -848,8 +895,29 @@ class ImportService:
         default_status = payload.get("status") or "DRAFT"
         validate_only = bool(payload.get("validate_only"))
 
+        # Default mapping from Shopify product field names to CSV column names.
+        # The dict maps Shopify field names (targets) to CSV column names (sources).
+        # Example: "sku": "variant_sku" means take the "variant_sku" CSV column
+        # and map it to the Shopify product field "sku".
+        default_mapping = {
+            "title": "title",
+            "descriptionHtml": "body_html",
+            "vendor": "vendor",
+            "productType": "product_type",
+            "tags": "tags",
+            "status": "published",
+            "sku": "variant_sku",
+            "price": "variant_price",
+            "compareAtPrice": "variant_compare_at_price",
+            "inventoryQuantity": "variant_inventory_qty",
+            "weight": "variant_weight",
+            "image": "image",
+        }
+
+        full_mapping = {**default_mapping, **mapping}
+
         parsed = self.parse_csv(content)
-        validation = self.validate_import_rows(parsed["rows"], mapping)
+        validation = self.validate_import_rows(parsed["rows"], full_mapping)
 
         record = ProductImport(
             shop_id=shop_id,

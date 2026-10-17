@@ -62,18 +62,44 @@ class CsvImportService(ImportService):
                     title_candidate = {"id": product.get("id"), "title": product_title, "match": "title"}
         return title_candidate
 
-    @staticmethod
-    def _prepare_product(mapped: Dict[str, Any], default_status: str) -> Dict[str, Any]:
+    def _prepare_product(self, mapped: Dict[str, Any], default_status: str) -> Dict[str, Any]:
+        """Prepare product payload for Shopify import.
+
+        Converts CSV variant field names to Shopify field names and builds the
+        variants array with the actual variant title from the CSV.
+        """
         product = dict(mapped)
         product["status"] = default_status
-        variant_fields = {"sku", "price", "compareAtPrice", "inventoryQuantity", "weight", "inventoryPolicy", "fulfillmentService"}
-        if any(key in product for key in variant_fields):
+
+        # Shopify variant fields
+        variant_fields = {
+            "sku", "price", "compareAtPrice", "inventoryQuantity",
+            "weight", "inventoryPolicy", "fulfillmentService"
+        }
+
+        # Check if this row has variant data (Shopify-style or mapped CSV field names)
+        has_variants = any(key in product for key in variant_fields) or "variants" in product
+
+        if has_variants:
             variant_input: Dict[str, Any] = {}
+
+            # Convert Shopify variant fields to Shopify format
             for key in variant_fields:
                 if key in product:
                     variant_input[key] = product.pop(key)
-            variant_input["selectedOptions"] = [{"name": "Title", "value": "Default Title"}]
+
+            # Get variant title from mapped data (CSV 'title' column maps to variant 'title')
+            if "title" in mapped:
+                variant_input["selectedOptions"] = [
+                    {"name": "Title", "value": mapped["title"]}
+                ]
+            else:
+                variant_input["selectedOptions"] = [
+                    {"name": "Title", "value": "Default Title"}
+                ]
+
             product["variants"] = [variant_input]
+
         return product
 
     @staticmethod
@@ -171,16 +197,81 @@ class CsvImportService(ImportService):
 
     async def create_import_from_csv(self, shop_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         duplicate_action = self.normalize_duplicate_action(payload.get("duplicate_action"))
-        record = ProductImport(shop_id=shop_id, source="csv", supplier_sku=None, title=payload.get("title"), description=payload.get("description"), images=payload.get("images"), cost=payload.get("cost"), retail_price=payload.get("retail_price"), variants_json=payload.get("variants_json"), category=payload.get("category"), tags=",".join(str(tag) for tag in payload.get("tags") or [] if str(tag).strip()), inventory=payload.get("inventory"), status="pending", sync_status="pending", error=None)
+        content = payload.get("content") or ""
+        mapping = payload.get("mapping") or {}
+
+        # Default mapping from Shopify product field names to CSV column names.
+        # The dict maps Shopify field names (targets) to CSV column names (sources).
+        # Example: "sku": "variant_sku" means take the "variant_sku" CSV column
+        # and map it to the Shopify product field "sku".
+        default_mapping = {
+            "title": "title",
+            "descriptionHtml": "body_html",
+            "vendor": "vendor",
+            "productType": "product_type",
+            "tags": "tags",
+            "status": "published",
+            "sku": "variant_sku",
+            "price": "variant_price",
+            "compareAtPrice": "variant_compare_at_price",
+            "inventoryQuantity": "variant_inventory_qty",
+            "weight": "variant_weight",
+            "image": "image",
+        }
+
+        # Prepend default mapping to user-provided mapping
+        full_mapping = {**default_mapping, **mapping}
+
+        record = ProductImport(
+            shop_id=shop_id,
+            source="csv",
+            supplier_sku=None,
+            title=payload.get("title"),
+            description=payload.get("description"),
+            images=payload.get("images"),
+            cost=payload.get("cost"),
+            retail_price=payload.get("retail_price"),
+            variants_json=payload.get("variants_json"),
+            category=payload.get("category"),
+            tags=",".join(str(tag) for tag in payload.get("tags") or [] if str(tag).strip()),
+            inventory=payload.get("inventory"),
+            status="pending",
+            sync_status="pending",
+            error=None,
+        )
         self.db.add(record)
         await self.db.flush()
         await self.db.refresh(record)
-        return await self._execute_csv(record, payload.get("content") or "", payload.get("mapping") or {}, duplicate_action, payload.get("status") or "DRAFT", bool(payload.get("validate_only")))
+        return await self._execute_csv(record, content, full_mapping, duplicate_action, payload.get("status") or "DRAFT", bool(payload.get("validate_only")))
 
     async def update_import_from_csv(self, import_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         duplicate_action = self.normalize_duplicate_action(payload.get("duplicate_action"))
+        content = payload.get("content") or ""
+        mapping = payload.get("mapping") or {}
+
+        # Default mapping from Shopify product field names to CSV column names.
+        # The dict maps Shopify field names (targets) to CSV column names (sources).
+        # Example: "sku": "variant_sku" means take the "variant_sku" CSV column
+        # and map it to the Shopify product field "sku".
+        default_mapping = {
+            "title": "title",
+            "descriptionHtml": "body_html",
+            "vendor": "vendor",
+            "productType": "product_type",
+            "tags": "tags",
+            "status": "published",
+            "sku": "variant_sku",
+            "price": "variant_price",
+            "compareAtPrice": "variant_compare_at_price",
+            "inventoryQuantity": "variant_inventory_qty",
+            "weight": "variant_weight",
+            "image": "image",
+        }
+
+        full_mapping = {**default_mapping, **mapping}
+
         result = await self.db.execute(ProductImport.__table__.select().where(ProductImport.id == import_id, ProductImport.shop_id == self.shop.id))
         if not result.mappings().first():
             raise ValueError("Import not found")
         record = await self.db.get(ProductImport, import_id)
-        return await self._execute_csv(record, payload.get("content") or "", payload.get("mapping") or {}, duplicate_action, payload.get("status") or "DRAFT", bool(payload.get("validate_only")))
+        return await self._execute_csv(record, content, full_mapping, duplicate_action, payload.get("status") or "DRAFT", bool(payload.get("validate_only")))
