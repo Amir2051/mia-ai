@@ -122,7 +122,7 @@ async def list_orders(
 
 
 @router.get(
-    "/{order_id}",
+    "/{order_id:path}",
     response_model=OrderListResponse,
 )
 async def get_order(

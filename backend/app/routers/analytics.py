@@ -8,7 +8,7 @@ from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
-from app.services.analytics import compute_dashboard, compute_recent_sales, compute_top_products, filter_orders_by_date
+from app.services.analytics import compute_dashboard, compute_recent_sales, compute_top_products, filter_orders_by_date, filter_orders_response
 from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
@@ -87,7 +87,7 @@ async def _load_customers(shop: Shop) -> dict:
     return {"customers": {"edges": edges, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
 
 @router.get("/", response_model=AnalyticsResponse)
-async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
+async def analytics(start: Optional[str] = Query(None), end: Optional[str] = Query(None), current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     if not current:
         return AnalyticsResponse(connected=False)
     shop = await _current_shop_or_connected_error(current, db)
@@ -108,8 +108,20 @@ async def analytics(current: Optional[CurrentUser] = Depends(get_optional_shop),
     except ShopifyAPIError:
         customer_data = {}
 
+    # One Shopify download feeds every dashboard section; the separate
+    # /products and /recent-sales endpoints each re-download all orders.
+    order_data = filter_orders_response(order_data, start=start, end=end)
     dashboard = compute_dashboard(order_data, customer_data)
-    return AnalyticsResponse(connected=True, shop_domain=shop.shop_domain, revenue=dashboard.get("revenue"), orders=dashboard.get("orders"), customers=dashboard.get("customers"), average_order_value=dashboard.get("average_order_value"))
+    return AnalyticsResponse(
+        connected=True,
+        shop_domain=shop.shop_domain,
+        revenue=dashboard.get("revenue"),
+        orders=dashboard.get("orders"),
+        customers=dashboard.get("customers"),
+        average_order_value=dashboard.get("average_order_value"),
+        top_products=compute_top_products(order_data, limit=5),
+        recent_sales=compute_recent_sales(order_data, limit=10),
+    )
 
 @router.get("/products", response_model=AnalyticsResponse)
 async def product_performance(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):

@@ -308,6 +308,13 @@ class ProductService:
                     inventory_item = node.get("inventoryItem") or {}
                     inventory_item_id = inventory_item.get("id")
                     levels = ((inventory_item.get("inventoryLevels") or {}).get("nodes") or [])
+                    if len(levels) > 1:
+                        # One number can't say how stock splits across locations;
+                        # writing it to each would multiply the total.
+                        raise ShopifyAPIError(
+                            f"This variant is stocked at {len(levels)} locations. Update its inventory per location in Shopify.",
+                            status_code=400,
+                        )
                     if inventory_item_id:
                         for level in levels:
                             location_id = ((level.get("location") or {}).get("id"))

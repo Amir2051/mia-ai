@@ -28,12 +28,18 @@ class OrderService:
         )
 
     async def get_order(self, order_id: str) -> dict:
+        # Same field policy as list_orders: no protected customer data
+        # (email, shipping address, customer), so the order still loads
+        # before Shopify approves protected customer data access.
         gql = (
             'query($id: ID!) {'
             '  order(id: $id) {'
-            '    id name email'
-            '    shippingAddress { name address1 address2 city province country zip phone }'
-            '    lineItems(first: 250) { edges { node { title quantity variant { sku } originalUnitPriceSet { shopMoney { amount currencyCode } } } } }'
+            '    id name createdAt displayFinancialStatus displayFulfillmentStatus'
+            '    subtotalPriceSet { shopMoney { amount currencyCode } }'
+            '    totalShippingPriceSet { shopMoney { amount currencyCode } }'
+            '    totalTaxSet { shopMoney { amount currencyCode } }'
+            '    totalPriceSet { shopMoney { amount currencyCode } }'
+            '    lineItems(first: 250) { edges { node { title quantity sku originalUnitPriceSet { shopMoney { amount currencyCode } } } } }'
             '    transactions { id kind status amountSet { shopMoney { amount currencyCode } } }'
             '  }'
             '}'

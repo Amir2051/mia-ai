@@ -4,6 +4,7 @@ from app.services.analytics import (
     compute_recent_sales,
     compute_top_products,
     filter_orders_by_date,
+    filter_orders_response,
 )
 
 
@@ -87,3 +88,26 @@ def test_filter_orders_by_date_limits_range():
     ]}}
     filtered = filter_orders_by_date(orders_response, start="2026-09-02T00:00:00Z", end="2026-09-02T23:59:59Z")
     assert filtered["count"] == 0
+
+
+def _orders(*created_at):
+    return {"orders": {"edges": [
+        {"node": {"id": f"gid://shopify/Order/{i}", "createdAt": c,
+                  "totalPriceSet": {"shopMoney": {"amount": "10.00", "currencyCode": "USD"}}}}
+        for i, c in enumerate(created_at, start=1)
+    ]}}
+
+
+def test_filter_orders_response_without_range_returns_input():
+    data = _orders("2026-10-01T10:00:00Z")
+    assert filter_orders_response(data) is data
+
+
+def test_filter_orders_response_includes_whole_end_day():
+    data = _orders("2026-09-30T23:00:00Z", "2026-10-01T09:00:00Z", "2026-10-16T21:14:00Z", "2026-10-17T00:30:00Z")
+
+    filtered = filter_orders_response(data, start="2026-10-01", end="2026-10-16")
+
+    ids = [edge["node"]["id"] for edge in filtered["orders"]["edges"]]
+    assert ids == ["gid://shopify/Order/2", "gid://shopify/Order/3"]
+    assert compute_dashboard(filtered, {})["revenue"] == 20.0

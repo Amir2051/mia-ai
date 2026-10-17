@@ -39,7 +39,7 @@ class UpdateProductPayload(BaseModel):
     product: Dict[str, Any]
 
 
-@router.put("/{product_id}", response_model=ProductUpdateResponse)
+@router.put("/{product_id:path}", response_model=ProductUpdateResponse)
 async def update_product(
     product_id: str,
     body: UpdateProductPayload,

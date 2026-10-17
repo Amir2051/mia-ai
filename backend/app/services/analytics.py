@@ -9,7 +9,7 @@ average order value, and date-filtered analytics.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -208,3 +208,33 @@ def filter_orders_by_date(
         "count": len(filtered),
         "revenue": float(_sum_revenue(filtered)),
     }
+
+
+def filter_orders_response(
+    orders_response: Dict[str, Any],
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Keep only orders created in [start, end], preserving the GraphQL shape.
+
+    A date-only ``end`` (YYYY-MM-DD) includes that whole day.
+    """
+    if not start and not end:
+        return orders_response
+    start_dt = _parse_created_at(start) if start else None
+    end_dt = _parse_created_at(end) if end else None
+    if end_dt is not None and end and len(str(end)) == 10:
+        end_dt = end_dt + timedelta(days=1) - timedelta(microseconds=1)
+
+    edges = (((orders_response.get("orders") or {}).get("edges")) or [])
+    kept = []
+    for edge in edges:
+        created = _parse_created_at((edge.get("node") or {}).get("createdAt"))
+        if created is None:
+            continue
+        if start_dt and created < start_dt:
+            continue
+        if end_dt and created > end_dt:
+            continue
+        kept.append(edge)
+    return {"orders": {"edges": kept, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
