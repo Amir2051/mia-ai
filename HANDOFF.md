@@ -3,7 +3,7 @@
 ## Project
 - Repository: `Amir2051/mia-ai`
 - Local path: `/home/ronzoro/Downloads/mia-ai/mia-ai`
-- Production URL: `https://drivenest.info`
+- Production URL: `https://mia.drivenest.info`
 - Shopify app: Mia AI
 - Shopify client ID: `9c422dedf9e850a1f8fb3078ca747fa7`
 - Shopify Admin API version: `2026-07`
@@ -13,7 +13,7 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The latest Shopify app configuration was deployed and released as version **mia-ai-9** on 2026-09-18.
 
-The production web container is served through Cloudflare at `https://drivenest.info`.
+The production web container is served through Cloudflare at `https://mia.drivenest.info`.
 
 ## Verified
 - Backend: 80 tests passed.

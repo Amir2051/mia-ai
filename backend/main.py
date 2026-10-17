@@ -123,7 +123,7 @@ def create_app() -> FastAPI:
             "style-src 'self' 'unsafe-inline' https://cdn.shopify.com; "
             "img-src 'self' data: blob: https://cdn.shopify.com https://*.shopify.com https://*.myshopify.com; "
             "font-src 'self' data: https://cdn.shopify.com; "
-            "connect-src 'self' https://drivenest.info https://*.myshopify.com https://admin.shopify.com https://static.cloudflareinsights.com https://cloudflareinsights.com wss://*.shopifycloud.com; "
+            "connect-src 'self' https://mia.drivenest.info https://*.myshopify.com https://admin.shopify.com https://static.cloudflareinsights.com https://cloudflareinsights.com wss://*.shopifycloud.com; "
             "frame-src 'self' https://admin.shopify.com https://*.myshopify.com; "
             "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com; "
             "base-uri 'self'; "

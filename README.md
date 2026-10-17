@@ -5,7 +5,7 @@ Production Shopify embedded admin application for the existing Mia AI Partner ap
 - **Shopify App ID:** `418396078081`
 - **Client ID:** `9c422dedf9e850a1f8fb3078ca747fa7`
 - **Admin API:** `2026-07`
-- **Production URL:** `https://drivenest.info`
+- **Production URL:** `https://mia.drivenest.info`
 
 ## Features
 
@@ -42,11 +42,11 @@ SECRET_KEY=<long-random-secret>
 DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/mia
 SHOPIFY_API_KEY=9c422dedf9e850a1f8fb3078ca747fa7
 SHOPIFY_API_SECRET=<Shopify secret>
-SHOPIFY_APP_URL=https://drivenest.info
+SHOPIFY_APP_URL=https://mia.drivenest.info
 SHOPIFY_SCOPES=read_products,write_products,read_orders,read_customers,read_inventory
 SHOPIFY_API_VERSION=2026-07
 TOKEN_ENCRYPTION_KEY=<Fernet key>
-CORS_ORIGINS=https://drivenest.info
+CORS_ORIGINS=https://mia.drivenest.info
 SESSION_COOKIE_SECURE=true
 ```
 
@@ -59,7 +59,7 @@ docker build -t mia-ai .
 docker run --env-file .env -p 8000:8000 mia-ai
 ```
 
-Cloudflare should proxy `drivenest.info` to the production origin. Keep the Shopify secret and database credentials only in the server environment.
+Cloudflare should proxy `mia.drivenest.info` to the production origin. Keep the Shopify secret and database credentials only in the server environment.
 
 ## Database migrations
 
@@ -83,14 +83,14 @@ GitHub Actions also runs backend migrations/tests and the frontend build for pus
 
 `shopify.app.toml` is configured for:
 
-- `https://drivenest.info`
+- `https://mia.drivenest.info`
 - Embedded authentication: Shopify managed installation + ID-token token exchange
-- webhook endpoint: `https://drivenest.info/api/webhooks`
+- webhook endpoint: `https://mia.drivenest.info/api/webhooks`
 - mandatory compliance webhooks: `customers/data_request`, `customers/redact`, `shop/redact`
 - app uninstall, product create/update/delete, and order create/update subscriptions
-- public privacy policy: `https://drivenest.info/privacy`
-- terms: `https://drivenest.info/terms`
-- support: `https://drivenest.info/support`
+- public privacy policy: `https://mia.drivenest.info/privacy`
+- terms: `https://mia.drivenest.info/terms`
+- support: `https://mia.drivenest.info/support`
 
 Before production install, perform a live dev-store acceptance test covering managed installation, embedded loading, ID-token token exchange, products, CSV import, orders, customers, uninstall, reinstall, and webhook delivery.
 

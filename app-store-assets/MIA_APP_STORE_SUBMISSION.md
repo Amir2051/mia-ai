@@ -24,19 +24,19 @@ Mia AI connects to a merchant's Shopify Admin and helps analyze products, improv
 - Cloudflare
 
 ## Privacy policy
-https://drivenest.info/privacy
+https://mia.drivenest.info/privacy
 
 ## Terms of service
-https://drivenest.info/terms
+https://mia.drivenest.info/terms
 
 ## Support
-https://drivenest.info/support
+https://mia.drivenest.info/support
 
 ## Application URL
-https://drivenest.info
+https://mia.drivenest.info
 
 ## Webhook endpoint
-https://drivenest.info/api/webhooks
+https://mia.drivenest.info/api/webhooks
 
 ## Required Partner Dashboard items
 - Upload the 1200x1200 app icon: `app-store-assets/mia-icon-1200.png`

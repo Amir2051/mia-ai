@@ -2,7 +2,7 @@
 
 client_id = "9c422dedf9e850a1f8fb3078ca747fa7"
 name = "Mia AI"
-application_url = "https://drivenest.info"
+application_url = "https://mia.drivenest.info"
 embedded = true
 
 [webhooks]
@@ -28,4 +28,4 @@ embedded_app_direct_api_access = true
 scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
 
 [auth]
-redirect_urls = [ "https://drivenest.info/auth/callback" ]
+redirect_urls = [ "https://mia.drivenest.info/auth/callback" ]

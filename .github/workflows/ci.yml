@@ -32,8 +32,8 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://mia:mia@127.0.0.1:5432/mia_test
       SHOPIFY_API_KEY: ci-key
       SHOPIFY_API_SECRET: ci-secret
-      SHOPIFY_APP_URL: https://drivenest.info
-      CORS_ORIGINS: https://drivenest.info
+      SHOPIFY_APP_URL: https://mia.drivenest.info
+      CORS_ORIGINS: https://mia.drivenest.info
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
