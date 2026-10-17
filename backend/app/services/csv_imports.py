@@ -191,7 +191,9 @@ class CsvImportService(ImportService):
         record.error = None
         record.shopify_product_id = ",".join(dict.fromkeys(shopify_product_ids)) or None
         await self.db.commit()
-        await self.db.refresh(record)
+        # No refresh after commit: the RLS shop context is transaction-local
+        # (set_config(..., true)), so a post-commit SELECT can no longer see
+        # this row. expire_on_commit=False keeps the attributes loaded.
 
         return {"import": {"id": record.id, "status": record.status, "sync_status": record.sync_status, "duplicate_action": duplicate_action, "summary": {"processed": processed, "created": created, "updated": updated, "failed": failed, "skipped": skipped, **validation["summary"]}, "details": details}}
 
