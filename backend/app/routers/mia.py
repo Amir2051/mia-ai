@@ -397,11 +397,17 @@ def _memory_notes_from_message(message: str) -> list[str]:
 
 
 def _is_memory_diagnostic(message: str) -> bool:
-    q = (message or "").lower()
-    return bool(MEMORY_DIAGNOSTIC.search(q) and any(term in q for term in (
-        "can you access", "check the capabilities", "check capabilities", "is the memory",
-        "does memory", "memory available", "identify the specific limitation", "actually available",
-    )))
+    q = re.sub(r"\s+", " ", (message or "").lower()).strip()
+    has_memory_topic = bool(MEMORY_DIAGNOSTIC.search(q)) or bool(re.search(r"\bmerchant preferences?\b", q))
+    asks_status_or_count = bool(re.search(
+        r"\b(can you access|check (?:the )?capabilities|is (?:it|this|memory) available|"
+        r"does (?:this|the) memory|memory available|actually available|"
+        r"how many .{0,60}(?:saved|stored|preferences|notes)|currently saved|"
+        r"specific limitation|what (?:memory|capabilities) (?:do|are)|"
+        r"do not save|don't save|without saving)\b",
+        q,
+    ))
+    return has_memory_topic and asks_status_or_count
 
 
 def _json_list(value: Optional[str]) -> list:
