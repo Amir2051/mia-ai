@@ -357,7 +357,7 @@ def _references_selected_product(q: str) -> bool:
 
 
 REMEMBER_PATTERN = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.{5,500})\s*$", re.I)
-REMEMBER_LIST_HEADER = re.compile(r"^\s*(?:please\s+)?remember\s+(?:these|the following)\s+(?:merchant\s+)?(?:preferences|facts|notes)\s*:?\s*$", re.I)
+REMEMBER_LIST_HEADER = re.compile(r"^\s*(?:please\s+)?(?:remember|save|store)\s+(?:these|the following)\s+(?:(?:\d+|six|several)\s+)?(?:merchant\s+)?(?:preferences|facts|notes)(?:\s+separately)?(?:\s+in\s+(?:my|the)\s+merchant\s+memory)?\s*:?\s*$", re.I)
 MEMORY_DIAGNOSTIC = re.compile(r"\b(persistent memory|merchant memory|saved context|memory feature|memory system)\b", re.I)
 FORGET_PATTERN = re.compile(r"^\s*(?:please\s+)?forget(?:\s+that)?\s+(.{3,500})\s*$", re.I)
 SENSITIVE_ASSIGNMENT = re.compile(r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret|secret)\b\s*[:=]\s*([^\s,;]+)")
