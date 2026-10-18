@@ -56,6 +56,22 @@ def test_save_six_preferences_separately_heading_is_recognized():
     assert notes[-1] == "Explain proposed Shopify changes before making them. Do not edit Shopify without my explicit approval"
 
 
+def test_inline_six_preferences_heading_is_recognized():
+    message = ("Save these six preferences separately in my merchant memory:  "
+               "1. Use a premium, friendly, clear, trustworthy brand voice. "
+               "2. SEO titles should prioritize product names and relevant keywords, not automatically include prices. "
+               "3. Use only verified facts in product descriptions. "
+               "4. Never invent materials, dimensions, performance claims, or benefits. "
+               "5. Write image alt text based only on what the actual image shows. "
+               "6. Explain proposed Shopify changes before making them. Do not edit Shopify without my explicit approval. "
+               "Return the actual save result, including memory_saved, saved_count, and the saved notes. Do not return a memory diagnostic.")
+    notes = _memory_notes_from_message(message)
+    assert len(notes) == 6
+    assert notes[0] == "Use a premium, friendly, clear, trustworthy brand voice"
+    assert notes[1] == "SEO titles should prioritize product names and relevant keywords, not automatically include prices"
+    assert notes[-1] == "Explain proposed Shopify changes before making them. Do not edit Shopify without my explicit approval"
+
+
 def test_memory_diagnostic_is_answered_without_triggering_product_generation():
     message = "Please check the persistent memory feature actually available to you and tell me whether you can access it."
     assert _is_memory_diagnostic(message)

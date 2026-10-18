@@ -365,10 +365,36 @@ BEARER_CREDENTIAL = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 
 
 def _memory_notes_from_message(message: str) -> list[str]:
-    """Extract explicit memory requests, including a prefaced multiline bullet list."""
+    """Extract explicit memory requests from multiline or inline numbered lists."""
     raw_lines = (message or "").strip().splitlines()
     if not raw_lines:
         return []
+
+    # Chat clients often paste the heading and numbered preferences on one line.
+    inline_header = re.compile(
+        r"^\s*(?:please\s+)?(?:remember|save|store)\s+(?:these|the following)\s+"
+        r"(?:(?:\d+|six|several)\s+)?(?:merchant\s+)?(?:preferences|facts|notes)"
+        r"(?:\s+separately)?(?:\s+in\s+(?:my|the)\s+merchant\s+memory)?\s*:\s*(.*)$",
+        re.I,
+    )
+    for line in raw_lines:
+        inline_match = inline_header.match(line)
+        if not inline_match:
+            continue
+        content = inline_match.group(1).strip()
+        if re.match(r"\d+[.)]\s+", content):
+            parts = re.split(r"(?<!\S)\d+[.)]\s+", content)
+            notes = []
+            for part in parts:
+                # Keep response-format instructions outside the final preference.
+                part = re.split(r"\s+(?:return the actual save result|do not return a memory diagnostic)\b", part, maxsplit=1, flags=re.I)[0]
+                note = re.sub(r"\s+", " ", part).strip().strip(" `\"'").rstrip(" .;")
+                if note:
+                    notes.append(note[:500])
+            if notes:
+                return notes
+        break
+
     header_index = next((i for i, line in enumerate(raw_lines) if REMEMBER_LIST_HEADER.match(line)), None)
     if header_index is not None:
         notes = []
@@ -376,8 +402,6 @@ def _memory_notes_from_message(message: str) -> list[str]:
         for line in raw_lines[header_index + 1:]:
             stripped = line.strip()
             if not stripped:
-                if saw_bullet:
-                    continue
                 continue
             if re.match(r"^(?:[-*•]|\d+[.)])\s+", stripped):
                 saw_bullet = True
@@ -562,15 +586,13 @@ def _rule_answer(q: str, ctx: Dict[str, Any]) -> str:
 @router.post("/chat")
 async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     shop = await _shop(current, db)
-    ctx = await _context(shop)
-    products = ctx["products"]
+    # Handle memory operations before the expensive Shopify catalog/context fetch.
+    # The chat UI can otherwise time out while products, orders, and customers load,
+    # even though a simple preference save needs none of that data.
     memory = await _memory_row(db, shop)
     knowledge = _json_list(memory.knowledge_json)
+    memory_data_used = {"shop": shop.shop_domain, "memory_only": True}
 
-    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
-
-    # Answer capability checks deterministically so the model cannot confuse the question
-    # with a product-generation request or falsely claim that memory is unavailable.
     if _is_memory_diagnostic(body.message):
         return {
             "answer": (
@@ -583,14 +605,14 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
             "shop": shop.shop_domain,
             "knowledge_count": len(knowledge),
             "knowledge": knowledge,
-            "data_used": data_used,
+            "data_used": memory_data_used,
         }
 
     requested_notes = _memory_notes_from_message(body.message)
     if requested_notes:
         sensitive = [note for note in requested_notes if re.search(r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret|secret|private key)\b", note) or BEARER_CREDENTIAL.search(note)]
         if sensitive:
-            return {"answer": "I won't store passwords, API keys, tokens, or secrets. No notes from this request were saved.", "memory_saved": False, "knowledge": knowledge, "data_used": data_used}
+            return {"answer": "I won't store passwords, API keys, tokens, or secrets. No notes from this request were saved.", "memory_saved": False, "knowledge": knowledge, "data_used": memory_data_used}
         added = []
         for note in requested_notes:
             if not any(str(item).casefold() == note.casefold() for item in knowledge):
@@ -605,8 +627,12 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
             "memory_saved": True,
             "saved_count": len(added),
             "knowledge": knowledge,
-            "data_used": data_used,
+            "data_used": memory_data_used,
         }
+
+    ctx = await _context(shop)
+    products = ctx["products"]
+    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
 
     forget_match = FORGET_PATTERN.match(body.message)
     if forget_match:
