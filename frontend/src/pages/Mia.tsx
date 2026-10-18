@@ -80,8 +80,13 @@ export default function Mia() {
     setMessages((current) => [...current, { role: 'user', text: question }]);
     setBusy(true);
     try {
+      const history = messages
+        .slice(-10)
+        .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
       const res = await api.post('/mia/chat', {
-        message: selected ? `${question}\n[Selected Shopify product: ${selected}]` : question,
+        message: question,
+        product_id: selected || undefined,
+        history,
       });
       setMessages((current) => [...current, { role: 'mia', text: res.data.answer, artifact: res.data.artifact }]);
     } catch (err) {

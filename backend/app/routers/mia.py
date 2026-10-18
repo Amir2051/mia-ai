@@ -20,8 +20,15 @@ from app.services.seo import SEOService, generate_marketing
 router = APIRouter()
 
 
+class ChatTurn(BaseModel):
+    role: str
+    content: str = ""
+
+
 class ChatRequest(BaseModel):
     message: str
+    product_id: Optional[str] = None
+    history: list[ChatTurn] = Field(default_factory=list)
 
 
 class ApplyProductRequest(BaseModel):
@@ -276,79 +283,144 @@ async def product_marketing(product_id: str, current: Optional[CurrentUser] = De
     return {"connected": True, "product_id": product_id, "marketing": _marketing(product)}
 
 
+SELECTED_TAG = re.compile(r"\n?\[Selected Shopify product:\s*([^\]]+)\]", re.I)
+ACTION_VERBS = re.compile(r"\b(write|generate|create|make|draft|build|produce|give me|run)\b", re.I)
+SEO_WORDS = re.compile(r"\b(seo|meta title|meta description|search engine)\b", re.I)
+MARKETING_WORDS = re.compile(r"\b(facebook|instagram|tiktok|marketing|campaign|ad copy|ads?|posts?|captions?|email)\b", re.I)
+
+MIA_SYSTEM_PROMPT = (
+    "You are Mia, a friendly and sharp AI assistant built into a Shopify merchant's admin. "
+    "Talk naturally, like a helpful colleague: respond to greetings, answer follow-up questions using the conversation so far, "
+    "and explain things clearly. You can answer general questions too (ecommerce, marketing, SEO, Shopify how-tos, running a "
+    "business, and everyday general knowledge) from your own knowledge. "
+    "When a question is about this store, base your answer on the STORE DATA provided and never invent products, numbers, "
+    "orders or customers that are not in it; if the data isn't there, say so. "
+    "Keep replies concise: usually 2 to 6 sentences, or a short list when it genuinely helps. Use plain text, no markdown headings. "
+    "You cannot change the store yourself. Changes only happen when the merchant approves them in Mia's review screens, so never "
+    "claim that anything was applied or published. When useful, suggest a next step Mia can do: write an SEO package or a "
+    "ready-to-post campaign for a product (for example 'write SEO for <product>' or 'make an Instagram post for <product>'), "
+    "find low-stock, weak-description or recently added products, or analyze a product."
+)
+
+
+def _find_target(products, q: str, selected_id: Optional[str]):
+    if selected_id:
+        found = next((p for p in products if p.get("id") == selected_id), None)
+        if found:
+            return found
+    for p in products:
+        title = (p.get("title") or "").lower()
+        if title and title in q:
+            return p
+    words = [w for w in re.findall(r"[a-z0-9]+", q) if len(w) >= 5]
+    if words and products:
+        scored = sorted(((sum(1 for w in words if w in (p.get("title") or "").lower()), p) for p in products), key=lambda x: x[0], reverse=True)
+        if scored and scored[0][0] > 0:
+            return scored[0][1]
+    return None
+
+
+def _inventory(p) -> Optional[int]:
+    try:
+        return None if p.get("inventory") is None else int(p.get("inventory") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_facts(ctx: Dict[str, Any], target: Optional[Dict[str, Any]]) -> str:
+    products = ctx["products"]
+    statuses: Dict[str, int] = {}
+    for p in products:
+        key = p.get("status") or "UNKNOWN"
+        statuses[key] = statuses.get(key, 0) + 1
+    low = [f"{p.get('title')} ({_inventory(p)})" for p in products if _inventory(p) is not None and _inventory(p) <= 5]
+    weak = [p.get("title") for p in products if len(p.get("description") or "") < 120]
+    dated = sorted((p for p in products if p.get("createdAt")), key=lambda p: p.get("createdAt") or "", reverse=True)
+    catalog = [
+        {k: v for k, v in {"title": p.get("title"), "status": p.get("status"), "inventory": p.get("inventory"), "price": p.get("price"), "type": p.get("productType"), "vendor": p.get("vendor")}.items() if v not in (None, "")}
+        for p in products[:40]
+    ]
+    lines = [
+        f"Store: {ctx.get('shop')}",
+        f"Products: {len(products)} | Inventory units: {(ctx.get('counts') or {}).get('inventory_units')}",
+        "Status mix: " + (", ".join(f"{k} {v}" for k, v in sorted(statuses.items())) or "none"),
+        f"Low stock (<=5 units, {len(low)}): " + ("; ".join(low[:15]) or "none"),
+        f"Thin descriptions (<120 chars, {len(weak)}): " + ("; ".join(str(t) for t in weak[:10]) or "none"),
+        "Newest products: " + ("; ".join(f"{p.get('title')} ({(p.get('createdAt') or '')[:10]})" for p in dated[:8]) or "unknown"),
+        f"Customer records available: {len(ctx.get('customers') or [])}",
+    ]
+    if target:
+        lines.append(
+            "Currently selected product: "
+            + str({"title": target.get("title"), "status": target.get("status"), "inventory": target.get("inventory"), "price": target.get("price"), "description": (target.get("description") or "")[:500]})
+        )
+    if ctx.get("warnings"):
+        lines.append("Data warnings: " + "; ".join(map(str, ctx["warnings"])))
+    lines.append("Catalog (first 40): " + str(catalog))
+    return "\n".join(lines)
+
+
+def _rule_answer(q: str, ctx: Dict[str, Any]) -> str:
+    """Deterministic answers used only when the AI provider is unavailable."""
+    products = ctx["products"]
+    if any(k in q for k in ["low inventory", "low stock", "out of stock", "stock"]):
+        rows = [p for p in products if _inventory(p) is not None and _inventory(p) <= 5]
+        return f"I scanned all {len(products)} products in {ctx['shop']}. {len(rows)} are at or below 5 units. " + ("; ".join(f"{p['title']} ({p['inventory']})" for p in rows[:12]) if rows else "No products meet that threshold.")
+    if any(k in q for k in ["recent", "new products", "newly added"]):
+        dated = sorted((p for p in products if p.get("createdAt")), key=lambda p: p.get("createdAt") or "", reverse=True)
+        return "The newest products by Shopify created date are: " + "; ".join(f"{p['title']} ({p.get('createdAt','')[:10]})" for p in dated[:10])
+    if any(k in q for k in ["weak description", "thin description", "quality"]):
+        weak = [p for p in products if len(p.get("description") or "") < 120]
+        return f"I found {len(weak)} products with descriptions under 120 characters out of {len(products)}. " + ("Examples: " + "; ".join(p["title"] for p in weak[:10]) + "." if weak else "")
+    return (
+        f"Hi! I'm Mia, and I'm connected to {ctx['shop']} with {len(products)} products. My AI chat is briefly unavailable, "
+        "but I can still show low-stock, recently added or weak-description products, and you can try your question again in a moment."
+    )
+
+
 @router.post("/chat")
 async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     shop = await _shop(current, db)
     ctx = await _context(shop)
-    q = body.message.lower().strip()
     products = ctx["products"]
 
-    # Real AI product workflows from chat. A product name in the request selects
-    # the matching live Shopify product; otherwise the first catalog product is used.
-    target = None
-    selected_match = re.search(r"\[Selected Shopify product:\s*([^\]]+)\]", body.message, flags=re.I)
-    if selected_match:
-        selected_id = selected_match.group(1).strip()
-        target = next((p for p in products if p.get("id") == selected_id), None)
-    for p in products if target is None else []:
-        title = (p.get("title") or "").lower()
-        if title and title in q:
-            target = p
-            break
-    if target is None and products:
-        words = [w for w in re.findall(r"[a-z0-9]+", q) if len(w) >= 5]
-        scored = sorted(((sum(1 for w in words if w in (p.get("title") or "").lower()), p) for p in products), key=lambda x: x[0], reverse=True)
-        if scored and scored[0][0] > 0:
-            target = scored[0][1]
+    tag = SELECTED_TAG.search(body.message)
+    selected_id = body.product_id or (tag.group(1).strip() if tag else None)
+    text = SELECTED_TAG.sub("", body.message).strip()
+    q = text.lower()
+    target = _find_target(products, q, selected_id)
+    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
 
-    if any(k in q for k in ["seo", "search engine", "meta description", "meta title"]) and target:
+    # Explicit generation requests run the real AI product workflows and return a reviewable artifact.
+    wants_action = bool(ACTION_VERBS.search(q))
+    if target and wants_action and SEO_WORDS.search(q):
         try:
             product_full = (await ProductService(_client(shop)).get_product(target["id"])).get("product") or {}
             seo_result, model, latency = await SEOService(OpenRouterService()).generate(product_full)
-            return {"answer": f"I generated a real SEO package for {product_full.get('title')}. It is ready for review in the SEO workspace before applying to Shopify.", "artifact": {"type": "seo", "product": product_full, "result": seo_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": {"shop": ctx["shop"], "catalog_scanned": len(products)}}
+            return {"answer": f"Here's a fresh SEO package for {product_full.get('title')}. Review it below, and nothing changes in Shopify until you approve it.", "artifact": {"type": "seo", "product": product_full, "result": seo_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": data_used}
         except (ShopifyAPIError, OpenRouterError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    if any(k in q for k in ["facebook", "instagram", "tiktok", "marketing", "ready to post", "ad copy", "advertisement"]) and target:
+    if target and wants_action and MARKETING_WORDS.search(q):
         try:
             product_full = (await ProductService(_client(shop)).get_product(target["id"])).get("product") or {}
             marketing_result, model, latency = await generate_marketing(OpenRouterService(), product_full)
-            return {"answer": f"I generated a ready-to-post marketing package for {product_full.get('title')} using its live Shopify product data and image.", "artifact": {"type": "marketing", "product": product_full, "result": marketing_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": {"shop": ctx["shop"], "catalog_scanned": len(products)}}
+            return {"answer": f"Here's a ready-to-post campaign for {product_full.get('title')}, built from its live Shopify data and image.", "artifact": {"type": "marketing", "product": product_full, "result": marketing_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": data_used}
         except (ShopifyAPIError, OpenRouterError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    if any(k in q for k in ["low inventory", "low stock", "out of stock", "stock"]):
-        rows = [p for p in products if p.get("inventory") is not None and int(p.get("inventory") or 0) <= 5]
-        answer = f"I scanned all {len(products)} products in {ctx['shop']}. {len(rows)} are at or below 5 units. " + ("; ".join(f"{p['title']} ({p['inventory']})" for p in rows[:12]) if rows else "No products meet that threshold.")
-    elif any(k in q for k in ["recent", "recently imported", "new products", "newly added"]):
-        dated = [p for p in products if p.get("createdAt")]
-        dated.sort(key=lambda p: p.get("createdAt") or "", reverse=True)
-        answer = f"I scanned the full catalog. The newest products by Shopify created date are: " + "; ".join(f"{p['title']} ({p.get('createdAt','')[:10]})" for p in dated[:10])
-    elif any(k in q for k in ["weak description", "poor description", "thin description", "product quality", "quality"]):
-        weak = [p for p in products if len(p.get("description") or "") < 120]
-        answer = f"I found {len(weak)} products with descriptions under 120 characters out of {len(products)} total. " + ("Examples: " + "; ".join(p["title"] for p in weak[:10]) + "." if weak else "The catalog descriptions clear that basic threshold.")
-    elif any(k in q for k in ["advertise", "advertising", "marketing", "promote"]):
-        candidates = [p for p in products if (p.get("status") == "ACTIVE" and (p.get("inventory") or 0) > 5)]
-        candidates.sort(key=lambda p: len(p.get("description") or ""), reverse=True)
-        answer = f"For advertising, I found {len(candidates)} active products with more than 5 units available. I can generate channel-specific Facebook, Instagram, TikTok, email, and paid-ad copy for any of them."
-    elif any(k in q for k in ["product", "products", "inventory", "analyz"]):
-        statuses: Dict[str, int] = {}
-        for p in products: statuses[p.get("status") or "UNKNOWN"] = statuses.get(p.get("status") or "UNKNOWN", 0) + 1
-        status_text = ", ".join(f"{k}: {v}" for k, v in sorted(statuses.items()))
-        answer = f"I scanned the entire Shopify catalog: {len(products)} products and {ctx['counts']['inventory_units']} inventory units. Status mix: {status_text}. {len(ctx['low_stock'])} products are at or below 5 units. Ask me to find weak descriptions, recent products, advertising candidates, or analyze a specific product."
-    elif any(k in q for k in ["customer", "customers", "client"]):
-        customers = ctx["customers"]
-        answer = f"I found {len(customers)} customer records in the current Shopify data window." if customers else "Shopify is currently withholding protected customer records from Mia."
-    elif any(k in q for k in ["help", "what can you do", "capabilities"]):
-        answer = "I’m Mia, your Shopify product copilot. I can scan the full catalog, analyze product quality, find low-stock or recent products, propose product enhancements, generate marketing, and apply merchant-approved product changes back to Shopify."
-    else:
-        try:
-            ai = OpenRouterService()
-            answer, model, latency = await ai.chat_text([
-                {"role": "system", "content": "You are Mia, a Shopify marketing assistant. Use only the supplied live store context. Do not claim an action was applied unless the backend explicitly says so. For SEO requests, direct the user to the dedicated SEO generation and confirmation flow."},
-                {"role": "user", "content": f"Store={ctx['shop']}\nCatalog={products[:25]}\nRequest={body.message}"},
-            ])
-            return {"answer": answer, "model": model, "latency_ms": round(latency, 2), "data_used": {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}}
-        except OpenRouterError:
-            answer = f"I’m connected to {ctx['shop']} and scanned {len(products)} products. Try: ‘show low inventory’, ‘find weak descriptions’, ‘find recently imported products’, ‘which products should I advertise?’, or ‘improve this product’."
-    return {"answer": answer, "data_used": {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}}
+    # Everything else is a real conversation, grounded in live store facts and recent turns.
+    messages = [
+        {"role": "system", "content": MIA_SYSTEM_PROMPT},
+        {"role": "system", "content": "STORE DATA (live from Shopify):\n" + _store_facts(ctx, target)},
+    ]
+    for turn in body.history[-10:]:
+        role = "assistant" if turn.role in ("assistant", "mia") else "user"
+        content = SELECTED_TAG.sub("", turn.content or "").strip()[:2000]
+        if content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": text or body.message})
+    try:
+        answer, model, latency = await OpenRouterService().chat_text(messages, temperature=0.6)
+        return {"answer": (answer or "").strip(), "model": model, "latency_ms": round(latency, 2), "data_used": data_used}
+    except OpenRouterError:
+        return {"answer": _rule_answer(q, ctx), "data_used": data_used}
