@@ -172,3 +172,14 @@ class AuditLog(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     details_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class MiaMemory(Base):
+    """Per-shop conversation history and merchant-provided knowledge notes."""
+    __tablename__ = 'mia_memory'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey('shops.id', ondelete='CASCADE'), unique=True, index=True)
+    conversation_json: Mapped[str] = mapped_column(Text, default='[]')
+    knowledge_json: Mapped[str] = mapped_column(Text, default='[]')
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

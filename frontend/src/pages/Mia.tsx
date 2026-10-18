@@ -46,6 +46,7 @@ const SUGGESTIONS = [
 export default function Mia() {
   const session = useSession();
   const [context, setContext] = useState<Context | null>(null);
+  const [knowledge, setKnowledge] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState('');
@@ -56,14 +57,33 @@ export default function Mia() {
 
   useEffect(() => {
     if (!session.connected) return;
-    api
-      .get('/mia/context')
-      .then((res) => {
-        setContext(res.data);
-        if (res.data?.products?.[0]) setSelected(res.data.products[0].id);
+    let active = true;
+    Promise.allSettled([api.get('/mia/context'), api.get('/mia/conversation')])
+      .then(([contextResult, conversationResult]) => {
+        if (!active) return;
+        if (contextResult.status === 'fulfilled') {
+          const data = contextResult.value.data;
+          setContext(data);
+          if (data?.products?.[0]) setSelected(data.products[0].id);
+        } else {
+          setLoadError(errorMessage(contextResult.reason, 'Mia could not read your store right now.'));
+        }
+        if (conversationResult.status === 'fulfilled') {
+          const saved = conversationResult.value.data?.messages;
+          setKnowledge(Array.isArray(conversationResult.value.data?.knowledge) ? conversationResult.value.data.knowledge : []);
+          if (Array.isArray(saved) && saved.length) {
+            setMessages(saved.map((item: { role: string; content: string }) => ({
+              role: item.role === 'user' ? 'user' : 'mia',
+              text: item.content,
+            })));
+          }
+        }
       })
-      .catch((err) => setLoadError(errorMessage(err, 'Mia could not read your store right now.')))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (active) setLoadError(errorMessage(err, 'Mia could not load your store and conversation.'));
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, [session.connected]);
 
   useEffect(() => {
@@ -88,7 +108,23 @@ export default function Mia() {
         product_id: selected || undefined,
         history,
       });
-      setMessages((current) => [...current, { role: 'mia', text: res.data.answer, artifact: res.data.artifact }]);
+      if (Array.isArray(res.data.knowledge)) setKnowledge(res.data.knowledge);
+      const reply: Message = { role: 'mia', text: res.data.answer, artifact: res.data.artifact };
+      const nextMessages = [...messages, { role: 'user' as const, text: question }, reply];
+      setMessages(nextMessages);
+      // Persist only text, not generated artifacts or live Shopify payloads.
+      try {
+        await api.put('/mia/conversation', {
+          messages: nextMessages.map((message) => ({
+            role: message.role === 'user' ? 'user' : 'assistant',
+            content: message.text,
+          })),
+        });
+        const savedState = await api.get('/mia/conversation');
+        setKnowledge(Array.isArray(savedState.data?.knowledge) ? savedState.data.knowledge : []);
+      } catch {
+        // Chat still works if persistence is temporarily unavailable; next load can retry.
+      }
     } catch (err) {
       setMessages((current) => [
         ...current,
@@ -171,6 +207,19 @@ export default function Mia() {
                 </InlineStack>
               </BlockStack>
             </Card>
+
+            {!!knowledge.length && (
+              <Card>
+                <BlockStack gap="200">
+                  <Text as="h2" variant="headingMd">Mia remembers</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">These merchant notes are saved for future chats. Say “forget [note]” or “forget all my notes” to remove them.</Text>
+                  {knowledge.slice(-6).map((note, index) => (
+                    <Text key={`${index}-${note}`} as="p" variant="bodySm">• {note}</Text>
+                  ))}
+                  {knowledge.length > 6 && <Text as="p" variant="bodySm" tone="subdued">Showing the latest 6 of {knowledge.length} notes.</Text>}
+                </BlockStack>
+              </Card>
+            )}
 
             {!!context?.low_stock?.length && (
               <Card>

@@ -14,6 +14,9 @@ Production Shopify embedded admin application for the existing Mia AI Partner ap
 - CSV product imports with duplicate actions: `skip`, `update`, `create`, `fail`
 - Orders and customers
 - Analytics and marketing architecture
+- Mia conversational assistant with store-grounded product, inventory, order, and sales context
+- Per-shop persistent conversation history and merchant-provided notes for brand voice and audience preferences
+- Explicit `remember ...` / `forget ...` chat controls; saved notes are supplied to SEO and marketing generation
 - Settings
 - Shopify App Bridge ID-token authentication and OAuth fallback
 - Encrypted Shopify token storage
@@ -63,7 +66,7 @@ Cloudflare should proxy `mia.drivenest.info` to the production origin. Keep the 
 
 ## Database migrations
 
-Schema changes are managed by Alembic. Application startup does **not** call `create_all()`.
+Schema changes are managed by Alembic. Application startup does **not** call `create_all()`. Migration `0006_mia_memory` adds a single per-shop row for bounded conversation history and merchant knowledge notes, protected by PostgreSQL row-level security. Generate/review the migration SQL before applying it to production.
 
 ```bash
 cd backend
@@ -100,7 +103,8 @@ Before production install, perform a live dev-store acceptance test covering man
 - App Bridge ID-token validation
 - Shopify ID-token validation and token exchange
 - Webhook HMAC verification and event deduplication
-- Merchant isolation on shop-scoped records
+- Merchant isolation on shop-scoped records, including Mia conversation and knowledge memory
+- Saved conversation history is bounded and credential-like values are redacted; long-term notes reject secrets and tokens
 - Production PostgreSQL requirement
 - Request-size limits and security headers
 - Environment-driven CORS
