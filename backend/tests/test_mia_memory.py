@@ -1,6 +1,9 @@
 import json
 
-from app.routers.mia import ConversationMessage, _clean_conversation, _json_list, REMEMBER_PATTERN
+from app.routers.mia import (
+    ConversationMessage, _clean_conversation, _json_list, REMEMBER_PATTERN,
+    _memory_notes_from_message, _is_memory_diagnostic,
+)
 
 
 def test_conversation_sanitizer_limits_length_and_normalizes_roles():
@@ -35,6 +38,30 @@ def test_explicit_remember_phrase_is_recognized_and_bounded():
     assert not REMEMBER_PATTERN.match("What should I remember about SEO?")
 
 
+def test_multiline_merchant_preferences_are_split_into_individual_notes():
+    message = "I want you to learn my store's SEO preferences and use them consistently.\n\nRemember these merchant preferences:\n- Brand voice is premium, friendly, clear, and trustworthy.\n- SEO titles should prioritize product name and keywords, not automatically price.\n- Never invent product details.\n\nTell me which preferences you can persist and save them if supported."
+    notes = _memory_notes_from_message(message)
+    assert notes == [
+        "Brand voice is premium, friendly, clear, and trustworthy",
+        "SEO titles should prioritize product name and keywords, not automatically price",
+        "Never invent product details",
+    ]
+
+
+def test_memory_diagnostic_is_answered_without_triggering_product_generation():
+    message = "Please check the persistent memory feature actually available to you and tell me whether you can access it."
+    assert _is_memory_diagnostic(message)
+    assert not _is_memory_diagnostic("Write an SEO package for my snowboard")
+
+
+def test_actual_diagnostic_wording_is_detected_as_memory_check():
+    message = ("This Mia application is intended to support persistent merchant knowledge and conversation memory. "
+               "Please check the capabilities actually available to you in this application before concluding that persistent memory does not exist. "
+               "Can you access a merchant-memory or saved-context feature through your application tools? "
+               "Identify the specific limitation: is the memory feature unavailable to you, not connected to your conversation workflow, or blocked by missing permissions?")
+    assert _is_memory_diagnostic(message)
+
+
 
 def test_saved_merchant_notes_are_included_in_generation_prompts():
     from app.services.seo import SEOService, marketing_prompt
@@ -43,6 +70,10 @@ def test_saved_merchant_notes_are_included_in_generation_prompts():
     marketing_messages = marketing_prompt({"id": "1", "title": "Garden Starter Kit"}, notes)
     assert "Brand voice is warm and practical" in seo_messages[1]["content"]
     assert "Target audience is first-time gardeners" in marketing_messages[1]["content"]
+    seo_system = seo_messages[0]["content"].lower()
+    assert "never invent product facts" in seo_system
+    assert "do not infer colors, logos, patterns" in seo_system
+    assert "do not include the price in the seo title by default" in seo_system
 
 
 

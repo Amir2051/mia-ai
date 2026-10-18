@@ -357,9 +357,51 @@ def _references_selected_product(q: str) -> bool:
 
 
 REMEMBER_PATTERN = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.{5,500})\s*$", re.I)
+REMEMBER_LIST_HEADER = re.compile(r"^\s*(?:please\s+)?remember\s+(?:these|the following)\s+(?:merchant\s+)?(?:preferences|facts|notes)\s*:?\s*$", re.I)
+MEMORY_DIAGNOSTIC = re.compile(r"\b(persistent memory|merchant memory|saved context|memory feature|memory system)\b", re.I)
 FORGET_PATTERN = re.compile(r"^\s*(?:please\s+)?forget(?:\s+that)?\s+(.{3,500})\s*$", re.I)
 SENSITIVE_ASSIGNMENT = re.compile(r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret|secret)\b\s*[:=]\s*([^\s,;]+)")
 BEARER_CREDENTIAL = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _memory_notes_from_message(message: str) -> list[str]:
+    """Extract explicit memory requests, including a prefaced multiline bullet list."""
+    raw_lines = (message or "").strip().splitlines()
+    if not raw_lines:
+        return []
+    header_index = next((i for i, line in enumerate(raw_lines) if REMEMBER_LIST_HEADER.match(line)), None)
+    if header_index is not None:
+        notes = []
+        saw_bullet = False
+        for line in raw_lines[header_index + 1:]:
+            stripped = line.strip()
+            if not stripped:
+                if saw_bullet:
+                    continue
+                continue
+            if re.match(r"^(?:[-*•]|\d+[.)])\s+", stripped):
+                saw_bullet = True
+                note = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", stripped).strip()
+                note = note.strip(" `\"'").rstrip(".;")
+                if note:
+                    notes.append(re.sub(r"\s+", " ", note)[:500])
+                continue
+            if saw_bullet:
+                break
+        return notes
+    match = REMEMBER_PATTERN.match(message or "")
+    if match:
+        note = re.sub(r"\s+", " ", match.group(1)).strip().rstrip(".")
+        return [note[:500]] if note else []
+    return []
+
+
+def _is_memory_diagnostic(message: str) -> bool:
+    q = (message or "").lower()
+    return bool(MEMORY_DIAGNOSTIC.search(q) and any(term in q for term in (
+        "can you access", "check the capabilities", "check capabilities", "is the memory",
+        "does memory", "memory available", "identify the specific limitation", "actually available",
+    )))
 
 
 def _json_list(value: Optional[str]) -> list:
@@ -519,17 +561,46 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
     memory = await _memory_row(db, shop)
     knowledge = _json_list(memory.knowledge_json)
 
-    remember_match = REMEMBER_PATTERN.match(body.message)
-    if remember_match:
-        note = re.sub(r"\s+", " ", remember_match.group(1)).strip().rstrip(".")
-        if re.search(r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret|secret|private key)\b", note) or BEARER_CREDENTIAL.search(note):
-            return {"answer": "I can remember brand preferences and business facts, but I won't store passwords, API keys, tokens, or secrets.", "memory_saved": False, "knowledge": knowledge, "data_used": {"shop": shop.shop_domain, "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}}
-        if not any(str(item).casefold() == note.casefold() for item in knowledge):
-            knowledge.append(note[:500])
-            knowledge = knowledge[-30:]
-            memory.knowledge_json = json.dumps(knowledge, ensure_ascii=False)
-            memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        return {"answer": f"I'll remember that for {shop.shop_domain}: {note}", "memory_saved": True, "knowledge": knowledge, "data_used": {"shop": shop.shop_domain, "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}}
+    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
+
+    # Answer capability checks deterministically so the model cannot confuse the question
+    # with a product-generation request or falsely claim that memory is unavailable.
+    if _is_memory_diagnostic(body.message):
+        return {
+            "answer": (
+                f"Persistent merchant memory is implemented and available in this Mia application for the connected shop {shop.shop_domain}. "
+                f"I can read and save shop-scoped notes through the Mia conversation API; {len(knowledge)} merchant note(s) are currently saved. "
+                "This check did not save or change any preferences. A save is confirmed only when the memory endpoint returns memory_saved=true and the saved notes are returned."
+            ),
+            "memory_available": True,
+            "memory_saved": False,
+            "shop": shop.shop_domain,
+            "knowledge_count": len(knowledge),
+            "knowledge": knowledge,
+            "data_used": data_used,
+        }
+
+    requested_notes = _memory_notes_from_message(body.message)
+    if requested_notes:
+        sensitive = [note for note in requested_notes if re.search(r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret|secret|private key)\b", note) or BEARER_CREDENTIAL.search(note)]
+        if sensitive:
+            return {"answer": "I won't store passwords, API keys, tokens, or secrets. No notes from this request were saved.", "memory_saved": False, "knowledge": knowledge, "data_used": data_used}
+        added = []
+        for note in requested_notes:
+            if not any(str(item).casefold() == note.casefold() for item in knowledge):
+                knowledge.append(note[:500])
+                added.append(note[:500])
+        knowledge = knowledge[-30:]
+        memory.knowledge_json = json.dumps(knowledge, ensure_ascii=False)
+        memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db.flush()
+        return {
+            "answer": f"Saved {len(added)} new merchant preference(s) for {shop.shop_domain}. Verified saved notes are returned below and will be included in future Mia conversations and SEO/marketing generation.",
+            "memory_saved": True,
+            "saved_count": len(added),
+            "knowledge": knowledge,
+            "data_used": data_used,
+        }
 
     forget_match = FORGET_PATTERN.match(body.message)
     if forget_match:
@@ -559,8 +630,6 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
         products, q, selected_id if _references_selected_product(q) else None
     )
     target = _find_target(products, q, selected_id if wants_action else None)
-    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
-
     # Explicit generation requests run the real AI product workflows and return a reviewable artifact.
     if target and wants_action and SEO_WORDS.search(q):
         try:
