@@ -13,6 +13,11 @@ from app.shopify.config import settings
 logger = logging.getLogger("mia_ai")
 
 
+
+# Zero-data-retention compatible defaults (account enforces ZDR + allowed providers).
+DEFAULT_TEXT_MODEL = "deepseek/deepseek-v4-flash"
+FALLBACK_TEXT_MODEL = "qwen/qwen3-30b-a3b-instruct-2507"
+
 class OpenRouterError(RuntimeError):
     pass
 
@@ -93,15 +98,20 @@ class OpenRouterService:
     async def select_model(self) -> str:
         if self.config.model:
             return self.config.model
-        # OpenRouter's router alias is the stable server-side default. It selects
-        # an available model without coupling Mia to a rapidly changing model id.
-        return "openrouter/free"
+        return DEFAULT_TEXT_MODEL
+
+    @staticmethod
+    def _model_chain(selected_model: str) -> list[str]:
+        # Fail over to a second ZDR-capable model when the primary provider is down.
+        return list(dict.fromkeys([selected_model, FALLBACK_TEXT_MODEL]))
+
     async def chat_json(
         self,
         messages: list[dict[str, str]],
         *,
         model: Optional[str] = None,
         temperature: float = 0.2,
+        max_tokens: int = 3000,
     ) -> tuple[dict[str, Any], str, float]:
         selected_model = model or await self.select_model()
         payload = {
@@ -109,9 +119,10 @@ class OpenRouterService:
             # Let OpenRouter fail over when the pinned model/provider is temporarily
             # unavailable. This keeps production marketing/SEO requests from
             # surfacing transient 502/503/504 provider failures to the UI.
-            "models": [selected_model, "openrouter/free"] if selected_model != "openrouter/free" else ["openrouter/free"],
+            "models": self._model_chain(selected_model),
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         }
         started = time.perf_counter()
@@ -148,18 +159,21 @@ class OpenRouterService:
         *,
         model: Optional[str] = None,
         temperature: float = 0.5,
+        max_tokens: int = 800,
     ) -> tuple[str, str, float]:
         selected_model = model or await self.select_model()
         payload = {
             "model": selected_model,
+            "models": self._model_chain(selected_model),
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         started = time.perf_counter()
         response = await self._request("POST", "/chat/completions", json=payload)
         latency_ms = (time.perf_counter() - started) * 1000
         if response.status_code >= 400:
-            logger.warning("openrouter_api_error status=%s", response.status_code)
+            logger.warning("openrouter_api_error status=%s body=%s", response.status_code, response.text[:300])
             raise OpenRouterError(f"OpenRouter chat request failed: HTTP {response.status_code}")
         try:
             content = response.json()["choices"][0]["message"]["content"]
