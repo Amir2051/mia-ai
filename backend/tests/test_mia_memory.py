@@ -69,6 +69,12 @@ def test_actual_diagnostic_wording_is_detected_as_memory_check():
                "Identify the specific limitation: is the memory feature unavailable to you, not connected to your conversation workflow, or blocked by missing permissions?")
     assert _is_memory_diagnostic(message)
 
+def test_user_reported_diagnostic_wording_is_detected():
+    message = ("Please check your available capabilities in this application: I do not have access to a persistent merchant memory feature. "
+               "Is it available for my connected Shopify store? How many merchant preferences are currently saved? "
+               "Do not save anything during this check.")
+    assert _is_memory_diagnostic(message)
+
 
 def test_user_reported_diagnostic_wording_is_detected():
     message = ("Please check your available capabilities in this application: I do not have access to a persistent merchant memory feature. "
