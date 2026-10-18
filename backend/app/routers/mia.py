@@ -287,19 +287,33 @@ SELECTED_TAG = re.compile(r"\n?\[Selected Shopify product:\s*([^\]]+)\]", re.I)
 ACTION_VERBS = re.compile(r"\b(write|generate|create|make|draft|build|produce|give me|run)\b", re.I)
 SEO_WORDS = re.compile(r"\b(seo|meta title|meta description|search engine)\b", re.I)
 MARKETING_WORDS = re.compile(r"\b(facebook|instagram|tiktok|marketing|campaign|ad copy|ads?|posts?|captions?|email)\b", re.I)
+EXPLANATION_PATTERNS = (
+    re.compile(r"\b(what is|what are|explain|define|teach me|how does|how do i|what does)\b", re.I),
+    re.compile(r"\b(why|when should|difference between|help me understand)\b", re.I),
+)
+
+
+def _is_explanation_request(q: str) -> bool:
+    return any(pattern.search(q) for pattern in EXPLANATION_PATTERNS)
+
+
+def _is_explicit_content_request(q: str) -> bool:
+    return bool(ACTION_VERBS.search(q) and not _is_explanation_request(q))
+
 
 MIA_SYSTEM_PROMPT = (
-    "You are Mia, a friendly and sharp AI assistant built into a Shopify merchant's admin. "
-    "Talk naturally, like a helpful colleague: respond to greetings, answer follow-up questions using the conversation so far, "
-    "and explain things clearly. You can answer general questions too (ecommerce, marketing, SEO, Shopify how-tos, running a "
-    "business, and everyday general knowledge) from your own knowledge. "
-    "When a question is about this store, base your answer on the STORE DATA provided and never invent products, numbers, "
-    "orders or customers that are not in it; if the data isn't there, say so. "
-    "Keep replies concise: usually 2 to 6 sentences, or a short list when it genuinely helps. Use plain text, no markdown headings. "
-    "You cannot change the store yourself. Changes only happen when the merchant approves them in Mia's review screens, so never "
-    "claim that anything was applied or published. When useful, suggest a next step Mia can do: write an SEO package or a "
-    "ready-to-post campaign for a product (for example 'write SEO for <product>' or 'make an Instagram post for <product>'), "
-    "find low-stock, weak-description or recently added products, or analyze a product."
+    "You are Mia, a friendly and capable conversational AI assistant inside a Shopify merchant's admin. "
+    "First understand the user's intent; do not assume every message is a product task just because a product is selected. "
+    "Answer general questions and explanations directly from general knowledge, including SEO, marketing, ecommerce, Shopify, "
+    "business, and everyday topics. 'What is SEO?' is an explanation request, not a request to generate product SEO. "
+    "Use live STORE DATA only when the user asks about their own store, its catalog, inventory, orders, customers, sales, "
+    "or a clearly identified store product. A selected product is context, not an instruction; do not assume it is the target "
+    "unless the user's request refers to it or explicitly asks for content and no other product is named. "
+    "Only generate SEO or marketing assets when the user explicitly asks you to create, write, draft, or generate that content. "
+    "If multiple products could match, ask which one rather than guessing. Use conversation history to resolve follow-ups. "
+    "Ground store-specific claims in STORE DATA and never invent products or business numbers. If needed data is unavailable, say so. "
+    "Keep replies clear and natural, usually 2 to 6 sentences. You cannot change the store yourself; never claim a change was "
+    "applied or published. Shopify changes require the merchant's explicit approval."
 )
 
 
@@ -388,11 +402,13 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
     selected_id = body.product_id or (tag.group(1).strip() if tag else None)
     text = SELECTED_TAG.sub("", body.message).strip()
     q = text.lower()
-    target = _find_target(products, q, selected_id)
+    wants_action = _is_explicit_content_request(q)
+    # A UI selection must not turn a general question into a product task. Use it only
+    # for an explicit content-generation request; named products still resolve normally.
+    target = _find_target(products, q, selected_id if wants_action else None)
     data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
 
     # Explicit generation requests run the real AI product workflows and return a reviewable artifact.
-    wants_action = bool(ACTION_VERBS.search(q))
     if target and wants_action and SEO_WORDS.search(q):
         try:
             product_full = (await ProductService(_client(shop)).get_product(target["id"])).get("product") or {}
