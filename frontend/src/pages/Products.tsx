@@ -50,7 +50,7 @@ export default function Products() {
   }, [session.connected, load]);
 
   if (session.loading) return <PageSkeleton title="Products" />;
-  if (!session.connected) return <NotConnected title="Products" />;
+  if (!session.connected) return <NotConnected title="Products" error={session.error} />;
 
   return (
     <Page

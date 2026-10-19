@@ -68,7 +68,7 @@ export default function Marketing() {
   const selected = useMemo(() => products.find((p) => p.id === productId), [products, productId]);
 
   if (session.loading || (session.connected && loading)) return <PageSkeleton title="SEO & marketing" />;
-  if (!session.connected) return <NotConnected title="SEO & marketing" />;
+  if (!session.connected) return <NotConnected title="SEO & marketing" error={session.error} />;
 
   const clearResults = () => {
     setAnalysis(null);

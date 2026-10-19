@@ -58,7 +58,7 @@ export default function Dashboard() {
   }, [session.connected, load]);
 
   if (session.loading) return <PageSkeleton title="Dashboard" withAside />;
-  if (!session.connected) return <NotConnected title="Dashboard" />;
+  if (!session.connected) return <NotConnected title="Dashboard" error={session.error} />;
 
   const currency = summary?.recent_sales?.find((sale) => sale.currency)?.currency || 'USD';
   const sales = summary?.recent_sales ?? [];

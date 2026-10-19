@@ -65,7 +65,7 @@ export default function Settings() {
   }, [session.connected]);
 
   if (session.loading || (session.connected && loading)) return <PageSkeleton title="Settings" />;
-  if (!session.connected) return <NotConnected title="Settings" />;
+  if (!session.connected) return <NotConnected title="Settings" error={session.error} />;
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
 

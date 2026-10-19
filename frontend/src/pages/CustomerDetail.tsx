@@ -48,7 +48,7 @@ export default function CustomerDetail() {
   }, [session.connected, load]);
 
   if (session.loading || (session.connected && loading)) return <PageSkeleton withAside />;
-  if (!session.connected) return <NotConnected title="Customer" />;
+  if (!session.connected) return <NotConnected title="Customer" error={session.error} />;
   if (error || !customer) {
     return (
       <Page backAction={{ content: 'Customers', url: '/customers' }} title="Customer">

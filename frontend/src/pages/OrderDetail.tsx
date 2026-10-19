@@ -62,7 +62,7 @@ export default function OrderDetail() {
   }, [session.connected, load]);
 
   if (session.loading || (session.connected && loading)) return <PageSkeleton withAside />;
-  if (!session.connected) return <NotConnected title="Order" />;
+  if (!session.connected) return <NotConnected title="Order" error={session.error} />;
   if (error || !order) {
     return (
       <Page backAction={{ content: 'Orders', url: '/orders' }} title="Order">

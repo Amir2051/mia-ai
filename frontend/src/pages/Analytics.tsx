@@ -75,7 +75,7 @@ export default function Analytics() {
   }, [session.connected, load]);
 
   if (session.loading) return <PageSkeleton title="Analytics" withAside />;
-  if (!session.connected) return <NotConnected title="Analytics" />;
+  if (!session.connected) return <NotConnected title="Analytics" error={session.error} />;
 
   const currency = data?.recent_sales?.find((sale) => sale.currency)?.currency || 'USD';
   const topProducts = data?.top_products ?? [];

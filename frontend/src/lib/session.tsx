@@ -25,9 +25,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .get('/auth/session')
-      .then((res) => {
+    const loadSession = async () => {
+      try {
+        const embedded = window.self !== window.top;
+        let authorization: string | undefined;
+        if (embedded) {
+          if (!window.shopify?.idToken) {
+            throw new Error('Shopify App Bridge did not initialize. Close Mia and reopen it from Shopify Admin → Apps.');
+          }
+          let token: string;
+          try {
+            token = await window.shopify.idToken();
+          } catch {
+            throw new Error('Shopify could not provide a session token. Reopen Mia from Shopify Admin → Apps and try again.');
+          }
+          if (!token) {
+            throw new Error('Shopify did not provide a session token. Reopen Mia from Shopify Admin → Apps and try again.');
+          }
+          authorization = `Bearer ${token}`;
+        }
+
+        const res = await api.get('/auth/session', {
+          headers: authorization ? { Authorization: authorization } : undefined,
+        });
         if (cancelled) return;
         setState({
           loading: false,
@@ -36,8 +56,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           scopes: res.data?.scopes ?? null,
           error: null,
         });
-      })
-      .catch((err) => {
+      } catch (err) {
         if (cancelled) return;
         setState({
           loading: false,
@@ -46,7 +65,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           scopes: null,
           error: (err as Error)?.message || 'Could not load your Shopify session',
         });
-      });
+      }
+    };
+    void loadSession();
     return () => {
       cancelled = true;
     };

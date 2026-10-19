@@ -61,7 +61,7 @@ export default function Customers() {
   }, [session.connected, load]);
 
   if (session.loading) return <PageSkeleton title="Customers" />;
-  if (!session.connected) return <NotConnected title="Customers" />;
+  if (!session.connected) return <NotConnected title="Customers" error={session.error} />;
 
   const namesHidden = items.length > 0 && items.every((node) => !node.displayName && !node.firstName && !customerEmail(node));
 
