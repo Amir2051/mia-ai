@@ -28,6 +28,29 @@ def test_default_login_url_uses_validated_shopify_domain(client, monkeypatch):
     }
 
 
+def test_default_login_url_accepts_shopify_admin_store_handle(client, monkeypatch):
+    from app.shopify.config import settings
+
+    monkeypatch.setattr(settings, "shopify_api_key", "public-client-id")
+    response = client.get("/api/auth/login-url", params={"shop": "shopify.com/store/safenestt"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "shop_domain": "safenestt.myshopify.com",
+        "login_url": "https://safenestt.myshopify.com/admin/apps/public-client-id",
+    }
+
+
+def test_default_login_url_accepts_admin_shopify_full_url(client, monkeypatch):
+    from app.shopify.config import settings
+
+    monkeypatch.setattr(settings, "shopify_api_key", "public-client-id")
+    response = client.get("/api/auth/login-url", params={"shop": "https://admin.shopify.com/store/safenestt"})
+
+    assert response.status_code == 200
+    assert response.json()["shop_domain"] == "safenestt.myshopify.com"
+
+
 def test_default_login_url_rejects_non_shopify_hosts(client):
     response = client.get("/api/auth/login-url", params={"shop": "attacker.example"})
 

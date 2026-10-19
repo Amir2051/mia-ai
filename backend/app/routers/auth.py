@@ -1,5 +1,7 @@
 from datetime import timedelta
 from typing import Optional
+from urllib.parse import urlsplit
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
@@ -56,12 +58,27 @@ def _needs_token_exchange(shop: Shop) -> bool:
     return shop.access_token_expires_at <= now_utc().replace(tzinfo=None) + timedelta(minutes=5)
 
 
+def _normalize_login_shop(shop: str) -> str:
+    """Accept a myshopify.com domain or Shopify Admin /store/<handle> URL."""
+    raw = (shop or "").strip()
+    if not raw:
+        raise AuthorizationError("Shop domain is required")
+    candidate = raw if "://" in raw else f"https://{raw}"
+    parsed = urlsplit(candidate)
+    if parsed.hostname and parsed.hostname.lower() in {"shopify.com", "www.shopify.com", "admin.shopify.com"}:
+        match = re.fullmatch(r"/store/([a-zA-Z0-9][a-zA-Z0-9-]*)/?", parsed.path)
+        if not match:
+            raise AuthorizationError("For Shopify Admin URLs, use shopify.com/store/your-store")
+        return f"{match.group(1).lower()}.myshopify.com"
+    return _validate_shop_domain(raw)
+
+
 @router.get("/login-url")
 async def login_url(shop: str = Query(..., min_length=1, max_length=255)):
     """Build a safe direct link to this installed app in the requested Shopify admin."""
     try:
-        shop_domain = _validate_shop_domain(shop)
-    except AuthorizationError as exc:
+        shop_domain = _normalize_login_shop(shop)
+    except (AuthorizationError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if not settings.shopify_api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Shopify app client ID is not configured")
