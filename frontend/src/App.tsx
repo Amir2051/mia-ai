@@ -17,6 +17,7 @@ const Marketing = lazy(() => import('./pages/Marketing'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Mia = lazy(() => import('./pages/Mia'));
 const Social = lazy(() => import('./pages/Social'));
+const Login = lazy(() => import('./pages/Login'));
 
 function NotFound() {
   return (
@@ -38,8 +39,9 @@ export default function App() {
   return (
     <Suspense fallback={<PageSkeleton />}>
       <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
         <Route element={<AppLayout />}>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/mia" element={<Mia />} />
           <Route path="/products" element={<Products />} />

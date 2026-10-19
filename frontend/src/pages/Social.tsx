@@ -28,6 +28,7 @@ import { useSession } from '../lib/session';
 
 type Account = { id: number; provider: string; account_type: string; account_name: string; metadata?: Record<string, unknown> };
 type Post = { id: string; message?: string; caption?: string; created_time?: string; timestamp?: string; permalink_url?: string; permalink?: string };
+type PlatformConfig = { provider: string; label: string; configured: boolean; redirect_uri: string; required_env: string[] };
 
 const TYPE_LABELS: Record<string, string> = { facebook_page: 'Facebook Page', instagram_business: 'Instagram', tiktok: 'TikTok', pinterest: 'Pinterest', youtube: 'YouTube', linkedin: 'LinkedIn' };
 const EXTRA_PLATFORMS = [
@@ -42,6 +43,7 @@ export default function Social() {
   const location = useLocation();
   const navigate = useNavigate();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [platformConfigs, setPlatformConfigs] = useState<PlatformConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -155,6 +157,13 @@ export default function Social() {
       window.history.replaceState({}, '', '/social');
     }
   }, [session.connected, load]);
+
+  useEffect(() => {
+    if (!session.connected) return;
+    api.get('/social/configuration')
+      .then((res) => setPlatformConfigs((res.data?.platforms ?? []) as PlatformConfig[]))
+      .catch((err) => setError(errorMessage(err, 'Could not load social platform configuration status')));
+  }, [session.connected]);
 
   if (session.loading) return <PageSkeleton title="Social" withAside />;
   if (!session.connected) return <NotConnected title="Social" />;
@@ -338,6 +347,32 @@ export default function Social() {
           <BlockStack gap="400">
             {notice && <Banner tone="success" onDismiss={() => setNotice(null)}><p>{notice}</p></Banner>}
             {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">Platform setup</Text>
+                <Text as="p" tone="subdued">OAuth credentials belong in the server environment, never in the browser. Register each exact callback URL in that platform's developer console.</Text>
+                {platformConfigs.map((platform) => (
+                  <Box key={platform.provider} paddingBlock="200" borderBlockStartWidth="025" borderColor="border">
+                    <BlockStack gap="150">
+                      <InlineStack align="space-between" blockAlign="center" gap="200">
+                        <Text as="h3" variant="headingSm">{platform.label}</Text>
+                        <Badge tone={platform.configured ? 'success' : 'warning'}>{platform.configured ? 'Credentials configured' : 'Setup required'}</Badge>
+                      </InlineStack>
+                      {!platform.configured && <Text as="p" tone="subdued">Add {platform.required_env.join(' and ')} to backend/.env, then restart Mia.</Text>}
+                      <Text as="p" variant="bodySm">Callback URL: {platform.redirect_uri}</Text>
+                      <InlineStack>
+                        <Button size="slim" variant="plain" onClick={() => {
+                          void navigator.clipboard.writeText(platform.redirect_uri)
+                            .then(() => showToast('Callback URL copied'))
+                            .catch(() => setError('Clipboard access failed. Copy the callback URL manually.'));
+                        }}>Copy callback URL</Button>
+                      </InlineStack>
+                    </BlockStack>
+                  </Box>
+                ))}
+              </BlockStack>
+            </Card>
 
             <Card>
               <BlockStack gap="300">

@@ -56,6 +56,18 @@ def _needs_token_exchange(shop: Shop) -> bool:
     return shop.access_token_expires_at <= now_utc().replace(tzinfo=None) + timedelta(minutes=5)
 
 
+@router.get("/login-url")
+async def login_url(shop: str = Query(..., min_length=1, max_length=255)):
+    """Build a safe direct link to this installed app in the requested Shopify admin."""
+    try:
+        shop_domain = _validate_shop_domain(shop)
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if not settings.shopify_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Shopify app client ID is not configured")
+    return {"login_url": f"https://{shop_domain}/admin/apps/{settings.shopify_api_key}", "shop_domain": shop_domain}
+
+
 @router.get("/session", response_model=SessionResponse)
 async def session(request: Request, response: Response, force: bool = Query(False), db=Depends(get_db)):
     """Validate the embedded Shopify ID token and establish/refresh the offline Admin API token."""

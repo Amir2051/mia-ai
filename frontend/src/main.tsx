@@ -85,30 +85,15 @@ const AdapterLink = forwardRef<HTMLAnchorElement, AdapterLinkProps>(function Ada
   );
 });
 
-function setStatus(rootElement: HTMLElement, message: string) {
-  rootElement.innerHTML = '';
-  const status = document.createElement('p');
-  status.className = 'boot-status';
-  status.textContent = message;
-  rootElement.appendChild(status);
-}
-
-waitForAppBridge().then(async (ready) => {
+const bridgeWait = window.self === window.top ? Promise.resolve(false) : waitForAppBridge();
+bridgeWait.then(async (bridgeAvailable) => {
   const rootElement = document.getElementById('root');
   if (!rootElement) return;
 
-  if (!ready) {
-    setStatus(rootElement, 'Mia runs inside your Shopify admin. Open it from Apps in Shopify.');
-    return;
-  }
-
-  const sessionReady = await bootstrapShopifySession();
-
-  if (!sessionReady) {
-    setStatus(rootElement, 'Connecting to Shopify…');
-    setTimeout(() => window.location.reload(), 1500);
-    return;
-  }
+  // Standalone browser visits should show /login immediately. Only wait for
+  // App Bridge when the page is embedded inside Shopify Admin.
+  const ready = window.self !== window.top && bridgeAvailable;
+  if (ready) await bootstrapShopifySession();
 
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>

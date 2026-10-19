@@ -419,6 +419,30 @@ async def _get_meta_account(
 
 
 # OAuth + publishing for TikTok, Pinterest, YouTube, and LinkedIn.
+@router.get("/configuration")
+async def social_configuration(current: Optional[CurrentUser] = Depends(get_optional_shop)):
+    """Return non-secret OAuth readiness and exact callback URLs for setup diagnostics."""
+    if not current:
+        raise HTTPException(status_code=401, detail="Missing Shopify session; open Mia from Shopify Admin")
+    base_url = settings.shopify_app_url.rstrip("/")
+    platforms = [{
+        "provider": "meta",
+        "label": "Meta (Facebook / Instagram)",
+        "configured": bool(settings.meta_app_id.strip() and settings.meta_app_secret.strip()),
+        "redirect_uri": settings.meta_redirect_uri.strip() or f"{base_url}/api/social/meta/callback",
+        "required_env": ["META_APP_ID", "META_APP_SECRET"],
+    }]
+    for provider, cfg in social_oauth.PROVIDERS.items():
+        platforms.append({
+            "provider": provider,
+            "label": cfg["label"],
+            "configured": bool(getattr(settings, cfg["key_setting"], "").strip() and getattr(settings, cfg["secret_setting"], "").strip()),
+            "redirect_uri": social_oauth.redirect_uri(provider),
+            "required_env": [cfg["key_setting"].upper(), cfg["secret_setting"].upper()],
+        })
+    return {"platforms": platforms}
+
+
 @router.get("/connect/{provider}")
 async def connect_social_provider(provider: str, current: Optional[CurrentUser] = Depends(get_optional_shop)):
     if provider not in social_oauth.PROVIDERS:

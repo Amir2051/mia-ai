@@ -15,6 +15,31 @@ class RecordingClient:
         return {"order": None}
 
 
+def test_default_login_url_uses_validated_shopify_domain(client, monkeypatch):
+    from app.shopify.config import settings
+
+    monkeypatch.setattr(settings, "shopify_api_key", "public-client-id")
+    response = client.get("/api/auth/login-url", params={"shop": "demo-store.myshopify.com"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "shop_domain": "demo-store.myshopify.com",
+        "login_url": "https://demo-store.myshopify.com/admin/apps/public-client-id",
+    }
+
+
+def test_default_login_url_rejects_non_shopify_hosts(client):
+    response = client.get("/api/auth/login-url", params={"shop": "attacker.example"})
+
+    assert response.status_code == 422
+
+
+def test_social_configuration_requires_shopify_session(client):
+    response = client.get("/api/social/configuration")
+
+    assert response.status_code == 401
+
+
 def test_order_detail_route_accepts_shopify_gid_with_slashes(client):
     # Shopify order ids look like gid://shopify/Order/123. Without a :path
     # converter the route 404s before the handler runs.
