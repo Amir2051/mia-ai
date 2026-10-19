@@ -45,7 +45,7 @@ export default function Orders() {
   }, [session.connected, load]);
 
   if (session.loading) return <PageSkeleton title="Orders" />;
-  if (!session.connected) return <NotConnected title="Orders" />;
+  if (!session.connected) return <NotConnected title="Orders" error={session.error} />;
 
   return (
     <Page title="Orders">

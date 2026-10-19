@@ -48,9 +48,14 @@ export function CardSkeleton({ lines = 5 }: { lines?: number }) {
   );
 }
 
-export function NotConnected({ title }: { title: string }) {
+export function NotConnected({ title, error }: { title: string; error?: string | null }) {
   return (
     <Page title={title}>
+      {error && (
+        <Banner tone="critical" title="Shopify session could not be verified">
+          <p>{error}</p>
+        </Banner>
+      )}
       <Card>
         <EmptyState
           heading="Open Mia from your Shopify admin"

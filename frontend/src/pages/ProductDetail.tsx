@@ -123,7 +123,7 @@ export default function ProductDetail() {
   }, [session.connected, load]);
 
   if (session.loading || (session.connected && loading && !product)) return <PageSkeleton withAside />;
-  if (!session.connected) return <NotConnected title="Product" />;
+  if (!session.connected) return <NotConnected title="Product" error={session.error} />;
   if (error || !product) {
     return (
       <Page backAction={{ content: 'Products', url: '/products' }} title="Product">

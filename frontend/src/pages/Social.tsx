@@ -166,7 +166,7 @@ export default function Social() {
   }, [session.connected]);
 
   if (session.loading) return <PageSkeleton title="Social" withAside />;
-  if (!session.connected) return <NotConnected title="Social" />;
+  if (!session.connected) return <NotConnected title="Social" error={session.error} />;
 
   const pages = accounts.filter((account) => account.account_type === 'facebook_page');
   const instagramPages = pages.filter((account) => {

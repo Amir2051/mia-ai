@@ -19,10 +19,7 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException, status
 
-try:
-    from jose import jwt as jose_jwt
-except ImportError:  # pragma: no cover
-    from jwt import jwt as jose_jwt
+import jwt as jose_jwt
 
 from app.auth.dependencies import _validate_shopify_id_token
 from app.shopify.auth import (

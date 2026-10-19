@@ -91,7 +91,7 @@ export default function Mia() {
   }, [messages, busy]);
 
   if (session.loading) return <PageSkeleton title="Ask Mia" withAside />;
-  if (!session.connected) return <NotConnected title="Ask Mia" />;
+  if (!session.connected) return <NotConnected title="Ask Mia" error={session.error} />;
 
   const products = context?.products ?? [];
   const product = products.find((p) => p.id === selected);

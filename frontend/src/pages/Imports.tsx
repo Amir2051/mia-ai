@@ -139,7 +139,7 @@ export default function Imports() {
   }, [session.connected, loadHistory]);
 
   if (session.loading) return <PageSkeleton title="Import products" withAside />;
-  if (!session.connected) return <NotConnected title="Import products" />;
+  if (!session.connected) return <NotConnected title="Import products" error={session.error} />;
 
   const readFile = (file: File) => {
     setFileError(null);

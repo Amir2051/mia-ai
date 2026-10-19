@@ -7,7 +7,7 @@ const api = axios.create({
 
 api.interceptors.request.use(async (config) => {
   try {
-    if (window.shopify?.idToken) {
+    if (!config.headers?.Authorization && window.shopify?.idToken) {
       const token = await window.shopify.idToken();
 
       if (token) {
