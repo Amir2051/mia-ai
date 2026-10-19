@@ -30,16 +30,30 @@ class MetaClient:
             "redirect_uri": settings.meta_redirect_uri or f"{settings.shopify_app_url.rstrip('/')}/api/social/meta/callback",
             "state": state,
             "response_type": "code",
-            "scope": settings.meta_oauth_scopes,
         }
+        config_id = settings.meta_login_config_id.strip()
+        if config_id:
+            # Facebook Login for Business configurations own the permission set.
+            # Do not send a second, potentially incompatible scope list alongside config_id.
+            params["config_id"] = config_id
+            params["override_default_response_type"] = "true"
+        else:
+            # Legacy Facebook Login flow: permissions are requested directly as scopes.
+            params["scope"] = settings.meta_oauth_scopes
         return f"https://www.facebook.com/{settings.meta_oauth_version}/dialog/oauth?{urlencode(params)}"
 
-    async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _get(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        requires_token: bool = True,
+    ) -> Dict[str, Any]:
         params = dict(params or {})
         token = params.pop("access_token", None) or self.access_token
         if token:
             params["access_token"] = token
-        if not token:
+        elif requires_token:
             raise MetaAPIError("Meta access token is not configured", 500)
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(f"{self.base_url}/{path.lstrip('/')}", params=params)
@@ -81,6 +95,7 @@ class MetaClient:
                 "redirect_uri": settings.meta_redirect_uri or f"{settings.shopify_app_url.rstrip('/')}/api/social/meta/callback",
                 "code": code,
             },
+            requires_token=False,
         )
 
     async def me(self) -> Dict[str, Any]:
@@ -104,11 +119,16 @@ class MetaClient:
             data["link"] = link
         return await self._post(f"/{page_id}/feed", data)
 
-    async def instagram_media(self, instagram_account_id: str) -> Dict[str, Any]:
-        return await self._get(f"/{instagram_account_id}/media", {
+    async def instagram_media(
+        self, instagram_account_id: str, access_token: Optional[str] = None
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
             "fields": "id,caption,media_type,media_url,permalink,timestamp",
             "limit": 25,
-        })
+        }
+        if access_token:
+            params["access_token"] = access_token
+        return await self._get(f"/{instagram_account_id}/media", params)
 
     async def create_instagram_media(self, instagram_account_id: str, image_url: str, caption: str, access_token: str) -> Dict[str, Any]:
         return await self._post(f"/{instagram_account_id}/media", {

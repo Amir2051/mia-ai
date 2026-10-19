@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Badge,
   BlockStack,
@@ -35,6 +36,7 @@ type Busy = null | 'analyze' | 'seo' | 'marketing' | 'image' | 'campaign' | 'app
 
 export default function Marketing() {
   const session = useSession();
+  const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [productId, setProductId] = useState('');
   const [loading, setLoading] = useState(true);
@@ -254,7 +256,26 @@ export default function Marketing() {
                       <Text as="p" tone="subdued">Generate an SEO package to see suggestions here.</Text>
                     ))}
                   {tab === 1 &&
-                    (marketing ? <MarketingCopy result={marketing} /> : <Text as="p" tone="subdued">Generate campaign copy to see it here.</Text>)}
+                    (marketing ? (
+                      <BlockStack gap="300">
+                        <MarketingCopy result={marketing} />
+                        <InlineStack>
+                          <Button
+                            variant="primary"
+                            icon={MegaphoneIcon}
+                            onClick={() => navigate('/social', { state: { socialDraft: {
+                              facebook: marketing.facebook?.copy || '',
+                              instagram: marketing.instagram?.copy || '',
+                              imageUrl: marketing.enhanced_image_url || marketing.image_url || '',
+                              productTitle: marketing.product_title || selected?.title || '',
+                            } } })}
+                          >
+                            Send campaign to Social
+                          </Button>
+                        </InlineStack>
+                        <Text as="p" tone="subdued">Mia will prefill the social composer. Review the copy, choose an authorized Page, and explicitly publish it.</Text>
+                      </BlockStack>
+                    ) : <Text as="p" tone="subdued">Generate campaign copy to see it here.</Text>)}
                   {tab === 2 &&
                     (image ? (
                       <BlockStack gap="300">

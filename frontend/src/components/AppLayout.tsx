@@ -22,9 +22,7 @@ export default function AppLayout() {
   return (
     <>
       <ui-nav-menu>
-        <a href="/dashboard" rel="home">
-          Dashboard
-        </a>
+        <a href="/dashboard" rel="home">Dashboard</a>
         <a href="/mia">Ask Mia</a>
         <a href="/marketing">SEO &amp; marketing</a>
         <a href="/products">Products</a>
@@ -35,6 +33,18 @@ export default function AppLayout() {
         <a href="/social">Social</a>
         <a href="/settings">Settings</a>
       </ui-nav-menu>
+      {/* Shopify App Bridge moves ui-nav-menu into Shopify's sidebar. When Mia is
+          opened directly in a browser (local development), provide visible links. */}
+      {window.self === window.top && (
+        <nav className="mia-local-nav" aria-label="Mia navigation">
+          <a href="/dashboard" onClick={(event) => { event.preventDefault(); navigate('/dashboard'); }}>Dashboard</a>
+          <a href="/mia" onClick={(event) => { event.preventDefault(); navigate('/mia'); }}>Ask Mia</a>
+          <a href="/marketing" onClick={(event) => { event.preventDefault(); navigate('/marketing'); }}>SEO &amp; marketing</a>
+          <a href="/products" onClick={(event) => { event.preventDefault(); navigate('/products'); }}>Products</a>
+          <a href="/social" aria-current={window.location.pathname === '/social' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/social'); }}>Social media</a>
+          <a href="/settings" onClick={(event) => { event.preventDefault(); navigate('/settings'); }}>Settings</a>
+        </nav>
+      )}
       <Outlet />
     </>
   );

@@ -2,7 +2,7 @@ import json
 
 from app.routers.mia import (
     ConversationMessage, _clean_conversation, _json_list, REMEMBER_PATTERN,
-    _memory_notes_from_message, _is_memory_diagnostic,
+    _memory_notes_from_message, _is_memory_diagnostic, _is_memory_retrieval_request, _memory_notes_for_context,
 )
 
 
@@ -123,3 +123,32 @@ def test_persisted_conversation_redacts_credential_assignments():
     assert "open-sesame" not in text
     assert "abc.def.ghi" not in text
     assert text.count("[REDACTED]") >= 3
+
+
+def test_memory_retrieval_request_is_distinguished_from_status_and_save_requests():
+    retrieval = ("Read the six existing merchant memory notes for safenestt.myshopify.com "
+                 "and list each note exactly as stored. Do not save, modify, or delete any notes.")
+    assert _is_memory_retrieval_request(retrieval)
+    assert not _is_memory_diagnostic(retrieval)
+    assert _is_memory_diagnostic("How many merchant preferences are currently saved? Do not save anything.")
+    assert not _is_memory_retrieval_request("Save these merchant preferences: Use a friendly voice")
+
+
+def test_long_term_memory_keeps_old_notes_and_retrieves_relevant_ones():
+    notes = [f"Unrelated saved preference number {i}" for i in range(40)]
+    old_important_note = "Never invent product materials or dimensions in Shopify SEO descriptions"
+    notes.insert(2, old_important_note)
+
+    # The context is bounded, but selection can retrieve an older note by relevance.
+    selected = _memory_notes_for_context(notes, "Write Shopify SEO descriptions and product dimensions", limit=10)
+    assert len(selected) == 10
+    assert old_important_note in selected
+
+    # Persistence storage is deliberately not truncated to the prompt-context limit.
+    assert len(notes) == 41
+    assert notes[2] == old_important_note
+
+
+def test_long_term_memory_returns_all_notes_when_under_context_limit():
+    notes = ["Brand voice is premium", "Never invent product facts", "SEO titles prioritize product names"]
+    assert _memory_notes_for_context(notes, "write product SEO") == notes

@@ -53,6 +53,22 @@ class Settings(BaseSettings):
     meta_oauth_version: str = 'v24.0'
     meta_redirect_uri: str = ''
     meta_oauth_scopes: str = 'pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish'
+    meta_login_config_id: str = ""
+
+    # Social OAuth integrations. Register each callback URL with its provider.
+    tiktok_client_key: str = ''
+    tiktok_client_secret: str = ''
+    tiktok_redirect_uri: str = ''
+    pinterest_client_id: str = ''
+    pinterest_client_secret: str = ''
+    pinterest_redirect_uri: str = ''
+    youtube_client_id: str = ''
+    youtube_client_secret: str = ''
+    youtube_redirect_uri: str = ''
+    linkedin_client_id: str = ''
+    linkedin_client_secret: str = ''
+    linkedin_redirect_uri: str = ''
+    linkedin_api_version: str = '202607'
 
     @property
     def is_production(self) -> bool:

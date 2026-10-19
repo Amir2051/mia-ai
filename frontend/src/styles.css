@@ -3,6 +3,33 @@
 /* App Bridge moves this menu into the Shopify admin sidebar; never render it in-page. */
 ui-nav-menu { display: none; }
 
+/* Standalone/local browser navigation; Shopify embedded navigation uses App Bridge. */
+.mia-local-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--p-color-border, #e1e3e5);
+  background: var(--p-color-bg-surface, #fff);
+}
+.mia-local-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  color: var(--p-color-text, #202223);
+  text-decoration: none;
+  font-size: 14px;
+}
+.mia-local-nav a:hover,
+.mia-local-nav a[aria-current="page"] {
+  background: var(--p-color-bg-surface-secondary, #f1f2f3);
+  font-weight: 600;
+}
+
 .boot-status {
   font-family: var(--p-font-family-sans, system-ui, sans-serif);
   color: var(--p-color-text-secondary, #616161);
