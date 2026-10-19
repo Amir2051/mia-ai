@@ -52,8 +52,12 @@ export function NotConnected({ title }: { title: string }) {
   return (
     <Page title={title}>
       <Card>
-        <EmptyState heading="Open Mia from your Shopify admin" image={EMPTY_STATE_IMAGE}>
-          <p>Mia needs an active Shopify admin session to read your store. Open the app from Apps in your Shopify admin.</p>
+        <EmptyState
+          heading="Open Mia from your Shopify admin"
+          image={EMPTY_STATE_IMAGE}
+          action={{ content: 'Continue with Shopify', url: '/login' }}
+        >
+          <p>Mia needs an active Shopify admin session to read your store. If you opened Mia directly, continue with Shopify and select the store where Mia is installed. If you are already in Shopify Admin, reopen Mia from Apps so Shopify can provide a secure session.</p>
         </EmptyState>
       </Card>
     </Page>
