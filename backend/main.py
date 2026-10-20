@@ -174,6 +174,7 @@ def create_app() -> FastAPI:
         marketing,
         orders,
         products,
+        publications,
         seo,
         settings as settings_router,
         webhooks,
@@ -228,6 +229,12 @@ def create_app() -> FastAPI:
         products.router,
         prefix="/api/products",
         tags=["products"],
+    )
+
+    application.include_router(
+        publications.router,
+        prefix="/api",
+        tags=["sales-channels"],
     )
 
     application.include_router(

@@ -149,6 +149,32 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         customers = []
         warnings.append("Customer data is unavailable until Shopify grants the required protected-data access")
 
+    # Sales channels are first-class store context so Mia can answer questions
+    # about where products are published, not merely expose a separate API route.
+    publications: list[Dict[str, Any]] = []
+    try:
+        publication_data = await _client(shop).list_publications(first=100)
+        publications = _nodes(publication_data, "publications")
+    except ShopifyAPIError as exc:
+        response = exc.response or {}
+        errors = response.get("errors") or []
+        if isinstance(errors, dict):
+            errors = [errors]
+        error_text = " ".join(
+            str(item.get("message", ""))
+            for item in errors
+            if isinstance(item, dict)
+        ).lower()
+        if exc.status_code in (401, 403) or any(
+            marker in error_text
+            for marker in ("access denied", "not authorized", "read_publications", "scope")
+        ):
+            warnings.append(
+                "Sales channels could not be read: Shopify has not granted Mia the required read_publications permission. Reauthorize/reinstall Mia after confirming the app scope."
+            )
+        else:
+            warnings.append("Sales-channel data could not be loaded from Shopify")
+
     revenue = 0.0
     for order in orders:
         money = ((order.get("totalPriceSet") or {}).get("shopMoney") or {})
@@ -183,6 +209,10 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         "shop": shop.shop_domain,
         "counts": {"products": len(products), "orders": len(orders), "customers": len(customers), "inventory_units": inventory},
         "revenue": round(revenue, 2),
+        "sales_channels": [
+            {"id": item.get("id"), "name": item.get("name"), "supportsFuturePublishing": item.get("supportsFuturePublishing")}
+            for item in publications
+        ],
         "products": product_rows,
         "customers": [{"id": c.get("id"), "name": " ".join(x for x in [c.get("firstName"), c.get("lastName")] if x), "orders": c.get("numberOfOrders"), "spent": (c.get("amountSpent") or {}).get("amount")} for c in customers],
         "orders": [{
@@ -778,7 +808,7 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
 
     ctx = await _context(shop)
     products = ctx["products"]
-    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "warnings": ctx["warnings"]}
+    data_used = {"shop": ctx["shop"], "counts": ctx["counts"], "catalog_scanned": len(products), "sales_channels": ctx["sales_channels"], "warnings": ctx["warnings"]}
 
     forget_match = FORGET_PATTERN.match(body.message)
     if forget_match:
@@ -830,6 +860,7 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
     messages = [
         {"role": "system", "content": MIA_SYSTEM_PROMPT},
         {"role": "system", "content": "STORE DATA (live from Shopify):\n" + _store_facts(ctx, context_target)},
+        {"role": "system", "content": "SHOPIFY SALES CHANNELS (live publication data):\n" + json.dumps(ctx["sales_channels"], ensure_ascii=False) + "\nUse these actual channel names when answering questions about sales channels, storefronts, marketplaces, or product publishing. If this list is empty, do not guess; explain that Shopify returned no visible publications or that permissions need checking. Warnings: " + "; ".join(ctx["warnings"])},
     ]
     context_notes = _memory_notes_for_context(knowledge, body.message)
     if context_notes:
