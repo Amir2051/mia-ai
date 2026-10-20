@@ -39,6 +39,46 @@ class UpdateProductPayload(BaseModel):
     product: Dict[str, Any]
 
 
+class ProductPublicationPayload(BaseModel):
+    publication_ids: list[str]
+    publish: bool = True
+
+
+async def _publication_client(current: Optional[CurrentUser], db):
+    if not current:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
+    result = await db.execute(select(Shop).where(Shop.shop_domain == current.shop_domain))
+    shop = result.scalar_one_or_none()
+    if not shop or not shop.access_token_encrypted or not shop.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Shopify is not connected")
+    try:
+        token = decrypt_token(shop.access_token_encrypted)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Stored Shopify access token could not be decrypted") from exc
+    return ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=token)
+
+
+@router.get("/sales-channels")
+async def list_sales_channels(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
+    client = await _publication_client(current, db)
+    try:
+        return {"data": await client.list_publications(), "connected": True}
+    except ShopifyAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/sales-channels/products/{product_id:path}")
+async def set_product_sales_channels(product_id: str, body: ProductPublicationPayload, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
+    client = await _publication_client(current, db)
+    try:
+        data = await client.set_product_publications(product_id, body.publication_ids, publish=body.publish)
+        return {"data": data, "connected": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except ShopifyAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
 @router.put("/{product_id:path}", response_model=ProductUpdateResponse)
 async def update_product(
     product_id: str,

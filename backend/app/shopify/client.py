@@ -207,6 +207,42 @@ class ShopifyAPIClient:
         """
         return await self.graphql(gql, {"query": query or None, "first": first, "after": after})
 
+    async def list_publications(self, first: int = 100, after: Optional[str] = None) -> Dict[str, Any]:
+        """List sales channels/publications available to the authorized shop."""
+        gql = """
+        query ListPublications($first: Int!, $after: String) {
+            publications(first: $first, after: $after) {
+                edges { cursor node { id name supportsFuturePublishing } }
+                pageInfo { hasNextPage endCursor }
+            }
+        }
+        """
+        return await self.graphql(gql, {"first": first, "after": after})
+
+    async def set_product_publications(self, product_id: str, publication_ids: list[str], *, publish: bool = True) -> Dict[str, Any]:
+        """Publish or unpublish a product to selected Shopify sales channels."""
+        if not product_id or not product_id.startswith("gid://shopify/Product/"):
+            raise ValueError("product_id must be a Shopify Product GID")
+        if not publication_ids:
+            raise ValueError("Select at least one sales channel")
+        if any(not item.startswith("gid://shopify/Publication/") for item in publication_ids):
+            raise ValueError("publication_ids must contain Shopify Publication GIDs")
+        mutation_name = "publishablePublish" if publish else "publishableUnpublish"
+        gql = f"""
+        mutation SetProductPublications($id: ID!, $input: [PublicationInput!]!) {{
+            {mutation_name}(id: $id, input: $input) {{
+                userErrors {{ field message }}
+                publishable {{ ... on Product {{ id title }} }}
+            }}
+        }}
+        """
+        result = await self.graphql(gql, {"id": product_id, "input": [{"publicationId": pid} for pid in publication_ids]})
+        payload = result.get(mutation_name) or {}
+        user_errors = payload.get("userErrors") or []
+        if user_errors:
+            raise ShopifyAPIError(f"Shopify {mutation_name} failed", status_code=200, response={"data": result, "userErrors": user_errors})
+        return result
+
     @staticmethod
     def verify_webhook_hmac(body: bytes, received_hmac: str) -> bool:
         if not settings.shopify_api_secret:

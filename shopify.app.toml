@@ -25,7 +25,7 @@ direct_api_mode = "online"
 embedded_app_direct_api_access = true
 
 [access_scopes]
-scopes = "read_customers,read_inventory,read_orders,read_products,write_products"
+scopes = "read_customers,read_inventory,read_orders,read_products,read_publications,write_products,write_publications"
 
 [auth]
 redirect_urls = [ "https://mia.drivenest.info/auth/callback" ]
