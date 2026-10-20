@@ -98,6 +98,64 @@ export default function Social() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Meta redirects back to a standalone page because the provider OAuth flow
+  // leaves Shopify Admin. Relay its short-lived code/state to the still-open,
+  // authenticated embedded Mia tab; the backend verifies the signed state and shop.
+  useEffect(() => {
+    if (window.self !== window.top) return;
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const provider = params.get('oauth_provider');
+    const code = params.get('oauth_code');
+    const state = params.get('oauth_state');
+    if (provider !== 'meta' || !code || !state) return;
+
+    window.history.replaceState({}, '', '/social');
+    const message = { type: 'mia-social-oauth', provider, code, state };
+    if (window.opener && !window.opener.closed) {
+      // postMessage reaches the originating embedded iframe even when browser
+      // storage partitioning isolates BroadcastChannel between the two tabs.
+      window.opener.postMessage(message, window.location.origin);
+    } else if ('BroadcastChannel' in window) {
+      const channel = new BroadcastChannel('mia-social-oauth');
+      channel.postMessage({ provider, code, state });
+      channel.close();
+    }
+    window.setTimeout(() => window.close(), 250);
+  }, []);
+
+  // The embedded tab keeps its Shopify App Bridge session while the popup
+  // completes Meta login, then performs the authenticated token exchange here.
+  useEffect(() => {
+    if (!session.connected) return;
+    const completeOAuth = (data: { provider?: string; code?: string; state?: string }) => {
+      const { provider, code, state } = data;
+      if (provider !== 'meta' || !code || !state) return;
+      void api.post('/social/meta/complete', { code, state })
+        .then((res) => {
+          const count = Number(res.data?.pages_saved ?? 0);
+          setNotice(count > 0
+            ? 'Meta connected successfully. Mia linked ' + count + ' Facebook Page' + (count === 1 ? '' : 's') + ' and any eligible linked Instagram professional accounts.'
+            : 'Meta authorization completed. No eligible Facebook Pages were returned; check that you selected the right Page permissions.');
+          load();
+        })
+        .catch((err) => setError(errorMessage(err, 'Could not complete the social account connection')));
+    };
+    const onWindowMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.data?.type !== 'mia-social-oauth') return;
+      completeOAuth(event.data);
+    };
+    window.addEventListener('message', onWindowMessage);
+    let channel: BroadcastChannel | null = null;
+    if ('BroadcastChannel' in window) {
+      channel = new BroadcastChannel('mia-social-oauth');
+      channel.onmessage = (event: MessageEvent<{ provider?: string; code?: string; state?: string }>) => completeOAuth(event.data ?? {});
+    }
+    return () => {
+      window.removeEventListener('message', onWindowMessage);
+      channel?.close();
+    };
+  }, [session.connected, load]);
+
   useEffect(() => {
     if (!session.connected) return;
     const routeState = location.state as { socialDraft?: { facebook?: string; instagram?: string; imageUrl?: string; productTitle?: string } } | null;
@@ -176,13 +234,22 @@ export default function Social() {
 
   const connectMeta = async () => {
     setError(null);
+    // Open synchronously from the button click so browser popup blockers do not
+    // discard the user gesture while the authenticated API request is pending.
+    const popup = window.open('about:blank', 'mia-meta-oauth', 'popup,width=640,height=760');
+    if (!popup) {
+      setError('Allow pop-ups for Mia, then click Connect Facebook again. Mia keeps this Shopify session open while Facebook authorization runs in a separate window.');
+      return;
+    }
     try {
       const res = await api.get('/social/meta/connect');
       const url = res.data?.authorization_url;
       if (!url) throw new Error('Meta did not return a sign-in link');
-      // Meta's login page can't render inside the Shopify admin iframe.
-      window.open(url, '_top');
+      // Keep this authenticated Shopify Admin tab open. The callback popup
+      // relays its code/state back through BroadcastChannel after Meta returns.
+      popup.location.href = url;
     } catch (err) {
+      popup.close();
       setError(errorMessage(err, 'Could not start the Meta connection'));
     }
   };

@@ -31,6 +31,7 @@ const STATUS_OPTIONS = [
 ];
 
 type Form = { markup: string; duplicate: string; status: string };
+type SalesChannel = { id: string; name: string; supportsFuturePublishing?: boolean };
 
 function fromSettings(settings: Record<string, unknown>): Form {
   const duplicate = settings.duplicate_product_action === 'overwrite' ? 'update' : String(settings.duplicate_product_action || 'skip');
@@ -50,6 +51,17 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [salesChannels, setSalesChannels] = useState<SalesChannel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(true);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session.connected) return;
+    api.get('/sales-channels')
+      .then((res) => setSalesChannels((res.data?.sales_channels ?? []) as SalesChannel[]))
+      .catch((err) => setChannelsError(errorMessage(err, 'Could not read Shopify sales channels')))
+      .finally(() => setChannelsLoading(false));
+  }, [session.connected]);
 
   useEffect(() => {
     if (!session.connected) return;
@@ -155,6 +167,29 @@ export default function Settings() {
                     Sign Mia out of this store
                   </Button>
                 </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.AnnotatedSection>
+
+          <Layout.AnnotatedSection title="Sales channels" description="Channels Mia can read from Shopify. Facebook publishing additionally requires a connected Meta account and eligible Page permissions.">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="span" fontWeight="semibold">Shopify sales channels</Text>
+                  {channelsLoading ? <Badge>Loading</Badge> : <Badge tone={channelsError ? 'critical' : 'success'}>{channelsError ? 'Needs attention' : `${salesChannels.length} found`}</Badge>}
+                </InlineStack>
+                {channelsError && <ErrorBanner message={channelsError} onDismiss={() => setChannelsError(null)} />}
+                {channelsLoading ? (
+                  <Text as="p" tone="subdued">Reading sales channels from Shopify…</Text>
+                ) : channelsError ? (
+                  <Text as="p" tone="subdued">Check the Shopify permissions above, then reopen Mia from Shopify Admin to refresh its session.</Text>
+                ) : salesChannels.length ? (
+                  <InlineStack gap="200" wrap>
+                    {salesChannels.map((channel) => <Tag key={channel.id}>{channel.name}</Tag>)}
+                  </InlineStack>
+                ) : (
+                  <Text as="p" tone="subdued">Shopify returned no sales channels for this store.</Text>
+                )}
               </BlockStack>
             </Card>
           </Layout.AnnotatedSection>
