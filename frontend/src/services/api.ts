@@ -1,5 +1,7 @@
 import axios from 'axios';
 
+type MiaRequestConfig = { _miaRetried?: boolean; _miaSkipSessionRetry?: boolean };
+
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
@@ -7,7 +9,10 @@ const api = axios.create({
 
 api.interceptors.request.use(async (config) => {
   try {
-    if (!config.headers?.Authorization && window.shopify?.idToken) {
+    // App Bridge ID tokens are short-lived. Always replace any carried-over
+    // Authorization header with a freshly requested token before sending API
+    // traffic; never let a previous request's token age in Axios config.
+    if (window.shopify?.idToken) {
       const token = await window.shopify.idToken();
 
       if (token) {
@@ -42,10 +47,32 @@ api.interceptors.response.use(
     const detail =
       typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail);
 
-    const config = (error as { config?: { _miaRetried?: boolean } }).config;
+    const config = (error as { config?: MiaRequestConfig & { url?: string } }).config;
+    const isSessionEndpoint = /\/auth\/session(?:\?|$)/.test(config?.url || '');
+    // Token decryption failures are returned as 500s, not 401s. A forced
+    // Shopify token exchange can replace stale ciphertext with a fresh token
+    // encrypted by the currently configured key, then safely retry once.
+    const isStoredTokenDecryptionFailure =
+      /Stored Shopify access token could not be decrypted|Unable to decrypt Shopify access token/i.test(detail);
+    const responseStatus = (error as { response?: { status?: number } }).response?.status;
+    const canRetryExpiredSession =
+      responseStatus === 401 &&
+      isSessionEndpoint &&
+      !config?._miaRetried &&
+      !config?._miaSkipSessionRetry;
+
+    // If the first session request races token expiry, retry that same endpoint
+    // once. The request interceptor obtains a fresh App Bridge ID token.
+    if (canRetryExpiredSession) {
+      config!._miaRetried = true;
+      return api.request(config as any);
+    }
+
     const retryableShopifySession =
-      (error as { response?: { status?: number; headers?: Record<string, string> } }).response?.status === 401 &&
-      !config?._miaRetried;
+      (responseStatus === 401 || (responseStatus === 500 && isStoredTokenDecryptionFailure)) &&
+      !config?._miaRetried &&
+      !config?._miaSkipSessionRetry &&
+      !isSessionEndpoint;
 
     if (retryableShopifySession && window.shopify?.idToken) {
       config!._miaRetried = true;
@@ -56,14 +83,18 @@ api.interceptors.response.use(
             const token = await window.shopify!.idToken();
             if (token) {
               try {
-                await api.get('/auth/session?force=true', { headers: { Authorization: `Bearer ${token}` } });
+                await api.get('/auth/session?force=true', {
+                  headers: { Authorization: `Bearer ${token}` },
+                  // A failed token exchange must not recursively start another retry cycle.
+                  _miaSkipSessionRetry: true,
+                } as any);
               } catch (sessionError) {
-                if (attempt >= 5) return reject(sessionError);
+                return reject(sessionError);
               }
               return resolve(token);
             }
           } catch (refreshError) {
-            if (attempt >= 5) return reject(refreshError);
+            return reject(refreshError);
           }
           attempt += 1;
           setTimeout(refresh, Math.min(250 * attempt, 1000));

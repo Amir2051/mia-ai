@@ -134,7 +134,9 @@ async def session(request: Request, response: Response, force: bool = Query(Fals
 
     encrypted_access_token = encrypt_token(access_token)
     refresh_token = token_data.get("refresh_token")
-    scope = token_data.get("scope") or settings.shopify_scopes
+    # Only persist scopes returned by Shopify as granted. Configured scopes are
+    # requests, not proof of authorization; None means the grant is unverified.
+    scope = token_data.get("scope")
 
     if shop is None:
         shop = Shop(
