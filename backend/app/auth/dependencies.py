@@ -368,21 +368,19 @@ async def get_optional_shop(
     """
     Optional authentication dependency.
 
-    Returns None when no valid authentication
-    is available.
+    Missing authentication is optional, but a supplied invalid bearer token
+    must remain a 401. Converting that failure to None makes protected data
+    endpoints look like empty/disconnected stores and prevents the frontend
+    from triggering its Shopify session-recovery flow.
     """
 
     token = _normalize_bearer(credentials)
 
     if token:
-        try:
-            return await get_current_shop(
-                credentials=credentials,
-                db=db,
-                cookie_current=cookie_current,
-            )
-
-        except HTTPException:
-            return None
+        return await get_current_shop(
+            credentials=credentials,
+            db=db,
+            cookie_current=cookie_current,
+        )
 
     return cookie_current

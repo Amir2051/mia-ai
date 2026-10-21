@@ -42,11 +42,11 @@ def test_imports_create_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_invalid_bearer_does_not_grant_access(client):
+def test_invalid_bearer_is_rejected_so_client_can_recover_session(client):
     response = client.get(
         "/api/products/",
         headers={"Authorization": "Bearer invalid-token"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["connected"] is False
+    assert response.status_code == 401
+    assert response.json()["detail"] in {"Invalid Shopify ID token", "Not authenticated"}

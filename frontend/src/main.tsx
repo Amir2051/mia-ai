@@ -48,8 +48,9 @@ const bootstrapShopifySession = async (): Promise<boolean> => {
       credentials: 'include',
     });
 
-    if (!response.ok) {
-      console.error('Shopify session bootstrap failed:', response.status);
+    const payload = await response.json().catch(() => null) as { connected?: boolean } | null;
+    if (!response.ok || payload?.connected !== true) {
+      console.error('Shopify session bootstrap did not establish a connected shop:', response.status);
       return false;
     }
 
