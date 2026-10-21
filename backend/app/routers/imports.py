@@ -18,6 +18,7 @@ from app.security.tokens import decrypt_token
 from app.security.rls import set_shop_context
 from app.services.products import ImportService
 from app.services.csv_imports import CsvImportService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import (
     ShopifyAPIClient,
     ShopifyAPIError,
@@ -81,7 +82,7 @@ async def list_imports(
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     return ImportResponse(data=data, connected=True)
 
 
@@ -104,7 +105,7 @@ async def get_import(import_id: str, current: Optional[CurrentUser] = Depends(ge
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     if data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import not found")
     return ImportResponse(data=data, connected=True)
@@ -182,7 +183,7 @@ async def preview_import(request: Request, payload: ImportPreviewRequest, curren
     except ShopifyAPIError as exc:
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     except SQLAlchemyError as exc:
         request_id = getattr(request.state, "request_id", "n/a")
         await db.rollback()
@@ -241,7 +242,7 @@ async def run_import(import_id: int, request: Request, payload: Optional[ImportR
     except ShopifyAPIError as exc:
         if _is_shopify_validation_error(exc):
             return ImportCreateResponse(data=None, connected=True, error=str(exc), userErrors=exc.response.get("userErrors"))
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     except SQLAlchemyError as exc:
         request_id = getattr(request.state, "request_id", "n/a")
         await db.rollback()
@@ -295,7 +296,7 @@ async def create_import(payload: ImportCreateRequest, current: Optional[CurrentU
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     except SQLAlchemyError as exc:
         logger.exception("csv_import_create_db_failed shop=%s", current.shop_domain)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Import could not be saved to the database") from exc

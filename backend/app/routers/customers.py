@@ -12,6 +12,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.customers import CustomerService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import (
     ShopifyAPIClient,
     ShopifyAPIError,
@@ -162,10 +163,7 @@ async def list_customers(
                     "data. Customers will appear after that access is approved."
                 ),
             )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     response_message = None
     available = True
@@ -253,10 +251,7 @@ async def get_customer(
                     "data. Customer details are unavailable until access is approved."
                 ),
             )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return CustomerListResponse(
         data=data,

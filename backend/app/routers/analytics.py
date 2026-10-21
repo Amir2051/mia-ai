@@ -11,6 +11,7 @@ from app.security.tokens import decrypt_token
 from app.services.analytics import compute_dashboard, compute_recent_sales, compute_top_products, filter_orders_by_date, filter_orders_response
 from app.services.customers import CustomerService
 from app.services.orders import OrderService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
 router = APIRouter()
@@ -46,9 +47,7 @@ async def _shop_client(shop: Shop) -> ShopifyAPIClient:
     return ShopifyAPIClient(shop_domain=shop.shop_domain, access_token=access_token)
 
 def _raise_shopify_error(exc: ShopifyAPIError, shop: Shop) -> None:
-    if exc.status_code == 401:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Shopify session credentials expired or were revoked. Please retry the Shopify session.", headers={"X-Shopify-Retry-Invalid-Session-Request": "1"}) from exc
-    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify data is temporarily unavailable. Please try again.") from exc
+    raise shopify_http_error(exc) from exc
 
 async def _load_orders(shop: Shop) -> dict:
     service = OrderService(await _shop_client(shop))

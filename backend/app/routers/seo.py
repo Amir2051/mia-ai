@@ -12,6 +12,7 @@ from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 from app.shopify.config import settings
 
@@ -77,9 +78,10 @@ async def _get_product(client: ShopifyAPIClient, product_id: str) -> dict[str, A
 
 
 def _shopify_error(exc: ShopifyAPIError) -> None:
-    if exc.status_code == 401:
-        raise HTTPException(status_code=401, detail="Shopify credentials expired or were revoked") from exc
-    raise HTTPException(status_code=502, detail="Shopify data is temporarily unavailable") from exc
+    raise shopify_http_error(
+        exc,
+        fallback_detail="Shopify data is temporarily unavailable",
+    ) from exc
 
 
 def _score_product_seo(product: dict[str, Any]) -> tuple[int, list[str], list[str]]:

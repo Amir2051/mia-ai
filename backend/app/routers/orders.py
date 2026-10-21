@@ -12,6 +12,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.orders import OrderService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import (
     ShopifyAPIClient,
     ShopifyAPIError,
@@ -110,10 +111,7 @@ async def list_orders(
         ) from exc
 
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return OrderListResponse(
         data=data,
@@ -183,10 +181,7 @@ async def get_order(
         ) from exc
 
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return OrderListResponse(
         data=data,

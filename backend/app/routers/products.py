@@ -12,6 +12,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.products import ProductService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import (
     ShopifyAPIClient,
     ShopifyAPIError,
@@ -64,7 +65,7 @@ async def list_sales_channels(current: Optional[CurrentUser] = Depends(get_optio
     try:
         return {"data": await client.list_publications(), "connected": True}
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
 
 
 @router.post("/sales-channels/products/{product_id:path}")
@@ -76,7 +77,7 @@ async def set_product_sales_channels(product_id: str, body: ProductPublicationPa
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
 
 
 @router.put("/{product_id:path}", response_model=ProductUpdateResponse)
@@ -127,10 +128,7 @@ async def update_product(
             detail=str(exc),
         ) from exc
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return ProductUpdateResponse(data=data, connected=True)
 
@@ -216,10 +214,7 @@ async def list_products(
         ) from exc
 
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return ProductListResponse(
         data=data,
@@ -289,10 +284,7 @@ async def get_product(
         ) from exc
 
     except ShopifyAPIError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise shopify_http_error(exc) from exc
 
     return ProductListResponse(
         data=data,

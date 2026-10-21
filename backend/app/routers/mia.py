@@ -13,6 +13,7 @@ from app.models.schemas import MiaMemory, Shop, SocialAccount
 from app.security.rls import set_shop_context
 from app.security.tokens import decrypt_token
 from app.services.meta import MetaAPIError, MetaClient
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 from app.services.products import ProductService
 from app.services.customers import CustomerService
@@ -109,7 +110,9 @@ async def _context(shop: Shop) -> Dict[str, Any]:
     warnings: list[str] = []
     try:
         products = await _all_products(shop)
-    except ShopifyAPIError:
+    except ShopifyAPIError as exc:
+        if exc.status_code == 401:
+            raise shopify_http_error(exc) from exc
         products = []
         warnings.append("Products could not be loaded")
     try:
@@ -127,7 +130,9 @@ async def _context(shop: Shop) -> Dict[str, Any]:
             if not next_cursor or next_cursor == after:
                 break
             after = next_cursor
-    except ShopifyAPIError:
+    except ShopifyAPIError as exc:
+        if exc.status_code == 401:
+            raise shopify_http_error(exc) from exc
         orders = []
         warnings.append("Orders could not be loaded")
     try:
@@ -145,7 +150,9 @@ async def _context(shop: Shop) -> Dict[str, Any]:
             if not next_cursor or next_cursor == after:
                 break
             after = next_cursor
-    except ShopifyAPIError:
+    except ShopifyAPIError as exc:
+        if exc.status_code == 401:
+            raise shopify_http_error(exc) from exc
         customers = []
         warnings.append("Customer data is unavailable until Shopify grants the required protected-data access")
 
@@ -156,6 +163,8 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         publication_data = await _client(shop).list_publications(first=100)
         publications = _nodes(publication_data, "publications")
     except ShopifyAPIError as exc:
+        if exc.status_code == 401:
+            raise shopify_http_error(exc) from exc
         response = exc.response or {}
         errors = response.get("errors") or []
         if isinstance(errors, dict):
@@ -322,7 +331,7 @@ async def analyze_product(product_id: str, current: Optional[CurrentUser] = Depe
     try:
         product = (await ProductService(_client(shop)).get_product(product_id)).get("product") or {}
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     if not product.get("id"):
         raise HTTPException(status_code=404, detail="Product not found in the connected Shopify store")
     return {"connected": True, "product": product, "analysis": _product_analysis(product)}
@@ -345,7 +354,7 @@ async def apply_product(product_id: str, body: ApplyProductRequest, current: Opt
     try:
         result = await ProductService(_client(shop)).update_product(product_id, changes)
     except ShopifyAPIError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        raise shopify_http_error(exc) from exc
     return {"connected": True, "applied": changes, "data": result}
 
 
@@ -845,7 +854,9 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
             seo_notes = _memory_notes_for_context(knowledge, body.message)
             seo_result, model, latency = await SEOService(OpenRouterService()).generate(product_full, merchant_notes=seo_notes)
             return {"answer": f"Here's a fresh SEO package for {product_full.get('title')}. Review it below, and nothing changes in Shopify until you approve it.", "artifact": {"type": "seo", "product": product_full, "result": seo_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": data_used}
-        except (ShopifyAPIError, OpenRouterError) as exc:
+        except ShopifyAPIError as exc:
+            raise shopify_http_error(exc) from exc
+        except OpenRouterError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     if target and wants_action and MARKETING_WORDS.search(q):
         try:
@@ -853,7 +864,9 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
             marketing_notes = _memory_notes_for_context(knowledge, body.message)
             marketing_result, model, latency = await generate_marketing(OpenRouterService(), product_full, merchant_notes=marketing_notes)
             return {"answer": f"Here's a ready-to-post campaign for {product_full.get('title')}, built from its live Shopify data and image.", "artifact": {"type": "marketing", "product": product_full, "result": marketing_result.model_dump(), "model": model, "latency_ms": round(latency, 2)}, "data_used": data_used}
-        except (ShopifyAPIError, OpenRouterError) as exc:
+        except ShopifyAPIError as exc:
+            raise shopify_http_error(exc) from exc
+        except OpenRouterError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     # Everything else is a real conversation, grounded in live store facts and recent turns.

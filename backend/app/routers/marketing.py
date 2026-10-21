@@ -10,6 +10,7 @@ from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
 from app.services.products import ProductService
+from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 
 router = APIRouter()
@@ -43,13 +44,10 @@ def _shop_client(shop: Shop) -> ShopifyAPIClient:
 
 
 def _raise_shopify_error(exc: ShopifyAPIError) -> None:
-    if exc.status_code == 401:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Shopify session credentials expired or were revoked. Please retry the Shopify session.",
-            headers={"X-Shopify-Retry-Invalid-Session-Request": "1"},
-        ) from exc
-    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Shopify marketing data is temporarily unavailable. Please try again.") from exc
+    raise shopify_http_error(
+        exc,
+        fallback_detail="Shopify marketing data is temporarily unavailable. Please try again.",
+    ) from exc
 
 
 def _plain_text(value: str) -> str:
