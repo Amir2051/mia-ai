@@ -566,7 +566,11 @@ async def generate_full_campaign(
             "has_marketing_copy": bool(marketing_result),
             "image_available": bool(image),
             "partial_success": bool(image_error),
-            "models": {"seo": seo_model, "marketing": marketing_model},
+            "image_error": image_error,
+            "image_enhancement_source": image_status_source,
+            "image_retry_after_seconds": marketing_result.image_retry_after_seconds,
+            "models": {"seo": seo_model, "marketing": marketing_model, "image": image_model},
+            "latency_ms": round(seo_latency + marketing_latency + (image_latency or 0), 2),
         },
     )
     return {

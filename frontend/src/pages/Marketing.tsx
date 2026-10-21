@@ -386,7 +386,29 @@ export default function Marketing() {
                   item.action.endsWith('.applied') || item.action.endsWith('.published') ? 'completed' :
                   item.action.endsWith('.failed') ? 'failed' : 'preview'
                 ));
-                const title = String(details.product_title ?? item.entity_id ?? 'Marketing task');
+                const title = String(details.product_title ?? details.account_name ?? item.entity_id ?? 'Marketing task');
+                const isSocialPost = item.entity_type === 'social_post';
+                const before = details.before && typeof details.before === 'object' ? details.before as Record<string, unknown> : null;
+                const after = details.after && typeof details.after === 'object' ? details.after as Record<string, unknown> : null;
+                const shortAuditValue = (value: unknown) => {
+                  if (Array.isArray(value)) return value.map(String).join(', ').slice(0, 100);
+                  if (value == null || value === '') return '(empty)';
+                  return String(value).replace(/\s+/g, ' ').slice(0, 100);
+                };
+                const changeSummary = before && after
+                  ? ['title', 'seo_title', 'seo_description', 'handle', 'tags']
+                    .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+                    .map((field) => field + ': ' + shortAuditValue(before[field]) + ' → ' + shortAuditValue(after[field]))
+                    .join(' · ')
+                  : '';
+                const outcomeDetails = [
+                  typeof details.image_error === 'string' ? details.image_error : '',
+                  typeof details.media_error === 'string' ? details.media_error : '',
+                  typeof details.error === 'string' ? details.error : '',
+                  typeof details.error_type === 'string' ? details.error_type.replace(/_/g, ' ') : '',
+                  Array.isArray(details.failed_fields) && details.failed_fields.length ? 'Unconfirmed fields: ' + details.failed_fields.map(String).join(', ') : '',
+                  details.error_code != null ? 'Provider error code: ' + String(details.error_code) : '',
+                ].filter(Boolean).join(' · ');
                 const label = ({
                   'seo.preview': 'SEO preview generated',
                   'seo.preview_failed': 'SEO preview failed',
@@ -405,7 +427,7 @@ export default function Marketing() {
                   'marketing.uploaded': 'Video uploaded',
                 } as Record<string, string>)[item.action] ?? item.action.replace(/[._]/g, ' ');
                 const tone = ['applied', 'published', 'completed', 'uploaded'].includes(outcome) ? 'success'
-                  : outcome === 'failed' ? 'critical'
+                  : ['failed', 'verification_failed', 'error', 'rejected'].includes(outcome) || outcome.endsWith('_failed') ? 'critical'
                   : outcome === 'partial_success' ? 'warning'
                   : outcome === 'processing' ? 'info' : 'magic';
                 return (
@@ -419,6 +441,9 @@ export default function Marketing() {
                           {details.provider ? ` · ${String(details.provider)}` : ''}
                           {Array.isArray(details.fields) && details.fields.length ? ` · ${details.fields.map(String).join(', ')}` : ''}
                         </Text>
+                        {isSocialPost && item.entity_id && <Text as="p" variant="bodySm" tone="subdued">Post ID: {item.entity_id}</Text>}
+                        {changeSummary && <Text as="p" variant="bodySm" tone="subdued">{changeSummary}</Text>}
+                        {outcomeDetails && <Text as="p" variant="bodySm" tone={tone === 'critical' ? 'critical' : 'subdued'}>{outcomeDetails}</Text>}
                       </BlockStack>
                       <Badge tone={tone}>{outcome.replace(/_/g, ' ')}</Badge>
                     </InlineStack>
