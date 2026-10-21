@@ -154,3 +154,41 @@ async def test_seo_generation_validates_result(monkeypatch):
     assert "script" not in result.optimized_description_html
     assert model == "test/free-model"
     assert latency == 12.3
+
+
+@pytest.mark.asyncio
+async def test_chat_text_reports_model_selected_by_provider_failover(monkeypatch):
+    service = OpenRouterService()
+
+    async def fake_request(*args, **kwargs):
+        return FakeResponse(200, {
+            "model": "fallback/actually-used-model",
+            "choices": [{"message": {"content": "A grounded answer."}}],
+        })
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    answer, model, _latency = await service.chat_text(
+        [{"role": "user", "content": "hello"}],
+        model="primary/requested-model",
+    )
+    assert answer == "A grounded answer."
+    assert model == "fallback/actually-used-model"
+
+
+@pytest.mark.asyncio
+async def test_chat_json_reports_model_selected_by_provider_failover(monkeypatch):
+    service = OpenRouterService()
+
+    async def fake_request(*args, **kwargs):
+        return FakeResponse(200, {
+            "model": "fallback/actually-used-model",
+            "choices": [{"message": {"content": json.dumps({"ok": True})}}],
+        })
+
+    monkeypatch.setattr(service, "_request", fake_request)
+    result, model, _latency = await service.chat_json(
+        [{"role": "user", "content": "return json"}],
+        model="primary/requested-model",
+    )
+    assert result == {"ok": True}
+    assert model == "fallback/actually-used-model"

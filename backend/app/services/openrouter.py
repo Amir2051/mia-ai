@@ -134,6 +134,7 @@ class OpenRouterService:
         try:
             data = response.json()
             content = str(data["choices"][0]["message"]["content"])
+            actual_model = str(data.get("model") or selected_model)
             try:
                 parsed = json.loads(content)
             except json.JSONDecodeError:
@@ -151,7 +152,7 @@ class OpenRouterService:
             raise OpenRouterError("OpenRouter returned malformed JSON content") from exc
         if not isinstance(parsed, dict):
             raise OpenRouterError("OpenRouter JSON response must be an object")
-        return parsed, selected_model, latency_ms
+        return parsed, actual_model, latency_ms
 
     async def chat_text(
         self,
@@ -176,10 +177,12 @@ class OpenRouterService:
             logger.warning("openrouter_api_error status=%s body=%s", response.status_code, response.text[:300])
             raise OpenRouterError(f"OpenRouter chat request failed: HTTP {response.status_code}")
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            actual_model = str(data.get("model") or selected_model)
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise OpenRouterError("OpenRouter returned malformed chat content") from exc
-        return str(content), selected_model, latency_ms
+        return str(content), actual_model, latency_ms
 
     async def _select_free_image_model(self) -> str:
         response = await self._request("GET", "/images/models")

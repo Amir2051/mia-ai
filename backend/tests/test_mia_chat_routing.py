@@ -24,7 +24,7 @@ def test_general_question_does_not_fetch_full_shopify_context(client, monkeypatc
     async def authenticated_shop():
         return CurrentUser(shop_domain=shop_domain)
 
-    async def forbidden_context(_shop):
+    async def forbidden_context(_shop, _message="", _selected_id=None, **kwargs):
         raise AssertionError("General explanations must not download Shopify data")
 
     async def fake_chat(self, messages, **kwargs):
@@ -73,7 +73,7 @@ def test_forget_notes_does_not_fetch_shopify_context(client, monkeypatch):
     async def authenticated_shop():
         return CurrentUser(shop_domain=shop_domain)
 
-    async def forbidden_context(_shop):
+    async def forbidden_context(_shop, _message="", _selected_id=None, **kwargs):
         raise AssertionError("Forgetting notes must not download Shopify data")
 
     monkeypatch.setattr("app.routers.mia._context", forbidden_context)
@@ -109,7 +109,7 @@ def test_ambiguous_product_request_asks_before_generating(client, monkeypatch):
     async def authenticated_shop():
         return CurrentUser(shop_domain=shop_domain)
 
-    async def fake_context(_shop):
+    async def fake_context(_shop, _message="", _selected_id=None, **kwargs):
         return {
             "shop": shop_domain,
             "counts": {"products": 2, "orders": 0, "customers": 0, "inventory_units": 5},
@@ -146,3 +146,83 @@ def test_ambiguous_product_request_asks_before_generating(client, monkeypatch):
     payload = response.json()
     assert payload["needs_clarification"] is True
     assert "I won't guess" in payload["answer"]
+
+
+def test_short_follow_up_reuses_prior_store_intent_but_parses_current_date_range(client, monkeypatch):
+    from app.auth.dependencies import CurrentUser, get_optional_shop
+    from app.models.database import AsyncSessionLocal
+    from app.models.schemas import Shop
+    from app.services.openrouter import OpenRouterService
+
+    shop_domain = "mia-follow-up-context-test.myshopify.com"
+
+    async def seed_shop():
+        async with AsyncSessionLocal() as db:
+            shop = (await db.execute(select(Shop).where(Shop.shop_domain == shop_domain))).scalar_one_or_none()
+            if shop is None:
+                db.add(Shop(shop_domain=shop_domain, access_token_encrypted="test-placeholder", is_active=True))
+                await db.commit()
+
+    asyncio.run(seed_shop())
+
+    async def authenticated_shop():
+        return CurrentUser(shop_domain=shop_domain)
+
+    captured = {}
+
+    async def fake_context(_shop, message="", selected_id=None, intent_message=None, **kwargs):
+        captured["message"] = message
+        captured["intent_message"] = intent_message
+        captured["date_message"] = kwargs.get("date_message")
+        return {
+            "shop": shop_domain,
+            "requested": {"products": False, "orders": True, "customers": False, "publications": False},
+            "available": {"products": False, "orders": True, "customers": False, "publications": False},
+            "counts": {"products": None, "orders": 1, "customers": None, "inventory_units": None},
+            "products": [],
+            "orders": [{"amount": "10.00", "currency": "USD", "line_items": []}],
+            "customers": [],
+            "sales_channels": [],
+            "low_stock": [],
+            "revenue": 10.0,
+            "order_range": "last calendar month",
+            "warnings": [],
+        }
+
+    async def fake_chat(self, messages, **kwargs):
+        assert any("Order date coverage: last calendar month" in message["content"] for message in messages)
+        return "I checked last month.", "test-model", 1.0
+
+    monkeypatch.setattr("app.routers.mia._context", fake_context)
+    monkeypatch.setattr(OpenRouterService, "chat_text", fake_chat)
+    client.app.dependency_overrides[get_optional_shop] = authenticated_shop
+    try:
+        response = client.post("/api/mia/chat", json={
+            "message": "What about last month?",
+            "history": [
+                {"role": "user", "content": "How much revenue did I make this month?"},
+                {"role": "assistant", "content": "This month is in progress."},
+            ],
+        })
+        first_capture = dict(captured)
+        follow_up_response = client.post("/api/mia/chat", json={
+            "message": "Why?",
+            "history": [
+                {"role": "user", "content": "How much revenue did I make last month?"},
+                {"role": "assistant", "content": "Last month had lower sales."},
+            ],
+        })
+        second_capture = dict(captured)
+    finally:
+        client.app.dependency_overrides.pop(get_optional_shop, None)
+
+    assert response.status_code == 200, response.text
+    assert first_capture["message"] == "What about last month?"
+    assert first_capture["date_message"] == "What about last month?"
+    assert "revenue did I make this month" in first_capture["intent_message"]
+    assert "What about last month?" in first_capture["intent_message"]
+    assert response.json()["data_used"]["order_range"] == "last calendar month"
+    assert follow_up_response.status_code == 200, follow_up_response.text
+    assert second_capture["message"] == "Why?"
+    assert second_capture["date_message"] == "How much revenue did I make last month?"
+    assert "revenue did I make last month" in second_capture["intent_message"]

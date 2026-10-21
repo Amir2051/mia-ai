@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import re
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -87,12 +88,12 @@ def _age_days(value: Optional[str]) -> Optional[int]:
         return None
 
 
-async def _all_products(shop: Shop) -> list[Dict[str, Any]]:
+async def _all_products(shop: Shop, warnings: Optional[list[str]] = None) -> list[Dict[str, Any]]:
     client = _client(shop)
     products: list[Dict[str, Any]] = []
     after: Optional[str] = None
     # Shopify returns at most 250 records per page. Continue until the catalog is exhausted.
-    for _ in range(100):
+    for page_number in range(100):
         data = await ProductService(client).list_products(first=250, after=after)
         connection = data.get("products") or {}
         products.extend(_nodes(data, "products"))
@@ -101,88 +102,274 @@ async def _all_products(shop: Shop) -> list[Dict[str, Any]]:
             break
         next_cursor = page.get("endCursor")
         if not next_cursor or next_cursor == after:
+            if warnings is not None:
+                warnings.append("Product pagination stopped because Shopify did not return a new cursor; catalog coverage may be incomplete.")
             break
+        if page_number == 99 and warnings is not None:
+            warnings.append("Product catalog reached the 25,000-product safety limit; results may be incomplete.")
         after = next_cursor
     return products
 
 
-async def _context(shop: Shop) -> Dict[str, Any]:
-    warnings: list[str] = []
-    try:
-        products = await _all_products(shop)
-    except ShopifyAPIError as exc:
-        if exc.status_code == 401:
-            raise shopify_http_error(exc) from exc
-        products = []
-        warnings.append("Products could not be loaded")
-    try:
-        order_service = OrderService(_client(shop))
-        orders: list[Dict[str, Any]] = []
-        after = None
-        for _ in range(100):
-            page_data = await order_service.list_orders(first=250, after=after)
-            connection = page_data.get("orders") or {}
-            orders.extend(_nodes(page_data, "orders"))
-            page_info = connection.get("pageInfo") or {}
-            if not page_info.get("hasNextPage"):
-                break
-            next_cursor = page_info.get("endCursor")
-            if not next_cursor or next_cursor == after:
-                break
-            after = next_cursor
-    except ShopifyAPIError as exc:
-        if exc.status_code == 401:
-            raise shopify_http_error(exc) from exc
-        orders = []
-        warnings.append("Orders could not be loaded")
-    try:
-        customer_service = CustomerService(_client(shop))
-        customers: list[Dict[str, Any]] = []
-        after = None
-        for _ in range(100):
-            page_data = await customer_service.list_customers(first=250, after=after)
-            connection = page_data.get("customers") or {}
-            customers.extend(_nodes(page_data, "customers"))
-            page_info = connection.get("pageInfo") or {}
-            if not page_info.get("hasNextPage"):
-                break
-            next_cursor = page_info.get("endCursor")
-            if not next_cursor or next_cursor == after:
-                break
-            after = next_cursor
-    except ShopifyAPIError as exc:
-        if exc.status_code == 401:
-            raise shopify_http_error(exc) from exc
-        customers = []
-        warnings.append("Customer data is unavailable until Shopify grants the required protected-data access")
+def _context_plan(message: str, selected_id: Optional[str] = None) -> Dict[str, bool]:
+    """Choose only the Shopify datasets needed to answer the current question."""
+    q = (message or "").lower()
+    broad_overview = bool(re.search(
+        r"\b(store overview|business overview|store summary|summary of (?:my|our) store|overview of (?:my|our) store|how is (?:my|our) store doing|store health|overall performance)\b",
+        q,
+    ))
+    product_intent = bool(re.search(
+        r"\b(products?|catalog|inventory|stock|sku|price|description|seo|product page|listing|best[- ]selling|top[- ]selling|best sellers?|top sellers?)\b",
+        q,
+    ) or (selected_id and _references_selected_product(q)) or (_is_explicit_content_request(message) and (SEO_WORDS.search(q) or MARKETING_WORDS.search(q))))
+    order_intent = bool(re.search(
+        r"\b(orders?|revenue|paid|unpaid|refund(?:s|ed)?|cancel(?:led|ed)?|fulfillment|average order value|aov|best[- ]selling|top[- ]selling|best sellers?|top sellers?|repeat purchase|sold|sell|selling|transactions|sales(?!\s+channels?))\b",
+        q,
+    ))
+    customer_intent = bool(re.search(
+        r"\b(customers?|buyers?|customer lifetime value|returning customers?|repeat buyers?|loyal customers?)\b",
+        q,
+    ))
+    publication_intent = bool(re.search(
+        r"\b(sales channels?|publishing channels?|where (?:is|are) .{0,40}published|publish(?:ing)? channels?|online store channel)\b",
+        q,
+    ))
 
-    # Sales channels are first-class store context so Mia can answer questions
-    # about where products are published, not merely expose a separate API route.
-    publications: list[Dict[str, Any]] = []
+    if broad_overview or not any((product_intent, order_intent, customer_intent, publication_intent)):
+        return {"products": True, "orders": True, "customers": True, "publications": True}
+
+    # Customer purchase/spend questions need both customer and order records.
+    if customer_intent and re.search(r"\b(spent|spend|purchases?|orders?|lifetime value|repeat|returning)\b", q):
+        order_intent = True
+
+    return {
+        "products": product_intent,
+        "orders": order_intent,
+        "customers": customer_intent,
+        "publications": publication_intent,
+    }
+
+
+def _order_date_filter(
+    message: str,
+    timezone_name: str = "UTC",
+    now: Optional[datetime] = None,
+) -> tuple[str, str, Optional[datetime]]:
+    """Build a Shopify created_at filter for common date-range questions."""
+    q = (message or "").lower()
     try:
-        publication_data = await _client(shop).list_publications(first=100)
-        publications = _nodes(publication_data, "publications")
-    except ShopifyAPIError as exc:
-        if exc.status_code == 401:
-            raise shopify_http_error(exc) from exc
-        response = exc.response or {}
-        errors = response.get("errors") or []
-        if isinstance(errors, dict):
-            errors = [errors]
-        error_text = " ".join(
-            str(item.get("message", ""))
-            for item in errors
-            if isinstance(item, dict)
-        ).lower()
-        if exc.status_code in (401, 403) or any(
-            marker in error_text
-            for marker in ("access denied", "not authorized", "read_publications", "scope")
-        ):
-            warnings.append(
-                "Sales channels could not be read: Shopify has not granted Mia the required read_publications permission. Reauthorize/reinstall Mia after confirming the app scope."
-            )
-        else:
-            warnings.append("Sales-channel data could not be loaded from Shopify")
+        store_tz = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        store_tz = ZoneInfo("UTC")
+        timezone_name = "UTC"
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    local_now = current.astimezone(store_tz)
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    label = "all order history available to this app"
+
+    explicit = re.search(
+        r"\b(?:between|from)\s+(\d{4}-\d{2}-\d{2})\s+(?:and|to|through|-)\s+(\d{4}-\d{2}-\d{2})\b",
+        q,
+    )
+    if explicit:
+        try:
+            first_day = datetime.strptime(explicit.group(1), "%Y-%m-%d").date()
+            last_day = datetime.strptime(explicit.group(2), "%Y-%m-%d").date()
+            if first_day > last_day:
+                return "", "invalid date range", None
+            start = datetime.combine(first_day, datetime.min.time(), tzinfo=store_tz)
+            end = datetime.combine(last_day + timedelta(days=1), datetime.min.time(), tzinfo=store_tz)
+            label = f"{first_day.isoformat()} through {last_day.isoformat()} ({timezone_name})"
+        except ValueError:
+            return "", "invalid date range", None
+    elif re.search(r"\byesterday\b", q):
+        day = local_now.date() - timedelta(days=1)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=store_tz)
+        end = start + timedelta(days=1)
+        label = f"yesterday, {day.isoformat()} ({timezone_name})"
+    elif re.search(r"\btoday\b", q):
+        start = datetime.combine(local_now.date(), datetime.min.time(), tzinfo=store_tz)
+        end = local_now
+        label = f"today, {local_now.date().isoformat()} so far ({timezone_name})"
+    elif re.search(r"\b(?:last|past)\s+(?:7|seven)\s+days?\b", q):
+        start = local_now - timedelta(days=7)
+        end = local_now
+        label = f"last 7 rolling days ({timezone_name})"
+    elif re.search(r"\b(?:last|past)\s+(?:30|thirty)\s+days?\b", q):
+        start = local_now - timedelta(days=30)
+        end = local_now
+        label = f"last 30 rolling days ({timezone_name})"
+    elif re.search(r"\bthis week\b", q):
+        monday = local_now.date() - timedelta(days=local_now.weekday())
+        start = datetime.combine(monday, datetime.min.time(), tzinfo=store_tz)
+        end = local_now
+        label = f"this week since {monday.isoformat()} ({timezone_name})"
+    elif re.search(r"\blast week\b", q):
+        monday = local_now.date() - timedelta(days=local_now.weekday() + 7)
+        sunday_after = monday + timedelta(days=7)
+        start = datetime.combine(monday, datetime.min.time(), tzinfo=store_tz)
+        end = datetime.combine(sunday_after, datetime.min.time(), tzinfo=store_tz)
+        label = f"last calendar week, {monday.isoformat()} through {(sunday_after - timedelta(days=1)).isoformat()} ({timezone_name})"
+    elif re.search(r"\bthis month\b", q):
+        first_day = local_now.date().replace(day=1)
+        start = datetime.combine(first_day, datetime.min.time(), tzinfo=store_tz)
+        end = local_now
+        label = f"this month since {first_day.isoformat()} ({timezone_name})"
+    elif re.search(r"\blast month\b", q):
+        first_this_month = local_now.date().replace(day=1)
+        last_month_end = first_this_month
+        last_month_start = (first_this_month - timedelta(days=1)).replace(day=1)
+        start = datetime.combine(last_month_start, datetime.min.time(), tzinfo=store_tz)
+        end = datetime.combine(last_month_end, datetime.min.time(), tzinfo=store_tz)
+        label = f"last calendar month, {last_month_start.isoformat()} through {(last_month_end - timedelta(days=1)).isoformat()} ({timezone_name})"
+
+    if start is None or end is None:
+        return "", label, None
+    if start > end:
+        return "", "invalid date range", None
+    start_utc = start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_utc = end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if "rolling" in label or label.startswith("today"):
+        query = f"created_at:>='{start_utc}' created_at:<='{end_utc}'"
+    else:
+        query = f"created_at:>='{start_utc}' created_at:<'{end_utc}'"
+    return query, label, start
+
+
+def _has_order_date_reference(message: str) -> bool:
+    return bool(re.search(
+        r"\b(yesterday|today|(?:last|past)\s+(?:7|seven|30|thirty)\s+days?|this week|last week|this month|last month|(?:between|from)\s+\d{4}-\d{2}-\d{2})\b",
+        message or "",
+        re.I,
+    ))
+
+
+async def _context(
+    shop: Shop,
+    message: str = "",
+    selected_id: Optional[str] = None,
+    intent_message: Optional[str] = None,
+    date_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    # Use recent user intent to choose datasets, but use only the current message
+    # to parse relative dates such as "what about last month?".
+    requested = _context_plan(intent_message or message, selected_id)
+    available = {key: False for key in requested}
+    warnings: list[str] = []
+    raw_products: list[Dict[str, Any]] = []
+    orders: list[Dict[str, Any]] = []
+    customers: list[Dict[str, Any]] = []
+    publications: list[Dict[str, Any]] = []
+
+    if requested["products"]:
+        try:
+            raw_products = await _all_products(shop, warnings)
+            available["products"] = True
+        except ShopifyAPIError as exc:
+            if exc.status_code == 401:
+                raise shopify_http_error(exc) from exc
+            warnings.append("Product data could not be loaded; product counts and inventory are unavailable.")
+
+    order_range = "not queried"
+    order_query = ""
+    order_range_start = None
+    if requested["orders"]:
+        try:
+            order_query, order_range, order_range_start = _order_date_filter(date_message or message)
+            if order_query:
+                try:
+                    timezone_data = await _client(shop).graphql("query MiaStoreTimezone { shop { ianaTimezone } }")
+                    store_timezone = str((timezone_data.get("shop") or {}).get("ianaTimezone") or "UTC")
+                    order_query, order_range, order_range_start = _order_date_filter(date_message or message, store_timezone)
+                except ShopifyAPIError as timezone_exc:
+                    if timezone_exc.status_code == 401:
+                        raise shopify_http_error(timezone_exc) from timezone_exc
+                    warnings.append("Shopify store timezone could not be read; the requested date range was interpreted in UTC.")
+            granted_scopes = {scope.strip() for scope in (getattr(shop, "scope", None) or "").split(",") if scope.strip()}
+            if "read_all_orders" not in granted_scopes:
+                if order_range_start is None and order_range != "invalid date range":
+                    warnings.append("No date range was requested. Without read_all_orders, Shopify limits this app to recent order history (typically 60 days), so these totals are not all-time totals.")
+                elif order_range_start is not None:
+                    sixty_days_ago = datetime.now(order_range_start.tzinfo).date() - timedelta(days=60)
+                    if order_range_start.date() < sixty_days_ago:
+                        warnings.append("This app is not granted read_all_orders. Shopify restricts accessible order history to the most recent 60 days, so this requested date range may be incomplete.")
+            if order_range == "invalid date range":
+                warnings.append("The requested date range is invalid; no orders were queried.")
+                available["orders"] = False
+            else:
+                order_service = OrderService(_client(shop))
+                after = None
+                for page_number in range(100):
+                    page_data = await order_service.list_orders(query=order_query, first=250, after=after)
+                    connection = page_data.get("orders") or {}
+                    orders.extend(_nodes(page_data, "orders"))
+                    page_info = connection.get("pageInfo") or {}
+                    if not page_info.get("hasNextPage"):
+                        break
+                    next_cursor = page_info.get("endCursor")
+                    if not next_cursor or next_cursor == after:
+                        warnings.append("Order pagination stopped because Shopify did not return a new cursor; sales totals may be incomplete.")
+                        break
+                    if page_number == 99:
+                        warnings.append("Order history reached the 25,000-order safety limit; sales totals may be incomplete.")
+                    after = next_cursor
+                available["orders"] = True
+        except ShopifyAPIError as exc:
+            if exc.status_code == 401:
+                raise shopify_http_error(exc) from exc
+            warnings.append("Order data could not be loaded; sales and order counts are unavailable.")
+
+    if requested["customers"]:
+        try:
+            customer_service = CustomerService(_client(shop))
+            after = None
+            for page_number in range(100):
+                page_data = await customer_service.list_customers(first=250, after=after)
+                connection = page_data.get("customers") or {}
+                customers.extend(_nodes(page_data, "customers"))
+                page_info = connection.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                next_cursor = page_info.get("endCursor")
+                if not next_cursor or next_cursor == after:
+                    warnings.append("Customer pagination stopped because Shopify did not return a new cursor; customer coverage may be incomplete.")
+                    break
+                if page_number == 99:
+                    warnings.append("Customer records reached the 25,000-record safety limit; customer coverage may be incomplete.")
+                after = next_cursor
+            available["customers"] = True
+        except ShopifyAPIError as exc:
+            if exc.status_code == 401:
+                raise shopify_http_error(exc) from exc
+            warnings.append("Customer data is unavailable until Shopify grants the required protected-data access.")
+
+    if requested["publications"]:
+        try:
+            publication_data = await _client(shop).list_publications(first=100)
+            publications = _nodes(publication_data, "publications")
+            available["publications"] = True
+        except ShopifyAPIError as exc:
+            if exc.status_code == 401:
+                raise shopify_http_error(exc) from exc
+            response = exc.response or {}
+            errors = response.get("errors") or []
+            if isinstance(errors, dict):
+                errors = [errors]
+            error_text = " ".join(
+                str(item.get("message", ""))
+                for item in errors
+                if isinstance(item, dict)
+            ).lower()
+            if exc.status_code in (401, 403) or any(
+                marker in error_text
+                for marker in ("access denied", "not authorized", "read_publications", "scope")
+            ):
+                warnings.append("Sales channels could not be read: Shopify has not granted Mia the required read_publications permission. Reauthorize/reinstall Mia after confirming the app scope.")
+            else:
+                warnings.append("Sales-channel data could not be loaded from Shopify.")
 
     revenue = 0.0
     for order in orders:
@@ -192,14 +379,13 @@ async def _context(shop: Shop) -> Dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
-    inventory = sum(int(p.get("totalInventory") or 0) for p in products)
-    low_stock = [p for p in products if p.get("totalInventory") is not None and int(p.get("totalInventory") or 0) <= 5]
+    inventory = sum(int(product.get("totalInventory") or 0) for product in raw_products) if available["products"] else None
     product_rows = []
-    for p in products:
+    for product in raw_products:
         variants = []
-        for edge in ((p.get("variants") or {}).get("edges") or (p.get("variants") or {}).get("nodes") or []):
-            v = edge.get("node") if "node" in edge else edge
-            variants.append({"sku": v.get("sku"), "price": v.get("price"), "inventory": v.get("inventoryQuantity")})
+        for edge in ((product.get("variants") or {}).get("edges") or (product.get("variants") or {}).get("nodes") or []):
+            variant = edge.get("node") if "node" in edge else edge
+            variants.append({"sku": variant.get("sku"), "price": variant.get("price"), "inventory": variant.get("inventoryQuantity")})
         prices = []
         for variant in variants:
             try:
@@ -207,33 +393,48 @@ async def _context(shop: Shop) -> Dict[str, Any]:
             except (TypeError, ValueError):
                 pass
         product_rows.append({
-            "id": p.get("id"), "title": p.get("title"), "status": p.get("status"),
-            "inventory": p.get("totalInventory"), "description": _plain(p.get("descriptionHtml") or ""),
-            "tags": p.get("tags") or [], "vendor": p.get("vendor"), "productType": p.get("productType"),
+            "id": product.get("id"), "title": product.get("title"), "status": product.get("status"),
+            "inventory": product.get("totalInventory"), "description": _plain(product.get("descriptionHtml") or ""),
+            "tags": product.get("tags") or [], "vendor": product.get("vendor"), "productType": product.get("productType"),
             "price_min": min(prices) if prices else None, "price_max": max(prices) if prices else None,
-            "createdAt": p.get("createdAt"), "updatedAt": p.get("updatedAt"), "variants": variants,
+            "createdAt": product.get("createdAt"), "updatedAt": product.get("updatedAt"), "variants": variants,
         })
 
     return {
         "shop": shop.shop_domain,
-        "counts": {"products": len(products), "orders": len(orders), "customers": len(customers), "inventory_units": inventory},
-        "revenue": round(revenue, 2),
+        "requested": requested,
+        "available": available,
+        "counts": {
+            "products": len(product_rows) if available["products"] else None,
+            "orders": len(orders) if available["orders"] else None,
+            "customers": len(customers) if available["customers"] else None,
+            "inventory_units": inventory,
+        },
+        "revenue": round(revenue, 2) if available["orders"] else None,
+        "order_range": order_range,
+        "order_range_start": order_range_start.isoformat() if order_range_start else None,
         "sales_channels": [
             {"id": item.get("id"), "name": item.get("name"), "supportsFuturePublishing": item.get("supportsFuturePublishing")}
             for item in publications
-        ],
+        ] if available["publications"] else [],
         "products": product_rows,
-        "customers": [{"id": c.get("id"), "name": " ".join(x for x in [c.get("firstName"), c.get("lastName")] if x), "orders": c.get("numberOfOrders"), "spent": (c.get("amountSpent") or {}).get("amount")} for c in customers],
+        "customers": [
+            {"id": customer.get("id"), "name": " ".join(x for x in [customer.get("firstName"), customer.get("lastName")] if x), "orders": customer.get("numberOfOrders"), "spent": (customer.get("amountSpent") or {}).get("amount")}
+            for customer in customers
+        ],
         "orders": [{
-            "id": o.get("id"), "name": o.get("name"), "createdAt": o.get("createdAt"),
-            "amount": ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount"),
-            "currency": ((o.get("totalPriceSet") or {}).get("shopMoney") or {}).get("currencyCode"),
-            "financial_status": o.get("displayFinancialStatus"),
-            "fulfillment_status": o.get("displayFulfillmentStatus"),
-            "line_items": [{"title": item.get("title"), "quantity": item.get("quantity"), "sku": item.get("sku")}
-                           for item in _nodes(o, "lineItems")],
-        } for o in orders],
-        "low_stock": [{"id": p.get("id"), "title": p.get("title"), "inventory": p.get("inventory")} for p in product_rows if p.get("inventory") is not None and int(p.get("inventory") or 0) <= 5],
+            "id": order.get("id"), "name": order.get("name"), "createdAt": order.get("createdAt"),
+            "amount": ((order.get("totalPriceSet") or {}).get("shopMoney") or {}).get("amount"),
+            "currency": ((order.get("totalPriceSet") or {}).get("shopMoney") or {}).get("currencyCode"),
+            "financial_status": order.get("displayFinancialStatus"),
+            "fulfillment_status": order.get("displayFulfillmentStatus"),
+            "line_items": [{"title": item.get("title"), "quantity": item.get("currentQuantity") if item.get("currentQuantity") is not None else item.get("quantity"), "sku": item.get("sku")} for item in _nodes(order, "lineItems")],
+        } for order in orders],
+        "low_stock": [
+            {"id": product.get("id"), "title": product.get("title"), "inventory": product.get("inventory")}
+            for product in product_rows
+            if product.get("inventory") is not None and int(product.get("inventory") or 0) <= 5
+        ],
         "warnings": warnings,
     }
 
@@ -321,8 +522,15 @@ async def save_mia_conversation(body: ConversationUpdate, current: Optional[Curr
 
 
 @router.get("/context")
-async def mia_context(current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
-    return await _context(await _shop(current, db))
+async def mia_context(
+    include_orders: bool = Query(False),
+    current: Optional[CurrentUser] = Depends(get_optional_shop),
+    db=Depends(get_db),
+):
+    # Dashboard only needs product inventory. Mia's own snapshot optionally
+    # includes order counts; neither view needs customer profiles or publications.
+    message = "products inventory orders" if include_orders else "products inventory"
+    return await _context(await _shop(current, db), message)
 
 
 @router.get("/product/{product_id:path}/analyze")
@@ -728,55 +936,87 @@ def _inventory(p) -> Optional[int]:
 
 
 def _store_facts(ctx: Dict[str, Any], target: Optional[Dict[str, Any]]) -> str:
-    products = ctx["products"]
-    statuses: Dict[str, int] = {}
-    for p in products:
-        key = p.get("status") or "UNKNOWN"
-        statuses[key] = statuses.get(key, 0) + 1
-    low = [f"{p.get('title')} ({_inventory(p)})" for p in products if _inventory(p) is not None and _inventory(p) <= 5]
-    weak = [p.get("title") for p in products if len(p.get("description") or "") < 120]
-    dated = sorted((p for p in products if p.get("createdAt")), key=lambda p: p.get("createdAt") or "", reverse=True)
-    catalog = [
-        {k: v for k, v in {"title": p.get("title"), "status": p.get("status"), "inventory": p.get("inventory"), "price_min": p.get("price_min"), "price_max": p.get("price_max"), "type": p.get("productType"), "vendor": p.get("vendor")}.items() if v not in (None, "")}
-        for p in products[:40]
-    ]
-    lines = [
-        f"Store: {ctx.get('shop')}",
-        f"Products: {len(products)} | Inventory units: {(ctx.get('counts') or {}).get('inventory_units')}",
-        f"Orders loaded: {len(ctx.get('orders') or [])} | Gross total of loaded orders: {ctx.get('revenue', 0):.2f}",
-        "Status mix: " + (", ".join(f"{k} {v}" for k, v in sorted(statuses.items())) or "none"),
-        f"Low stock (<=5 units, {len(low)}): " + ("; ".join(low[:15]) or "none"),
-        f"Thin descriptions (<120 chars, {len(weak)}): " + ("; ".join(str(t) for t in weak[:10]) or "none"),
-        "Newest products: " + ("; ".join(f"{p.get('title')} ({(p.get('createdAt') or '')[:10]})" for p in dated[:8]) or "unknown"),
-        f"Customer records available: {len(ctx.get('customers') or [])}",
-    ]
-    order_rows = ctx.get("orders") or []
-    currency = next((o.get("currency") for o in order_rows if o.get("currency")), "store currency")
-    amounts = []
-    item_counts: Dict[str, int] = {}
-    financial_statuses: Dict[str, int] = {}
-    fulfillment_statuses: Dict[str, int] = {}
-    for order in order_rows:
-        try:
-            amounts.append(float(order.get("amount") or 0))
-        except (TypeError, ValueError):
-            pass
-        financial = order.get("financial_status") or "UNKNOWN"
-        fulfillment = order.get("fulfillment_status") or "UNKNOWN"
-        financial_statuses[financial] = financial_statuses.get(financial, 0) + 1
-        fulfillment_statuses[fulfillment] = fulfillment_statuses.get(fulfillment, 0) + 1
-        for item in order.get("line_items") or []:
-            title = (item.get("title") or "").strip()
+    requested = ctx.get("requested") or {"products": True, "orders": True, "customers": True, "publications": True}
+    available = ctx.get("available") or {"products": True, "orders": True, "customers": True, "publications": True}
+    lines = [f"Store: {ctx.get('shop')}"]
+
+    products = ctx.get("products") or []
+    if not requested.get("products"):
+        lines.append("Product catalog was not queried for this question; do not infer product counts or inventory.")
+    elif not available.get("products"):
+        lines.append("Product catalog was requested but unavailable; do not treat missing results as zero.")
+    else:
+        statuses: Dict[str, int] = {}
+        for product in products:
+            key = product.get("status") or "UNKNOWN"
+            statuses[key] = statuses.get(key, 0) + 1
+        low = [f"{product.get('title')} ({_inventory(product)})" for product in products if _inventory(product) is not None and _inventory(product) <= 5]
+        weak = [product.get("title") for product in products if len(product.get("description") or "") < 120]
+        dated = sorted((product for product in products if product.get("createdAt")), key=lambda product: product.get("createdAt") or "", reverse=True)
+        catalog = [
+            {key: value for key, value in {"title": product.get("title"), "status": product.get("status"), "inventory": product.get("inventory"), "price_min": product.get("price_min"), "price_max": product.get("price_max"), "type": product.get("productType"), "vendor": product.get("vendor")}.items() if value not in (None, "")}
+            for product in products[:40]
+        ]
+        lines.extend([
+            f"Products: {len(products)} | Inventory units: {(ctx.get('counts') or {}).get('inventory_units')}",
+            "Status mix: " + (", ".join(f"{key} {value}" for key, value in sorted(statuses.items())) or "none"),
+            f"Low stock (<=5 units, {len(low)}): " + ("; ".join(low[:15]) or "none"),
+            f"Thin descriptions (<120 chars, {len(weak)}): " + ("; ".join(str(title) for title in weak[:10]) or "none"),
+            "Newest products: " + ("; ".join(f"{product.get('title')} ({(product.get('createdAt') or '')[:10]})" for product in dated[:8]) or "unknown"),
+            "Catalog (first 40): " + str(catalog),
+        ])
+
+    orders = ctx.get("orders") or []
+    if not requested.get("orders"):
+        lines.append("Orders and sales were not queried for this question; do not infer order counts or revenue.")
+    elif not available.get("orders"):
+        lines.append("Order and sales data was requested but unavailable; do not treat missing results as zero.")
+    else:
+        currency = next((order.get("currency") for order in orders if order.get("currency")), "store currency")
+        amounts = []
+        item_counts: Dict[str, int] = {}
+        financial_statuses: Dict[str, int] = {}
+        fulfillment_statuses: Dict[str, int] = {}
+        for order in orders:
             try:
-                quantity = int(item.get("quantity") or 0)
+                amounts.append(float(order.get("amount") or 0))
             except (TypeError, ValueError):
-                quantity = 0
-            if title:
-                item_counts[title] = item_counts.get(title, 0) + quantity
-    lines.append(f"Order value currency: {currency}; average order value across loaded orders: {(sum(amounts) / len(amounts)) if amounts else 0:.2f}")
-    lines.append("Financial statuses: " + (", ".join(f"{k}: {v}" for k, v in sorted(financial_statuses.items())) or "none"))
-    lines.append("Fulfillment statuses: " + (", ".join(f"{k}: {v}" for k, v in sorted(fulfillment_statuses.items())) or "none"))
-    lines.append("Most ordered line-item titles by quantity: " + ("; ".join(f"{k} ({v})" for k, v in sorted(item_counts.items(), key=lambda item: item[1], reverse=True)[:10]) or "not available"))
+                pass
+            financial = order.get("financial_status") or "UNKNOWN"
+            fulfillment = order.get("fulfillment_status") or "UNKNOWN"
+            financial_statuses[financial] = financial_statuses.get(financial, 0) + 1
+            fulfillment_statuses[fulfillment] = fulfillment_statuses.get(fulfillment, 0) + 1
+            for item in order.get("line_items") or []:
+                title = (item.get("title") or "").strip()
+                try:
+                    quantity = int(item.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    quantity = 0
+                if title:
+                    item_counts[title] = item_counts.get(title, 0) + quantity
+        lines.extend([
+            f"Order date coverage: {ctx.get('order_range', 'all order history available to this app')}",
+            f"Orders loaded: {len(orders)} | Gross total of loaded orders: {ctx.get('revenue', 0):.2f}",
+            f"Order value currency: {currency}; average order value across loaded orders: {(sum(amounts) / len(amounts)) if amounts else 0:.2f}",
+            "Financial statuses: " + (", ".join(f"{key}: {value}" for key, value in sorted(financial_statuses.items())) or "none"),
+            "Fulfillment statuses: " + (", ".join(f"{key}: {value}" for key, value in sorted(fulfillment_statuses.items())) or "none"),
+            "Most ordered line-item titles by quantity: " + ("; ".join(f"{key} ({value})" for key, value in sorted(item_counts.items(), key=lambda item: item[1], reverse=True)[:10]) or "not available"),
+        ])
+
+    if not requested.get("customers"):
+        lines.append("Customer records were not queried for this question; do not infer customer counts or customer behavior.")
+    elif not available.get("customers"):
+        lines.append("Customer records were requested but unavailable; do not treat missing results as zero.")
+    else:
+        lines.append(f"Customer records available: {len(ctx.get('customers') or [])}")
+
+    if not requested.get("publications"):
+        lines.append("Sales channels were not queried for this question; do not infer which channels are connected or published.")
+    elif not available.get("publications"):
+        lines.append("Sales channel data was requested but unavailable; do not infer that no channels exist.")
+    else:
+        lines.append("Sales channels: " + (", ".join(channel.get("name") or "Unnamed channel" for channel in ctx.get("sales_channels") or []) or "Shopify returned no visible publications"))
+
     if target:
         lines.append(
             "Currently selected product: "
@@ -784,25 +1024,92 @@ def _store_facts(ctx: Dict[str, Any], target: Optional[Dict[str, Any]]) -> str:
         )
     if ctx.get("warnings"):
         lines.append("Data warnings: " + "; ".join(map(str, ctx["warnings"])))
-    lines.append("Catalog (first 40): " + str(catalog))
     return "\n".join(lines)
 
 
 def _rule_answer(q: str, ctx: Dict[str, Any]) -> str:
-    """Deterministic answers used only when the AI provider is unavailable."""
-    products = ctx["products"]
+    """Deterministic, dataset-aware answers used only when the AI provider is unavailable."""
+    requested = ctx.get("requested") or {"products": True, "orders": True, "customers": True, "publications": True}
+    available = ctx.get("available") or {"products": True, "orders": True, "customers": True, "publications": True}
+    products = ctx.get("products") or []
+    orders = ctx.get("orders") or []
+
+    if re.search(r"\b(products?|items?|units?)\b", q) and re.search(r"\b(sold|sell|selling)\b", q) and not re.search(r"\b(revenue|sales|money|amount)\b", q):
+        if not requested.get("orders"):
+            return "I did not query orders for this question, so I can't reliably calculate products sold."
+        if not available.get("orders"):
+            return "I couldn't retrieve order line items from Shopify, so I can't reliably calculate products sold. Please retry after the connection is healthy."
+        item_counts: Dict[str, int] = {}
+        for order in orders:
+            for item in order.get("line_items") or []:
+                title = str(item.get("title") or "").strip()
+                try:
+                    quantity = int(item.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    quantity = 0
+                if title:
+                    item_counts[title] = item_counts.get(title, 0) + quantity
+        ranked = sorted(item_counts.items(), key=lambda item: item[1], reverse=True)
+        total_units = sum(item_counts.values())
+        answer = f"Across {len(orders)} returned orders, Shopify line items account for {total_units} units sold in the loaded order range. "
+        answer += "Top products by line-item quantity: " + (", ".join(f"{title} ({quantity})" for title, quantity in ranked[:10]) if ranked else "no line items were returned.")
+        if ctx.get("warnings"):
+            answer += " Coverage note: " + "; ".join(ctx["warnings"])
+        return answer
+
+    if re.search(r"\b(revenue|sales|sold|sell|selling|orders?|order value|aov|refund|cancel|fulfillment)\b", q):
+        if not requested.get("orders"):
+            return "I did not query Shopify orders for this question, so I can't provide a reliable sales or order figure. Please retry with a more specific question."
+        if not available.get("orders"):
+            return "I couldn't retrieve order data from Shopify, so I can't reliably report sales or order counts right now. No store changes were made; please retry after the Shopify connection is healthy."
+        currency = next((order.get("currency") for order in orders if order.get("currency")), "store currency")
+        if re.search(r"\b(revenue|sales|sold|sell|selling)\b", q):
+            total = ctx.get("revenue")
+            total_text = f"{currency} {total:,.2f}" if total is not None else "unavailable"
+            answer = (
+                f"Shopify returned {len(orders)} orders for this query. The sum of their order totals is {total_text}. "
+                "This is the gross sum of returned order totals, not net sales after refunds or other adjustments."
+            )
+        else:
+            answer = f"Shopify returned {len(orders)} orders for this query."
+        if ctx.get("warnings"):
+            answer += " Coverage note: " + "; ".join(ctx["warnings"])
+        return answer
+
+    if re.search(r"\b(customers?|buyers?|returning customers?|repeat buyers?|loyal customers?)\b", q):
+        if not requested.get("customers"):
+            return "I did not query customer records for this question, so I can't provide a reliable customer count."
+        if not available.get("customers"):
+            return "Shopify customer records were unavailable for this request. I won't treat missing data as zero; check protected customer-data permissions and retry."
+        return f"Shopify returned {len(ctx.get('customers') or [])} customer records for this query."
+
+    if re.search(r"\b(sales channels?|publishing channels?|channels?)\b", q):
+        if not requested.get("publications"):
+            return "I did not query Shopify's sales-channel list for this question."
+        if not available.get("publications"):
+            return "Shopify's sales-channel list was unavailable, so I can't confirm which channels are visible to Mia. Please check the connection and permissions."
+        names = [channel.get("name") for channel in ctx.get("sales_channels") or [] if channel.get("name")]
+        return "Shopify returned these visible sales channels: " + (", ".join(names) if names else "no visible publications.")
+
+    if not available.get("products", True) and any(k in q for k in ["product", "inventory", "stock", "catalog", "description", "seo"]):
+        return "I couldn't retrieve the product catalog from Shopify, so I can't reliably answer this product question right now. No store changes were made; please retry after the Shopify connection is healthy."
     if any(k in q for k in ["low inventory", "low stock", "out of stock", "stock"]):
-        rows = [p for p in products if _inventory(p) is not None and _inventory(p) <= 5]
-        return f"I scanned all {len(products)} products in {ctx['shop']}. {len(rows)} are at or below 5 units. " + ("; ".join(f"{p['title']} ({p['inventory']})" for p in rows[:12]) if rows else "No products meet that threshold.")
+        rows = [product for product in products if _inventory(product) is not None and _inventory(product) <= 5]
+        return f"I scanned {len(products)} products in {ctx['shop']}. {len(rows)} are at or below 5 units. " + ("; ".join(f"{product['title']} ({product['inventory']})" for product in rows[:12]) if rows else "No products meet that threshold.")
     if any(k in q for k in ["recent", "new products", "newly added"]):
-        dated = sorted((p for p in products if p.get("createdAt")), key=lambda p: p.get("createdAt") or "", reverse=True)
-        return "The newest products by Shopify created date are: " + "; ".join(f"{p['title']} ({p.get('createdAt','')[:10]})" for p in dated[:10])
+        dated = sorted((product for product in products if product.get("createdAt")), key=lambda product: product.get("createdAt") or "", reverse=True)
+        return "The newest products by Shopify created date are: " + "; ".join(f"{product['title']} ({product.get('createdAt','')[:10]})" for product in dated[:10])
     if any(k in q for k in ["weak description", "thin description", "quality"]):
-        weak = [p for p in products if len(p.get("description") or "") < 120]
-        return f"I found {len(weak)} products with descriptions under 120 characters out of {len(products)}. " + ("Examples: " + "; ".join(p["title"] for p in weak[:10]) + "." if weak else "")
+        weak = [product for product in products if len(product.get("description") or "") < 120]
+        return f"I found {len(weak)} products with descriptions under 120 characters out of {len(products)}. " + ("Examples: " + "; ".join(product["title"] for product in weak[:10]) + "." if weak else "")
+    if requested.get("products") and available.get("products"):
+        return (
+            f"I retrieved {len(products)} products from {ctx['shop']}, but my AI response service is temporarily unavailable "
+            "and I can't safely infer the answer to that specific question. Please retry shortly."
+        )
     return (
-        f"Hi! I'm Mia, and I'm connected to {ctx['shop']} with {len(products)} products. My AI chat is briefly unavailable, "
-        "but I can still show low-stock, recently added or weak-description products, and you can try your question again in a moment."
+        "My AI response service is temporarily unavailable, and I don't have the specific Shopify dataset needed to answer this question. "
+        "I won't guess or report unqueried data as zero. Please try again shortly."
     )
 
 
@@ -904,15 +1211,57 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
 
     # General questions should not trigger a full download of the merchant's
     # catalog, orders, customers and publications on every chat turn.
-    ctx = await _context(shop) if _needs_store_context(text, selected_id) else None
+    recent_user_history = " ".join(
+        turn.content.strip()
+        for turn in body.history[-6:]
+        if turn.role == "user" and turn.content.strip()
+    )
+    is_short_follow_up = len(text) <= 120 and bool(re.search(
+        r"\b(what about|how about|and for|same for|instead|compare|why|which one|what does that mean|tell me more|elaborate|those|them|it|that|this|yesterday|today|last week|this week|last month|this month|last 7 days|last 30 days)\b",
+        text,
+        re.I,
+    ))
+    prior_store_intent = bool(recent_user_history and _needs_store_context(recent_user_history))
+    use_history_context = is_short_follow_up and prior_store_intent
+    should_load_context = _needs_store_context(text, selected_id) or use_history_context
+    intent_message = f"{recent_user_history}\n{text}".strip() if use_history_context else text
+    date_message = text
+    if use_history_context and not _has_order_date_reference(text):
+        for turn in reversed(body.history[-6:]):
+            if turn.role == "user" and _has_order_date_reference(turn.content):
+                date_message = turn.content
+                break
+    ctx = await _context(
+        shop,
+        text,
+        selected_id,
+        intent_message=intent_message,
+        date_message=date_message,
+    ) if should_load_context else None
+    if ctx and ctx.get("order_range") == "invalid date range":
+        return {
+            "answer": "That date range is invalid because the start date is after the end date. Please provide a start date on or before the end date.",
+            "needs_clarification": True,
+            "data_used": {
+                "shop": shop.shop_domain,
+                "store_data_loaded": True,
+                "datasets_requested": [name for name, wanted in ctx.get("requested", {}).items() if wanted],
+                "datasets_available": [name for name, is_available in ctx.get("available", {}).items() if is_available],
+                "order_range": ctx.get("order_range"),
+                "warnings": ctx.get("warnings", []),
+            },
+        }
     products = ctx["products"] if ctx else []
     if ctx:
         data_used = {
             "shop": ctx["shop"],
             "store_data_loaded": True,
             "counts": ctx["counts"],
-            "catalog_scanned": len(products),
-            "sales_channels": ctx["sales_channels"],
+            "catalog_scanned": len(products) if ctx.get("requested", {}).get("products", True) and ctx.get("available", {}).get("products", True) else None,
+            "datasets_requested": [name for name, wanted in ctx.get("requested", {}).items() if wanted],
+            "datasets_available": [name for name, is_available in ctx.get("available", {}).items() if is_available],
+            "order_range": ctx.get("order_range") if ctx.get("requested", {}).get("orders", True) else None,
+            "sales_channels": ctx["sales_channels"] if ctx.get("requested", {}).get("publications", True) else None,
             "warnings": ctx["warnings"],
         }
     else:
@@ -967,14 +1316,16 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
     messages = [{"role": "system", "content": MIA_SYSTEM_PROMPT}]
     if ctx:
         messages.append({"role": "system", "content": "STORE DATA (live from Shopify):\n" + _store_facts(ctx, context_target)})
-        messages.append({
-            "role": "system",
-            "content": "SHOPIFY SALES CHANNELS (live publication data):\n"
-            + json.dumps(ctx["sales_channels"], ensure_ascii=False)
-            + "\nUse these actual channel names when answering questions about sales channels, storefronts, marketplaces, or product publishing. "
-            + "If this list is empty, do not guess; explain that Shopify returned no visible publications or that permissions need checking. "
-            + "Warnings: " + "; ".join(ctx["warnings"]),
-        })
+        if ctx.get("requested", {}).get("publications", True):
+            channels_available = ctx.get("available", {}).get("publications", True)
+            messages.append({
+                "role": "system",
+                "content": "SHOPIFY SALES CHANNELS (live publication data):\n"
+                + (json.dumps(ctx["sales_channels"], ensure_ascii=False) if channels_available else "Unavailable; Shopify did not return a usable publication list.")
+                + "\nUse these actual channel names when answering questions about sales channels, storefronts, marketplaces, or product publishing. "
+                + ("If the verified list is empty, explain that Shopify returned no visible publications; do not guess." if channels_available else "Do not infer that no channels exist when the data is unavailable.")
+                + " Warnings: " + "; ".join(ctx["warnings"]),
+            })
     else:
         messages.append({
             "role": "system",

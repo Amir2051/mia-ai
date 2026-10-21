@@ -20,13 +20,19 @@ import { ErrorBanner, NotConnected, PageSkeleton } from '../components/states';
 import { errorMessage, formatNumber } from '../lib/format';
 import { useSession } from '../lib/session';
 
-type Product = { id: string; title: string; status?: string; inventory?: number };
+type Product = { id: string; title: string; status?: string; inventory?: number | null };
 type Context = {
-  counts?: { products?: number; orders?: number; customers?: number; inventory_units?: number };
+  counts?: { products?: number | null; orders?: number | null; customers?: number | null; inventory_units?: number | null };
+  available?: { products?: boolean; orders?: boolean; customers?: boolean; publications?: boolean };
   products?: Product[];
   low_stock?: Array<{ title: string; inventory: number }>;
   warnings?: string[];
 };
+
+function snapshotCount(value: number | null | undefined, available: boolean | undefined): string {
+  if (value == null && available === false) return '—';
+  return formatNumber(value ?? 0);
+}
 type Artifact =
   | { type: 'seo'; product?: { title?: string }; result: SeoResult }
   | { type: 'marketing'; product?: { title?: string }; result: MarketingResult };
@@ -58,13 +64,16 @@ export default function Mia() {
   useEffect(() => {
     if (!session.connected) return;
     let active = true;
-    Promise.allSettled([api.get('/mia/context'), api.get('/mia/conversation')])
+    Promise.allSettled([api.get('/mia/context?include_orders=true'), api.get('/mia/conversation')])
       .then(([contextResult, conversationResult]) => {
         if (!active) return;
         if (contextResult.status === 'fulfilled') {
           const data = contextResult.value.data;
           setContext(data);
           if (data?.products?.[0]) setSelected(data.products[0].id);
+          if (data?.available?.products === false) {
+            setLoadError('Mia could not retrieve the product catalog from Shopify. Product and inventory counts are unavailable, not zero.');
+          }
         } else {
           setLoadError(errorMessage(contextResult.reason, 'Mia could not read your store right now.'));
         }
@@ -161,7 +170,7 @@ export default function Mia() {
                   options={
                     products.length
                       ? products.map((p) => ({ label: p.title, value: p.id }))
-                      : [{ label: loading ? 'Loading products…' : 'No products found', value: '' }]
+                      : [{ label: loading ? 'Loading products…' : context?.available?.products === false ? 'Products unavailable' : 'No products found', value: '' }]
                   }
                   value={selected}
                   onChange={setSelected}
@@ -195,15 +204,15 @@ export default function Mia() {
                 </Text>
                 <InlineStack align="space-between">
                   <Text as="span" tone="subdued">Products</Text>
-                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.products ?? 0)}</Text>
+                  <Text as="span" numeric>{loading ? '…' : snapshotCount(context?.counts?.products, context?.available?.products)}</Text>
                 </InlineStack>
                 <InlineStack align="space-between">
                   <Text as="span" tone="subdued">Orders</Text>
-                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.orders ?? 0)}</Text>
+                  <Text as="span" numeric>{loading ? '…' : snapshotCount(context?.counts?.orders, context?.available?.orders)}</Text>
                 </InlineStack>
                 <InlineStack align="space-between">
                   <Text as="span" tone="subdued">Units in stock</Text>
-                  <Text as="span" numeric>{loading ? '…' : formatNumber(context?.counts?.inventory_units ?? 0)}</Text>
+                  <Text as="span" numeric>{loading ? '…' : snapshotCount(context?.counts?.inventory_units, context?.available?.products)}</Text>
                 </InlineStack>
               </BlockStack>
             </Card>

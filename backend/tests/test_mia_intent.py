@@ -93,3 +93,87 @@ def test_store_data_questions_and_product_actions_load_context():
     assert _needs_store_context("How many orders did I have?")
     assert _needs_store_context("What is my store revenue?")
     assert _needs_store_context("Generate an SEO package for this product", "gid://shopify/Product/1")
+
+
+def test_context_plan_only_fetches_datasets_needed_for_question():
+    from app.routers.mia import _context_plan
+
+    assert _context_plan("How many products do I have?") == {
+        "products": True, "orders": False, "customers": False, "publications": False
+    }
+    assert _context_plan("What is my store revenue?") == {
+        "products": False, "orders": True, "customers": False, "publications": False
+    }
+    assert _context_plan("What sales channels are available?") == {
+        "products": False, "orders": False, "customers": False, "publications": True
+    }
+    assert _context_plan("Which products sold the most?") == {
+        "products": True, "orders": True, "customers": False, "publications": False
+    }
+    assert all(_context_plan("Give me a store overview").values())
+
+
+def test_context_plan_keeps_marketing_generation_on_product_data_only():
+    from app.routers.mia import _context_plan
+
+    plan = _context_plan("Generate a marketing campaign for Blue Mug")
+    assert plan == {
+        "products": True, "orders": False, "customers": False, "publications": False
+    }
+
+
+def test_order_date_filter_uses_store_timezone_for_yesterday():
+    from datetime import datetime, timezone
+    from app.routers.mia import _order_date_filter
+
+    query, label, start = _order_date_filter(
+        "How much sales did I make yesterday?",
+        "America/New_York",
+        now=datetime(2026, 10, 20, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert query == "created_at:>='2026-10-19T04:00:00Z' created_at:<'2026-10-20T04:00:00Z'"
+    assert "yesterday, 2026-10-19" in label
+    assert start is not None and start.isoformat() == "2026-10-19T00:00:00-04:00"
+
+
+def test_order_date_filter_supports_last_week_and_explicit_dates():
+    from datetime import datetime, timezone
+    from app.routers.mia import _order_date_filter
+
+    query, label, _ = _order_date_filter(
+        "Show sales last week",
+        "America/New_York",
+        now=datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc),
+    )
+    assert query == "created_at:>='2026-10-12T04:00:00Z' created_at:<'2026-10-19T04:00:00Z'"
+    assert "last calendar week" in label
+
+    query, label, _ = _order_date_filter(
+        "Revenue from 2026-10-01 to 2026-10-03",
+        "America/New_York",
+    )
+    assert "created_at:>='2026-10-01T04:00:00Z'" in query
+    assert "created_at:<'2026-10-04T04:00:00Z'" in query
+    assert "2026-10-01 through 2026-10-03" in label
+
+
+def test_order_date_filter_rejects_reversed_explicit_dates():
+    from app.routers.mia import _order_date_filter
+
+    query, label, start = _order_date_filter("Sales from 2026-10-20 to 2026-10-01")
+    assert query == ""
+    assert label == "invalid date range"
+    assert start is None
+
+
+def test_selected_product_does_not_force_catalog_fetch_for_unrelated_sales_question():
+    from app.routers.mia import _context_plan
+
+    selected_id = "gid://shopify/Product/1"
+    assert _context_plan("What is my store revenue?", selected_id) == {
+        "products": False, "orders": True, "customers": False, "publications": False
+    }
+    assert _context_plan("What do you think about this product?", selected_id) == {
+        "products": True, "orders": False, "customers": False, "publications": False
+    }
