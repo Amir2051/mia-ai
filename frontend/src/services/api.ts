@@ -1,6 +1,14 @@
 import axios from 'axios';
 
-type MiaRequestConfig = { _miaRetried?: boolean; _miaSkipSessionRetry?: boolean };
+type MiaRequestConfig = {
+  _miaRetried?: boolean;
+  _miaSkipSessionRetry?: boolean;
+  _miaTransientRetries?: number;
+  _miaSkipTransientRetry?: boolean;
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+};
 
 const api = axios.create({
   baseURL: '/api',
@@ -97,6 +105,9 @@ api.interceptors.response.use(
             return reject(refreshError);
           }
           attempt += 1;
+          if (attempt >= 3) {
+            return reject(new Error('Could not refresh the Shopify session. Reopen Mia from Shopify Admin and try again.'));
+          }
           setTimeout(refresh, Math.min(250 * attempt, 1000));
         };
         refresh();
@@ -109,6 +120,30 @@ api.interceptors.response.use(
         }
         return api.request((error as { config: any }).config);
       });
+    }
+
+    // Retry only idempotent reads for transient provider/network failures.
+    // Never automatically repeat POST/PUT/PATCH/DELETE requests, since they may
+    // create products, publish content, or otherwise mutate the merchant's store.
+    const method = (config?.method || 'get').toLowerCase();
+    const retryCount = config?._miaTransientRetries ?? 0;
+    const retryableStatus = [429, 502, 503, 504].includes(responseStatus ?? 0);
+    const isNetworkFailure = !responseStatus && Boolean(config);
+    if (
+      config &&
+      (method === 'get' || method === 'head') &&
+      !isSessionEndpoint &&
+      !config._miaSkipTransientRetry &&
+      retryCount < 2 &&
+      (retryableStatus || isNetworkFailure)
+    ) {
+      config._miaTransientRetries = retryCount + 1;
+      const responseHeaders = (error as { response?: { headers?: Record<string, string> } }).response?.headers;
+      const retryAfter = Number(responseHeaders?.['retry-after']);
+      const delay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 3000)
+        : 250 * (2 ** retryCount);
+      return new Promise((resolve) => setTimeout(resolve, delay)).then(() => api.request(config as any));
     }
 
     if (axiosError instanceof Error) {

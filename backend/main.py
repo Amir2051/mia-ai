@@ -5,10 +5,13 @@ import sys
 import time
 import uuid
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+
+from app.models.database import get_db
 
 from app.shopify.config import settings
 
@@ -265,10 +268,25 @@ def create_app() -> FastAPI:
 
     @application.get("/health", tags=["health"])
     async def health():
+        # Liveness only: this remains fast and does not require database access.
         return {
             "status": "ok",
             "app": settings.app_name,
         }
+
+    @application.get("/ready", tags=["health"])
+    async def readiness(db=Depends(get_db)):
+        # Readiness checks whether the app can reach its database without
+        # returning connection strings or other infrastructure details.
+        try:
+            await db.execute(text("SELECT 1"))
+        except Exception as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database readiness check failed",
+            ) from exc
+        return {"status": "ready", "database": "ok", "app": settings.app_name}
 
     frontend_dist = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

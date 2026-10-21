@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Button,
   Card,
   FormLayout,
+  InlineGrid,
   InlineStack,
   Layout,
   Modal,
@@ -32,6 +34,54 @@ const STATUS_OPTIONS = [
 
 type Form = { markup: string; duplicate: string; status: string };
 type SalesChannel = { id: string; name: string; supportsFuturePublishing?: boolean };
+type HealthProvider = {
+  provider: string;
+  label: string;
+  status: string;
+  configured: boolean;
+  saved_accounts: number;
+  message: string;
+};
+type HealthReport = {
+  connected: boolean;
+  overall_status: string;
+  database: { status: string };
+  shopify: {
+    status: string;
+    shop_domain?: string;
+    shop_name?: string | null;
+    granted_scopes?: string[];
+    missing_scopes?: string[];
+    error?: string | null;
+  };
+  ai: { status: string; provider?: string; model?: string; message?: string };
+  social: HealthProvider[];
+  checked_at?: string;
+};
+
+function healthTone(status: string): 'success' | 'info' | 'warning' | 'critical' {
+  if (status === 'healthy' || status === 'verified') return 'success';
+  if (status === 'configured_not_tested') return 'info';
+  if (status === 'unavailable') return 'critical';
+  return 'warning';
+}
+
+function healthLabel(status: string): string {
+  const labels: Record<string, string> = {
+    healthy: 'Healthy',
+    verified: 'Live check passed',
+    verified_with_permission_gaps: 'Connected · permissions need review',
+    configured_not_tested: 'Configured · not live-tested',
+    saved_account_not_verified: 'Account saved · not verified',
+    not_configured: 'Not configured',
+    needs_reauth: 'Session needs refresh',
+    permission_issue: 'Permission issue',
+    unavailable: 'Unavailable',
+    not_connected: 'Not connected',
+    not_checked: 'Not checked',
+  };
+  return labels[status] ?? status.replace(/_/g, ' ');
+}
 
 function fromSettings(settings: Record<string, unknown>): Form {
   const duplicate = settings.duplicate_product_action === 'overwrite' ? 'update' : String(settings.duplicate_product_action || 'skip');
@@ -54,14 +104,35 @@ export default function Settings() {
   const [salesChannels, setSalesChannels] = useState<SalesChannel[]>([]);
   const [channelsLoading, setChannelsLoading] = useState(true);
   const [channelsError, setChannelsError] = useState<string | null>(null);
+  const [health, setHealth] = useState<HealthReport | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  const runHealthChecks = useCallback(async () => {
+    setHealthLoading(true);
+    setHealthError(null);
+    try {
+      let response = await api.get('/settings/health');
+      if (response.data?.shopify?.status === 'needs_reauth') {
+        await api.get('/auth/session?force=true');
+        response = await api.get('/settings/health');
+      }
+      setHealth(response.data as HealthReport);
+    } catch (err) {
+      setHealthError(errorMessage(err, 'Could not run integration health checks'));
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!session.connected) return;
+    void runHealthChecks();
     api.get('/sales-channels')
       .then((res) => setSalesChannels((res.data?.sales_channels ?? []) as SalesChannel[]))
       .catch((err) => setChannelsError(errorMessage(err, 'Could not read Shopify sales channels')))
       .finally(() => setChannelsLoading(false));
-  }, [session.connected]);
+  }, [session.connected, runHealthChecks]);
 
   useEffect(() => {
     if (!session.connected) return;
@@ -167,6 +238,79 @@ export default function Settings() {
                     Sign Mia out of this store
                   </Button>
                 </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.AnnotatedSection>
+
+          <Layout.AnnotatedSection title="Integration health" description="Run read-only diagnostics. A green Shopify status means the app completed a live Shopify API check; optional providers are reported honestly as configured or saved, not assumed to be working.">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="span" fontWeight="semibold">Connection diagnostics</Text>
+                  <InlineStack gap="200" blockAlign="center">
+                    {health && <Badge tone={healthTone(health.overall_status)}>{healthLabel(health.overall_status)}</Badge>}
+                    <Button onClick={() => void runHealthChecks()} loading={healthLoading}>Run checks</Button>
+                  </InlineStack>
+                </InlineStack>
+                {healthError && <ErrorBanner message={healthError} onRetry={() => void runHealthChecks()} />}
+                {healthLoading && !health ? (
+                  <Text as="p" tone="subdued">Checking database and Shopify connectivity…</Text>
+                ) : health ? (
+                  <BlockStack gap="300">
+                    <InlineGrid columns={{ xs: 1, md: 3 }} gap="300">
+                      <Card>
+                        <BlockStack gap="200">
+                          <Text as="h3" variant="headingSm">Database</Text>
+                          <Badge tone={healthTone(health.database.status)}>{healthLabel(health.database.status)}</Badge>
+                          <Text as="p" variant="bodySm" tone="subdued">Readiness query: SELECT 1</Text>
+                        </BlockStack>
+                      </Card>
+                      <Card>
+                        <BlockStack gap="200">
+                          <Text as="h3" variant="headingSm">Shopify Admin API</Text>
+                          <Badge tone={healthTone(health.shopify.status)}>{healthLabel(health.shopify.status)}</Badge>
+                          <Text as="p" variant="bodySm">{health.shopify.shop_name || health.shopify.shop_domain || session.shopDomain}</Text>
+                          {health.shopify.error && <Text as="p" variant="bodySm" tone="critical">{health.shopify.error}</Text>}
+                          {(health.shopify.missing_scopes ?? []).length > 0 && (
+                            <BlockStack gap="100">
+                              <Text as="p" variant="bodySm" tone="subdued">Missing requested permissions</Text>
+                              <InlineStack gap="100" wrap>
+                                {health.shopify.missing_scopes?.map((scope) => <Tag key={scope}>{scope}</Tag>)}
+                              </InlineStack>
+                            </BlockStack>
+                          )}
+                        </BlockStack>
+                      </Card>
+                      <Card>
+                        <BlockStack gap="200">
+                          <Text as="h3" variant="headingSm">AI response provider</Text>
+                          <Badge tone={healthTone(health.ai.status)}>{healthLabel(health.ai.status)}</Badge>
+                          <Text as="p" variant="bodySm">{health.ai.model || 'Model not configured'}</Text>
+                          <Text as="p" variant="bodySm" tone="subdued">{health.ai.message}</Text>
+                        </BlockStack>
+                      </Card>
+                    </InlineGrid>
+                    <Text as="h3" variant="headingSm">Social providers</Text>
+                    <InlineGrid columns={{ xs: 1, md: 3 }} gap="300">
+                      {health.social.map((provider) => (
+                        <Card key={provider.provider}>
+                          <BlockStack gap="200">
+                            <Text as="h3" variant="headingSm">{provider.label}</Text>
+                            <Badge tone={healthTone(provider.status)}>{healthLabel(provider.status)}</Badge>
+                            <Text as="p" variant="bodySm">{provider.saved_accounts} saved account{provider.saved_accounts === 1 ? '' : 's'}</Text>
+                            <Text as="p" variant="bodySm" tone="subdued">{provider.message}</Text>
+                          </BlockStack>
+                        </Card>
+                      ))}
+                    </InlineGrid>
+                    <Banner tone="info" title="What these checks do">
+                      <Text as="p">Shopify is tested with a live, read-only API request. OpenRouter is not called, to avoid spending credits. Social provider tokens are not probed here; use the Social page’s connection test before publishing.</Text>
+                    </Banner>
+                    {health.checked_at && <Text as="p" variant="bodySm" tone="subdued">Last checked: {new Date(health.checked_at).toLocaleString()}</Text>}
+                  </BlockStack>
+                ) : (
+                  <Text as="p" tone="subdued">No diagnostic results yet.</Text>
+                )}
               </BlockStack>
             </Card>
           </Layout.AnnotatedSection>
