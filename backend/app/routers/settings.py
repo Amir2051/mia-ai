@@ -176,7 +176,7 @@ async def integration_health(
         data = await ShopifyAPIClient(
             shop_domain=shop.shop_domain,
             access_token=access_token,
-        ).graphql("query MiaIntegrationHealth { shop { name myshopifyDomain } }")
+        ).graphql("query MiaIntegrationHealth { shop { name myshopifyDomain ianaTimezone } }")
         shop_info = data.get("shop") or {}
         returned_domain = str(shop_info.get("myshopifyDomain") or "").lower()
         if returned_domain == shop.shop_domain.lower():
@@ -267,6 +267,7 @@ async def integration_health(
             "status": shopify_status,
             "shop_domain": shop.shop_domain,
             "shop_name": (shop_info or {}).get("name"),
+            "timezone": (shop_info or {}).get("ianaTimezone"),
             "granted_scopes": sorted(granted_scopes),
             "missing_scopes": missing_scopes,
             "error": shopify_error,

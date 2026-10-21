@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from logging import StreamHandler, getLogger
+import asyncio
 import os
 import sys
 import time
@@ -58,7 +59,16 @@ def _register_exception_handlers(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     # Production schema changes are managed exclusively by Alembic.
-    yield
+    scheduler_task = None
+    if settings.is_production:
+        from app.services.scheduled_reports import scheduled_report_loop
+        scheduler_task = asyncio.create_task(scheduled_report_loop(), name="mia-scheduled-reports")
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
 
 
 def create_app() -> FastAPI:
@@ -178,6 +188,7 @@ def create_app() -> FastAPI:
         orders,
         products,
         publications,
+        reports,
         seo,
         settings as settings_router,
         webhooks,
@@ -196,6 +207,12 @@ def create_app() -> FastAPI:
         analytics.router,
         prefix="/api/analytics",
         tags=["analytics"],
+    )
+
+    application.include_router(
+        reports.router,
+        prefix="/api/reports",
+        tags=["scheduled-reports"],
     )
 
     application.include_router(

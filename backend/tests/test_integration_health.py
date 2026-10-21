@@ -58,7 +58,7 @@ def test_integration_health_live_checks_shopify_and_does_not_probe_paid_ai(clien
             assert access_token == "test-access-token"
 
         async def graphql(self, query):
-            assert "shop { name myshopifyDomain }" in query
+            assert "shop { name myshopifyDomain ianaTimezone }" in query
             return {"shop": {"name": "Demo Store", "myshopifyDomain": shop_domain}}
 
     shop_domain_value = shop_domain

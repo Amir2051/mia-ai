@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -51,6 +52,7 @@ class Shop(Base):
     imports: Mapped[list['ProductImport']] = relationship(back_populates='shop', cascade='all, delete-orphan')
     settings: Mapped[list['AppSetting']] = relationship(back_populates='shop', cascade='all, delete-orphan')
     social_accounts: Mapped[list['SocialAccount']] = relationship(back_populates='shop', cascade='all, delete-orphan')
+    scheduled_reports: Mapped[list['ScheduledReport']] = relationship(back_populates='shop', cascade='all, delete-orphan')
 
 
 class ShopSession(Base):
@@ -172,6 +174,32 @@ class AuditLog(Base):
     entity_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     details_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ScheduledReport(Base):
+    """Per-shop schedule and latest result for recurring in-app reports."""
+    __tablename__ = 'scheduled_reports'
+    __table_args__ = (Index('ix_scheduled_reports_due', 'enabled', 'next_run_at'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey('shops.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    report_type: Mapped[str] = mapped_column(String(50), default='sales_summary')
+    frequency: Mapped[str] = mapped_column(String(20))
+    schedule_time: Mapped[str] = mapped_column(String(5), default='09:00')
+    timezone: Mapped[str] = mapped_column(String(100), default='UTC')
+    day_of_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    day_of_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str] = mapped_column(String(30), default='never')
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    shop: Mapped['Shop'] = relationship(back_populates='scheduled_reports')
 
 
 class MiaMemory(Base):

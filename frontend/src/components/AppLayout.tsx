@@ -30,6 +30,7 @@ export default function AppLayout() {
         <a href="/orders">Orders</a>
         <a href="/customers">Customers</a>
         <a href="/analytics">Analytics</a>
+        <a href="/reports">Scheduled reports</a>
         <a href="/social">Social</a>
         <a href="/settings">Settings</a>
       </ui-nav-menu>
@@ -40,6 +41,7 @@ export default function AppLayout() {
           <a href="/dashboard" onClick={(event) => { event.preventDefault(); navigate('/dashboard'); }}>Dashboard</a>
           <a href="/mia" onClick={(event) => { event.preventDefault(); navigate('/mia'); }}>Ask Mia</a>
           <a href="/marketing" onClick={(event) => { event.preventDefault(); navigate('/marketing'); }}>SEO &amp; marketing</a>
+          <a href="/reports" onClick={(event) => { event.preventDefault(); navigate('/reports'); }}>Scheduled reports</a>
           <a href="/products" onClick={(event) => { event.preventDefault(); navigate('/products'); }}>Products</a>
           <a href="/social" aria-current={window.location.pathname === '/social' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/social'); }}>Social media</a>
           <a href="/settings" onClick={(event) => { event.preventDefault(); navigate('/settings'); }}>Settings</a>
