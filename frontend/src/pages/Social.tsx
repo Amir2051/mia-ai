@@ -276,8 +276,12 @@ export default function Social() {
     setPublishingProvider(provider);
     try {
       const res = await api.post(path, payload);
-      const status = res.data?.status === 'processing' ? 'Publishing started' : 'Published successfully';
-      showToast(provider === 'youtube' ? 'YouTube video uploaded' : status + ' to ' + provider[0].toUpperCase() + provider.slice(1));
+      if (res.data?.audit_recorded === false) {
+        showToast('Provider accepted the request, but Mia could not save activity history');
+      } else {
+        const status = res.data?.status === 'processing' ? 'Publishing started' : 'Published successfully';
+        showToast(provider === 'youtube' ? 'YouTube video uploaded' : status + ' to ' + provider[0].toUpperCase() + provider.slice(1));
+      }
       clear();
     } catch (err) {
       setError(errorMessage(err, 'Could not publish to ' + provider));
@@ -321,10 +325,10 @@ export default function Social() {
     setPublishing(true);
     setError(null);
     try {
-      await api.post('/social/meta/facebook/publish', { account_id: Number(accountId), message: message.trim(), link: link.trim() || null });
+      const res = await api.post('/social/meta/facebook/publish', { account_id: Number(accountId), message: message.trim(), link: link.trim() || null });
       setMessage('');
       setLink('');
-      showToast('Posted to Facebook');
+      showToast(res.data?.audit_recorded === false ? 'Posted to Facebook, but activity history could not be saved' : 'Posted to Facebook');
       setPosts((value) => {
         const next = { ...value };
         delete next[Number(accountId)];
@@ -342,13 +346,13 @@ export default function Social() {
     setInstagramPublishing(true);
     setError(null);
     try {
-      await api.post('/social/meta/instagram/publish', {
+      const res = await api.post('/social/meta/instagram/publish', {
         account_id: Number(accountId),
         image_url: instagramImageUrl.trim(),
         caption: instagramCaption.trim(),
       });
       setInstagramCaption('');
-      showToast('Published to Instagram');
+      showToast(res.data?.audit_recorded === false ? 'Published to Instagram, but activity history could not be saved' : 'Published to Instagram');
       setInstagramPosts((value) => {
         const next = { ...value };
         delete next[Number(accountId)];

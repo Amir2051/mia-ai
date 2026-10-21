@@ -15,6 +15,7 @@ from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
 from app.models.schemas import Shop, SocialAccount
 from app.security.rls import set_shop_context
+from app.services.audit import record_audit_event
 from app.security.tokens import encrypt_token, decrypt_token
 from app.services.meta import MetaAPIError, MetaClient, serialize_meta_metadata
 from app.services import social_oauth
@@ -323,16 +324,28 @@ async def publish_facebook(
     db=Depends(get_db),
 ):
     account, token = await _get_meta_account(payload.account_id, current, db, "facebook_page")
+    shop_id, account_name, page_id = account.shop_id, account.account_name, account.external_account_id
+    await db.commit()
     try:
         result = await MetaClient().publish_page_post(
-            account.external_account_id,
+            page_id,
             token,
             payload.message,
             payload.link,
         )
     except MetaAPIError as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "meta_facebook",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "error_code": exc.status_code},
+        )
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    return {"status": "published", "result": result}
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "meta_facebook",
+        "marketing.published", "published", _external_result_id(result),
+        {"content_length": len(payload.message), "has_link": bool(payload.link)},
+    )
+    return {"status": "published", "result": result, "audit_recorded": audit_recorded}
 
 
 @router.post("/meta/instagram/publish")
@@ -347,6 +360,8 @@ async def publish_instagram(
     instagram_id = instagram.get("id") if isinstance(instagram, dict) else instagram
     if not instagram_id:
         raise HTTPException(status_code=400, detail="No Instagram professional account is linked to this Facebook Page")
+    shop_id, account_name = account.shop_id, account.account_name
+    await db.commit()
     try:
         container = await MetaClient().create_instagram_media(str(instagram_id), payload.image_url, payload.caption, token)
         creation_id = container.get("id")
@@ -354,8 +369,18 @@ async def publish_instagram(
             raise MetaAPIError("Instagram media container was not created", 502)
         result = await MetaClient().publish_instagram_media(str(instagram_id), creation_id, token)
     except MetaAPIError as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "meta_instagram",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "error_code": exc.status_code},
+        )
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    return {"status": "published", "result": result}
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "meta_instagram",
+        "marketing.published", "published", _external_result_id(result),
+        {"content_length": len(payload.caption), "has_image": True},
+    )
+    return {"status": "published", "result": result, "audit_recorded": audit_recorded}
 
 
 @router.get("/meta/facebook/{account_id}/monitor")
@@ -416,6 +441,49 @@ async def _get_meta_account(
     if not account:
         raise HTTPException(status_code=404, detail="Meta account not found")
     return account, decrypt_token(account.access_token_encrypted)
+
+
+def _external_result_id(result: Any) -> Optional[str]:
+    if not isinstance(result, dict):
+        return None
+    for key in ("id", "post_id", "pin_id", "video_id", "publish_id", "urn"):
+        value = result.get(key)
+        if value:
+            return str(value)
+    nested = result.get("data")
+    if isinstance(nested, dict):
+        for key in ("id", "post_id", "pin_id", "video_id", "publish_id", "urn"):
+            value = nested.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+async def _record_social_outcome(
+    db,
+    shop_domain: str,
+    shop_id: int,
+    account_name: str,
+    provider: str,
+    action: str,
+    outcome: str,
+    entity_id: Optional[str],
+    details: Optional[dict[str, Any]] = None,
+) -> bool:
+    return await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action=action,
+        entity_type="social_post",
+        entity_id=entity_id,
+        details={
+            "status": outcome,
+            "provider": provider,
+            "account_name": account_name,
+            **(details or {}),
+        },
+    )
 
 
 # OAuth + publishing for TikTok, Pinterest, YouTube, and LinkedIn.
@@ -648,6 +716,8 @@ async def get_pinterest_boards(account_id: int, current: Optional[CurrentUser] =
 @router.post("/tiktok/publish")
 async def publish_tiktok(payload: TikTokPublishRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     account, token = await _get_provider_account(payload.account_id, "tiktok", current, db)
+    shop_id, account_name = account.shop_id, account.account_name
+    await db.commit()
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         creator_response = await client.post("https://open.tiktokapis.com/v2/post/publish/creator_info/query/", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json={})
@@ -656,6 +726,11 @@ async def publish_tiktok(payload: TikTokPublishRequest, current: Optional[Curren
     except ValueError:
         creator_data = {}
     if creator_response.status_code >= 400 or (creator_data.get("error") or {}).get("code") not in (None, "ok"):
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "tiktok",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "creator_info", "http_status": creator_response.status_code},
+        )
         raise HTTPException(status_code=502, detail="TikTok could not confirm creator publishing settings; verify Content Posting API access and scopes")
     allowed_privacy = (creator_data.get("data") or {}).get("privacy_level_options") or []
     if payload.privacy_level not in allowed_privacy:
@@ -676,26 +751,104 @@ async def publish_tiktok(payload: TikTokPublishRequest, current: Optional[Curren
     except ValueError:
         data = {}
     if response.status_code >= 400 or (data.get("error") or {}).get("code") not in (None, "ok"):
-        raise HTTPException(status_code=502, detail=f"TikTok publish failed: {str((data.get('error') or {}).get('message') or response.text)[:400]}")
-    return {"status": "processing", "publish_id": (data.get("data") or {}).get("publish_id"), "result": data.get("data") or {}}
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "tiktok",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "http_status": response.status_code},
+        )
+        raise HTTPException(status_code=502, detail="TikTok publish failed; review the provider connection and publishing permissions")
+    result = data.get("data") or {}
+    publish_id = result.get("publish_id")
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "tiktok",
+        "marketing.publish_started", "processing", str(publish_id) if publish_id else None,
+        {"media_type": payload.media_type},
+    )
+    return {"status": "processing", "publish_id": publish_id, "result": result, "audit_recorded": audit_recorded}
 
 
 @router.post("/pinterest/publish")
 async def publish_pinterest(payload: PinterestPublishRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
-    _, token = await _get_provider_account(payload.account_id, "pinterest", current, db)
-    result = await social_oauth.pinterest_create_pin(token, payload.board_id, payload.title, payload.description, payload.image_url, payload.link)
-    return {"status": "published", "result": result}
+    account, token = await _get_provider_account(payload.account_id, "pinterest", current, db)
+    shop_id, account_name = account.shop_id, account.account_name
+    await db.commit()
+    try:
+        result = await social_oauth.pinterest_create_pin(token, payload.board_id, payload.title, payload.description, payload.image_url, payload.link)
+    except HTTPException as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "pinterest",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "http_status": exc.status_code},
+        )
+        raise
+    except Exception as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "pinterest",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=502, detail="Pinterest publishing failed; review the provider connection and permissions") from exc
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "pinterest",
+        "marketing.published", "published", _external_result_id(result),
+        {"content_length": len(payload.description), "has_link": bool(payload.link), "has_image": True},
+    )
+    return {"status": "published", "result": result, "audit_recorded": audit_recorded}
 
 
 @router.post("/youtube/publish")
 async def publish_youtube(payload: YouTubePublishRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
-    _, token = await _get_provider_account(payload.account_id, "youtube", current, db)
-    result = await social_oauth.youtube_upload(token, payload.video_url, payload.title, payload.description, payload.privacy_status)
-    return {"status": "uploaded", "result": result}
+    account, token = await _get_provider_account(payload.account_id, "youtube", current, db)
+    shop_id, account_name = account.shop_id, account.account_name
+    await db.commit()
+    try:
+        result = await social_oauth.youtube_upload(token, payload.video_url, payload.title, payload.description, payload.privacy_status)
+    except HTTPException as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "youtube",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "upload", "http_status": exc.status_code},
+        )
+        raise
+    except Exception as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "youtube",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "upload", "error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=502, detail="YouTube upload failed; review the provider connection and permissions") from exc
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "youtube",
+        "marketing.uploaded", "uploaded", _external_result_id(result),
+        {"title_length": len(payload.title), "privacy_status": payload.privacy_status},
+    )
+    return {"status": "uploaded", "result": result, "audit_recorded": audit_recorded}
 
 
 @router.post("/linkedin/publish")
 async def publish_linkedin(payload: LinkedInPublishRequest, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
     account, token = await _get_provider_account(payload.account_id, "linkedin", current, db)
-    result = await social_oauth.publish_text_linkedin(token, f"urn:li:person:{account.external_account_id}", payload.text)
-    return {"status": "published", "result": result}
+    shop_id, account_name, person_id = account.shop_id, account.account_name, account.external_account_id
+    await db.commit()
+    try:
+        result = await social_oauth.publish_text_linkedin(token, f"urn:li:person:{person_id}", payload.text)
+    except HTTPException as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "linkedin",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "http_status": exc.status_code},
+        )
+        raise
+    except Exception as exc:
+        await _record_social_outcome(
+            db, current.shop_domain, shop_id, account_name, "linkedin",
+            "marketing.publish_failed", "failed", None,
+            {"stage": "publish", "error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=502, detail="LinkedIn publishing failed; review the provider connection and permissions") from exc
+    audit_recorded = await _record_social_outcome(
+        db, current.shop_domain, shop_id, account_name, "linkedin",
+        "marketing.published", "published", _external_result_id(result),
+        {"content_length": len(payload.text)},
+    )
+    return {"status": "published", "result": result, "audit_recorded": audit_recorded}

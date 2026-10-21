@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
+from datetime import timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.auth.dependencies import CurrentUser, get_current_shop
 from app.models.database import get_db
-from app.models.schemas import Shop
+from app.models.schemas import AuditLog, Shop
 from app.security.tokens import decrypt_token
+from app.services.audit import record_audit_event
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
 from app.shopify.http_errors import shopify_http_error
@@ -107,6 +110,42 @@ def _score_product_seo(product: dict[str, Any]) -> tuple[int, list[str], list[st
     return max(0, score), issues, recommendations
 
 
+@router.get("/history")
+async def marketing_history(
+    current: CurrentUser = Depends(get_current_shop),
+    db=Depends(get_db),
+):
+    """Return the current merchant's recent SEO/marketing outcomes only."""
+    shop = await _shop(current, db)
+    result = await db.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.shop_id == shop.id,
+            or_(AuditLog.action.like("seo.%"), AuditLog.action.like("marketing.%")),
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(50)
+    )
+    items = []
+    for event in result.scalars().all():
+        try:
+            details = json.loads(event.details_json or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        created_at = event.created_at
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        items.append({
+            "id": event.id,
+            "action": event.action,
+            "entity_type": event.entity_type,
+            "entity_id": event.entity_id,
+            "details": details,
+            "created_at": created_at.isoformat() if created_at else None,
+        })
+    return {"items": items}
+
+
 @router.post("/analyze")
 async def analyze_seo(
     body: ProductRequest,
@@ -130,20 +169,47 @@ async def generate_seo(
     db=Depends(get_db),
 ):
     shop = await _shop(current, db)
+    client = _client(shop)
+    shop_id, shop_domain = shop.id, shop.shop_domain
+    await db.commit()
     try:
-        product = await _get_product(_client(shop), body.product_id)
-        await db.commit()
+        product = await _get_product(client, body.product_id)
         result, model, latency = await SEOService(OpenRouterService()).generate(product, model=body.model)
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="seo.preview_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={"status": "failed", "product_title": product.get("title"), "error_type": "ai_provider_error"},
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     generated = result.model_dump()
     # Report the score against the generated fields, using the same deterministic
     # scoring rules as Analyze rather than trusting a model-supplied score.
     generated_product = {**product, "seo_title": result.seo_title, "seo_description": result.meta_description, "descriptionHtml": result.optimized_description_html, "tags": result.tags}
     generated["seo_score"], generated["issues"], generated["recommendations"] = _score_product_seo(generated_product)
-    return {"product": product, "result": generated, "model": model, "latency_ms": round(latency, 2)}
+    audit_recorded = await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action="seo.preview",
+        entity_type="product",
+        entity_id=body.product_id,
+        details={
+            "status": "preview_ready",
+            "product_title": product.get("title"),
+            "seo_score": generated.get("seo_score"),
+            "model": model,
+            "latency_ms": round(latency, 2),
+            "suggested_fields": ["title", "descriptionHtml", "seo", "tags", "image_alt_text"],
+        },
+    )
+    return {"product": product, "result": generated, "model": model, "latency_ms": round(latency, 2), "audit_recorded": audit_recorded}
 
 
 @router.post("/apply")
@@ -196,16 +262,67 @@ async def apply_seo(
         raise HTTPException(status_code=400, detail="No permitted SEO changes supplied")
     shop = await _shop(current, db)
     client = _client(shop)
+    shop_id, shop_domain = shop.id, shop.shop_domain
+    await db.commit()
     try:
+        before = await _get_product(client, body.product_id)
+        if image_alt_text and len(image_alt_text) > len(before.get("images") or []):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="More image alt-text values were supplied than this product has images.",
+            )
         result = await client.update_product(body.product_id, changes) if changes else {"productUpdate": {"product": {"id": body.product_id}, "userErrors": []}}
+        update_payload = result.get("productUpdate") or {}
+        user_errors = update_payload.get("userErrors") or []
+        if user_errors:
+            messages = [str(item.get("message") or "Shopify rejected a field") for item in user_errors if isinstance(item, dict)]
+            await record_audit_event(
+                db,
+                shop_id=shop_id,
+                shop_domain=shop_domain,
+                action="seo.apply_failed",
+                entity_type="product",
+                entity_id=body.product_id,
+                details={
+                    "status": "failed",
+                    "product_title": before.get("title"),
+                    "fields": sorted(changes.keys()),
+                    "error_count": len(user_errors),
+                    "error_type": "shopify_user_errors",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Shopify rejected the requested changes: " + "; ".join(messages[:5]),
+            )
+        if changes and not update_payload.get("product"):
+            await record_audit_event(
+                db,
+                shop_id=shop_id,
+                shop_domain=shop_domain,
+                action="seo.apply_failed",
+                entity_type="product",
+                entity_id=body.product_id,
+                details={
+                    "status": "failed",
+                    "product_title": before.get("title"),
+                    "fields": sorted(changes.keys()),
+                    "error_type": "shopify_update_not_confirmed",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Shopify did not confirm the requested product update. Reload the product before retrying.",
+            )
         media_result = None
+        media_error = None
         if image_alt_text:
-            current_product = await _get_product(client, body.product_id)
-            media_nodes = current_product.get("images") or []
-            media_updates = []
-            for index, alt in enumerate(image_alt_text):
-                if index < len(media_nodes) and media_nodes[index].get("id"):
-                    media_updates.append({"id": media_nodes[index]["id"], "alt": alt})
+            media_nodes = before.get("images") or []
+            media_updates = [
+                {"id": media_nodes[index]["id"], "alt": alt}
+                for index, alt in enumerate(image_alt_text)
+                if index < len(media_nodes) and media_nodes[index].get("id")
+            ]
             if media_updates:
                 media_gql = """
                 mutation UpdateProductMedia($productId: ID!, $media: [UpdateMediaInput!]!) {
@@ -215,14 +332,121 @@ async def apply_seo(
                   }
                 }
                 """
-                media_result = await client.graphql(media_gql, {"productId": body.product_id, "media": media_updates})
-                media_payload = media_result.get("productUpdateMedia") or {}
-                if media_payload.get("mediaUserErrors"):
-                    raise ShopifyAPIError("Shopify image alt-text update failed", status_code=200, response=media_result)
+                try:
+                    media_result = await client.graphql(media_gql, {"productId": body.product_id, "media": media_updates})
+                    media_payload = media_result.get("productUpdateMedia") or {}
+                    if media_payload.get("mediaUserErrors"):
+                        media_error = "Shopify rejected image alt-text changes"
+                except ShopifyAPIError as exc:
+                    # Product text may already have been updated; report this as partial
+                    # success instead of implying the entire operation was rolled back.
+                    media_error = "Image alt-text update failed after product fields were applied"
         updated = await _get_product(client, body.product_id)
     except ShopifyAPIError as exc:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="seo.apply_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={
+                "status": "failed",
+                "product_title": before.get("title") if "before" in locals() else None,
+                "error_type": "shopify_api_error",
+                "http_status": exc.status_code,
+            },
+        )
         _shopify_error(exc)
-    return {"success": True, "changes": {**changes, **({"image_alt_text": image_alt_text} if image_alt_text else {})}, "shopify": result, "media": media_result, "product": updated}
+
+    mismatched_fields = []
+    if "title" in changes and updated.get("title") != changes["title"]:
+        mismatched_fields.append("title")
+    if "handle" in changes and updated.get("handle") != changes["handle"]:
+        mismatched_fields.append("handle")
+    if "tags" in changes and set(updated.get("tags") or []) != set(changes["tags"]):
+        mismatched_fields.append("tags")
+    if "seo" in changes:
+        requested_seo = changes["seo"]
+        if "title" in requested_seo and updated.get("seo_title") != requested_seo["title"]:
+            mismatched_fields.append("seo.title")
+        if "description" in requested_seo and updated.get("seo_description") != requested_seo["description"]:
+            mismatched_fields.append("seo.description")
+    if image_alt_text:
+        updated_images = updated.get("images") or []
+        for index, alt_text in enumerate(image_alt_text):
+            if index < len(updated_images) and updated_images[index].get("alt") != alt_text:
+                mismatched_fields.append("image_alt_text")
+                break
+    if mismatched_fields and set(mismatched_fields) != {"image_alt_text"}:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="seo.apply_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={
+                "status": "verification_failed",
+                "product_title": updated.get("title"),
+                "fields": sorted(set(mismatched_fields)),
+                "error_type": "post_update_verification_mismatch",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Shopify accepted the update request, but verification did not confirm every field: "
+            + ", ".join(sorted(set(mismatched_fields)))
+            + ". Review the product before retrying.",
+        )
+
+    partial_success = bool(media_error or "image_alt_text" in mismatched_fields)
+    failed_fields = ["image_alt_text"] if partial_success else []
+    before_snapshot = {
+        "title": before.get("title"),
+        "seo_title": before.get("seo_title"),
+        "seo_description": before.get("seo_description"),
+        "handle": before.get("handle"),
+        "tags": before.get("tags") or [],
+    }
+    after_snapshot = {
+        "title": updated.get("title"),
+        "seo_title": updated.get("seo_title"),
+        "seo_description": updated.get("seo_description"),
+        "handle": updated.get("handle"),
+        "tags": updated.get("tags") or [],
+    }
+    audit_recorded = await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action="seo.partial_success" if partial_success else "seo.applied",
+        entity_type="product",
+        entity_id=body.product_id,
+        details={
+            "status": "partial_success" if partial_success else "applied",
+            "product_title": updated.get("title"),
+            "fields": sorted([*changes.keys(), *(["image_alt_text"] if image_alt_text and not partial_success else [])]),
+            "failed_fields": failed_fields,
+            "media_error": media_error,
+            "before": before_snapshot,
+            "after": after_snapshot,
+        },
+    )
+    return {
+        "success": True,
+        "partial_success": partial_success,
+        "failed_fields": failed_fields,
+        "message": (
+            "Product SEO fields were applied, but image alt text could not be confirmed."
+            if partial_success else "All approved SEO changes were applied and verified."
+        ),
+        "audit_recorded": audit_recorded,
+        "changes": {**changes, **({"image_alt_text": image_alt_text} if image_alt_text else {})},
+        "shopify": result,
+        "media": media_result,
+        "product": updated,
+    }
 
 
 @router.post("/creative")
@@ -232,9 +456,11 @@ async def generate_product_creative(
     db=Depends(get_db),
 ):
     shop = await _shop(current, db)
+    client = _client(shop)
+    shop_id, shop_domain = shop.id, shop.shop_domain
+    await db.commit()
     try:
-        product = await _get_product(_client(shop), body.product_id)
-        await db.commit()
+        product = await _get_product(client, body.product_id)
         marketing_result, _, _ = await generate_marketing(OpenRouterService(), product, model=body.model)
         image = marketing_result.enhanced_image_url or marketing_result.image_url
         model = settings.openrouter_image_model if marketing_result.enhanced_image_url else None
@@ -242,7 +468,31 @@ async def generate_product_creative(
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="marketing.creative_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={"status": "failed", "product_title": product.get("title"), "error_type": "ai_provider_error"},
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    audit_recorded = await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action="marketing.creative_preview",
+        entity_type="product",
+        entity_id=body.product_id,
+        details={
+            "status": "preview_ready" if image else "partial_success",
+            "product_title": product.get("title"),
+            "image_available": bool(image),
+            "image_enhancement_source": marketing_result.image_enhancement_source,
+            "error": marketing_result.image_enhancement_error,
+        },
+    )
     return {
         "product": product,
         "image": image,
@@ -250,6 +500,7 @@ async def generate_product_creative(
         "latency_ms": round(latency, 2),
         "used_reference_image": True,
         "image_source": "shopify",
+        "audit_recorded": audit_recorded,
         "image_status": {
             "image_enhancement_source": marketing_result.image_enhancement_source,
             "error": marketing_result.image_enhancement_error,
@@ -267,13 +518,11 @@ async def generate_full_campaign(
     """Generate the complete SEO + marketing + creative package in one live-store workflow."""
     shop = await _shop(current, db)
     client = _client(shop)
+    shop_id, shop_domain = shop.id, shop.shop_domain
+    # Release the tenant DB transaction before the long-running external calls.
+    await db.commit()
     try:
         product = await _get_product(client, body.product_id)
-        # Release the tenant DB transaction before the long-running external AI calls.
-        # The dependency otherwise holds a PostgreSQL connection open for the entire
-        # 60-120s workflow, which can leave the transaction's connection stale/closed
-        # before FastAPI attempts the dependency's final commit. No DB work follows.
-        await db.commit()
         ai = OpenRouterService()
         seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model)
         marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model)
@@ -287,9 +536,42 @@ async def generate_full_campaign(
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="marketing.campaign_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={"status": "failed", "product_title": product.get("title"), "error_type": "ai_provider_error"},
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    campaign_audit_recorded = await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action="marketing.campaign_preview",
+        entity_type="product",
+        entity_id=body.product_id,
+        details={
+            "status": "partial_success" if image_error else "preview_ready",
+            "product_title": product.get("title"),
+            "seo_score": _score_product_seo({
+                **product,
+                "seo_title": seo_result.seo_title,
+                "seo_description": seo_result.meta_description,
+                "descriptionHtml": seo_result.optimized_description_html,
+                "tags": seo_result.tags,
+            })[0],
+            "has_marketing_copy": bool(marketing_result),
+            "image_available": bool(image),
+            "partial_success": bool(image_error),
+            "models": {"seo": seo_model, "marketing": marketing_model},
+        },
+    )
     return {
         "product": product,
+        "audit_recorded": campaign_audit_recorded,
         "seo": seo_result.model_dump(),
         "marketing": marketing_result.model_dump(),
         "creative": {
@@ -313,12 +595,38 @@ async def generate_product_marketing(
     db=Depends(get_db),
 ):
     shop = await _shop(current, db)
+    client = _client(shop)
+    shop_id, shop_domain = shop.id, shop.shop_domain
+    await db.commit()
     try:
-        product = await _get_product(_client(shop), body.product_id)
-        await db.commit()
+        product = await _get_product(client, body.product_id)
         result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model)
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
+        await record_audit_event(
+            db,
+            shop_id=shop_id,
+            shop_domain=shop_domain,
+            action="marketing.preview_failed",
+            entity_type="product",
+            entity_id=body.product_id,
+            details={"status": "failed", "product_title": product.get("title"), "error_type": "ai_provider_error"},
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"product": product, "result": result.model_dump(), "model": model, "latency_ms": round(latency, 2)}
+    audit_recorded = await record_audit_event(
+        db,
+        shop_id=shop_id,
+        shop_domain=shop_domain,
+        action="marketing.preview",
+        entity_type="product",
+        entity_id=body.product_id,
+        details={
+            "status": "preview_ready",
+            "product_title": product.get("title"),
+            "model": model,
+            "latency_ms": round(latency, 2),
+            "channels": ["facebook", "instagram", "email"],
+        },
+    )
+    return {"product": product, "result": result.model_dump(), "model": model, "latency_ms": round(latency, 2), "audit_recorded": audit_recorded}

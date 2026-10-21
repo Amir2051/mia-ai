@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Badge,
@@ -33,6 +33,14 @@ type Product = { id: string; title: string; status?: string };
 type Current = { title?: string; seo_title?: string; seo_description?: string; handle?: string; tags?: string[] };
 type Analysis = { seo_score?: number; issues?: string[]; recommendations?: string[] };
 type Busy = null | 'analyze' | 'seo' | 'marketing' | 'image' | 'campaign' | 'apply';
+type HistoryItem = {
+  id: number;
+  action: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  created_at?: string | null;
+  details?: Record<string, unknown>;
+};
 
 export default function Marketing() {
   const session = useSession();
@@ -51,9 +59,26 @@ export default function Marketing() {
   const [tab, setTab] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [includeHandle, setIncludeHandle] = useState(false);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const refreshHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const response = await api.get('/seo/history');
+      setHistory(response.data?.items ?? []);
+      setHistoryError(null);
+    } catch (err) {
+      setHistoryError(errorMessage(err, 'Could not load marketing activity history'));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!session.connected) return;
+    void refreshHistory();
     api
       .get('/products/?query=')
       .then((res) => {
@@ -63,7 +88,7 @@ export default function Marketing() {
       })
       .catch((err) => setError(errorMessage(err, 'Could not load your products')))
       .finally(() => setLoading(false));
-  }, [session.connected]);
+  }, [session.connected, refreshHistory]);
 
   const selected = useMemo(() => products.find((p) => p.id === productId), [products, productId]);
 
@@ -89,19 +114,23 @@ export default function Marketing() {
         setCurrent(res.data.product);
       } else if (kind === 'seo') {
         const res = await api.post('/seo/generate', { product_id: productId });
+        if (res.data?.audit_recorded === false) showToast('SEO preview generated, but activity history could not be saved');
         setSeo(res.data.result);
         setCurrent(res.data.product);
         setTab(0);
       } else if (kind === 'marketing') {
         const res = await api.post('/seo/marketing', { product_id: productId });
+        if (res.data?.audit_recorded === false) showToast('Campaign preview generated, but activity history could not be saved');
         setMarketing(res.data.result);
         setTab(1);
       } else if (kind === 'image') {
         const res = await api.post('/seo/creative', { product_id: productId });
+        if (res.data?.audit_recorded === false) showToast('Creative preview generated, but activity history could not be saved');
         setImage(res.data.image || null);
         setTab(2);
       } else {
         const res = await api.post('/seo/full-campaign', { product_id: productId });
+        if (res.data?.audit_recorded === false) showToast('Campaign prepared, but activity history could not be saved');
         setCurrent(res.data.product);
         setSeo(res.data.seo);
         setMarketing(res.data.marketing);
@@ -113,6 +142,7 @@ export default function Marketing() {
       setError(errorMessage(err, `${labels[kind]} failed. Please try again.`));
     } finally {
       setBusy(null);
+      await refreshHistory();
     }
   }
 
@@ -121,7 +151,7 @@ export default function Marketing() {
     setBusy('apply');
     setError(null);
     try {
-      await api.post('/seo/apply', {
+      const applied = await api.post('/seo/apply', {
         product_id: productId,
         changes: {
           title: seo.optimized_title,
@@ -136,15 +166,26 @@ export default function Marketing() {
       });
       setConfirmOpen(false);
       setSeo(null);
-      showToast('SEO changes are live in Shopify');
-      const verify = await api.post('/seo/analyze', { product_id: productId });
-      setAnalysis(verify.data);
-      setCurrent(verify.data.product);
+      showToast(
+        applied.data?.partial_success
+          ? 'SEO fields were applied, but image alt text could not be confirmed'
+          : applied.data?.audit_recorded === false
+            ? 'SEO changes were applied, but activity history could not be saved'
+            : 'SEO changes are live in Shopify',
+      );
+      try {
+        const verify = await api.post('/seo/analyze', { product_id: productId });
+        setAnalysis(verify.data);
+        setCurrent(verify.data.product);
+      } catch {
+        setError('Shopify accepted the changes, but the follow-up verification failed. Reload the product to confirm its current state.');
+      }
     } catch (err) {
       setConfirmOpen(false);
       setError(errorMessage(err, 'Shopify did not accept the SEO changes'));
     } finally {
       setBusy(null);
+      await refreshHistory();
     }
   }
 
@@ -325,6 +366,69 @@ export default function Marketing() {
           </Card>
         </Layout.Section>
       </Layout>
+
+      <Card>
+        <BlockStack gap="300">
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="h2" variant="headingMd">Recent SEO & marketing activity</Text>
+            <Button variant="tertiary" onClick={() => void refreshHistory()} loading={historyLoading}>Refresh</Button>
+          </InlineStack>
+          {historyError && <Text as="p" tone="critical">{historyError}</Text>}
+          {historyLoading ? (
+            <Text as="p" tone="subdued">Loading activity…</Text>
+          ) : history.length === 0 ? (
+            <Text as="p" tone="subdued">No SEO or marketing activity recorded yet. Generated previews, approved changes, and social publishing outcomes will appear here.</Text>
+          ) : (
+            <BlockStack gap="200">
+              {history.map((item) => {
+                const details = item.details ?? {};
+                const outcome = String(details.status ?? (
+                  item.action.endsWith('.applied') || item.action.endsWith('.published') ? 'completed' :
+                  item.action.endsWith('.failed') ? 'failed' : 'preview'
+                ));
+                const title = String(details.product_title ?? item.entity_id ?? 'Marketing task');
+                const label = ({
+                  'seo.preview': 'SEO preview generated',
+                  'seo.preview_failed': 'SEO preview failed',
+                  'seo.applied': 'SEO changes applied',
+                  'seo.partial_success': 'SEO partially applied',
+                  'seo.apply_failed': 'SEO apply failed',
+                  'marketing.preview': 'Campaign copy generated',
+                  'marketing.preview_failed': 'Campaign generation failed',
+                  'marketing.creative_preview': 'Creative preview generated',
+                  'marketing.creative_failed': 'Creative generation failed',
+                  'marketing.campaign_preview': 'Full campaign prepared',
+                  'marketing.campaign_failed': 'Full campaign failed',
+                  'marketing.publish_started': 'Social publishing started',
+                  'marketing.published': 'Social post published',
+                  'marketing.publish_failed': 'Social publishing failed',
+                  'marketing.uploaded': 'Video uploaded',
+                } as Record<string, string>)[item.action] ?? item.action.replace(/[._]/g, ' ');
+                const tone = ['applied', 'published', 'completed', 'uploaded'].includes(outcome) ? 'success'
+                  : outcome === 'failed' ? 'critical'
+                  : outcome === 'partial_success' ? 'warning'
+                  : outcome === 'processing' ? 'info' : 'magic';
+                return (
+                  <Box key={item.id} paddingBlock="200">
+                    <InlineStack align="space-between" blockAlign="center" gap="300" wrap={false}>
+                      <BlockStack gap="100">
+                        <Text as="p" fontWeight="medium">{label}</Text>
+                        <Text as="p" variant="bodySm">{title}</Text>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          {item.created_at ? new Date(item.created_at).toLocaleString() : 'Time unavailable'}
+                          {details.provider ? ` · ${String(details.provider)}` : ''}
+                          {Array.isArray(details.fields) && details.fields.length ? ` · ${details.fields.map(String).join(', ')}` : ''}
+                        </Text>
+                      </BlockStack>
+                      <Badge tone={tone}>{outcome.replace(/_/g, ' ')}</Badge>
+                    </InlineStack>
+                  </Box>
+                );
+              })}
+            </BlockStack>
+          )}
+        </BlockStack>
+      </Card>
 
       <Modal
         open={confirmOpen}

@@ -158,3 +158,60 @@ def test_meta_oauth_code_exchange_does_not_require_existing_access_token(monkeyp
     monkeypatch.setattr(settings, 'meta_redirect_uri', 'https://example.test/callback')
     result = asyncio.run(MetaClient().exchange_code('authorization-code'))
     assert result['access_token'] == 'fresh-user-token'
+
+
+def test_facebook_publish_records_outcome_without_storing_post_body(client, monkeypatch):
+    from types import SimpleNamespace
+    from app.auth.dependencies import CurrentUser, get_optional_shop
+    from app.routers import social
+
+    events = []
+
+    async def fake_account(account_id, current, db, account_type):
+        assert account_id == 7
+        assert account_type == "facebook_page"
+        return SimpleNamespace(
+            id=7,
+            shop_id=41,
+            account_name="Demo Page",
+            external_account_id="page-123",
+        ), "provider-token"
+
+    class FakeMetaClient:
+        async def publish_page_post(self, page_id, token, message, link):
+            assert page_id == "page-123"
+            assert token == "provider-token"
+            assert message == "Hello from a test"
+            assert link == "https://example.test/product"
+            return {"id": "page-123_post-456"}
+
+    async def fake_record(*args, **kwargs):
+        events.append(args)
+        return True
+
+    async def authenticated_shop():
+        return CurrentUser(shop_domain="social-publish-audit.myshopify.com")
+
+    monkeypatch.setattr(social, "_get_meta_account", fake_account)
+    monkeypatch.setattr(social, "MetaClient", lambda: FakeMetaClient())
+    monkeypatch.setattr(social, "_record_social_outcome", fake_record)
+    client.app.dependency_overrides[get_optional_shop] = authenticated_shop
+    try:
+        response = client.post("/api/social/meta/facebook/publish", json={
+            "account_id": 7,
+            "message": "Hello from a test",
+            "link": "https://example.test/product",
+        })
+    finally:
+        client.app.dependency_overrides.pop(get_optional_shop, None)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "published"
+    assert response.json()["audit_recorded"] is True
+    assert len(events) == 1
+    # The recorder receives metadata, not the post's actual text.
+    assert events[0][4] == "meta_facebook"
+    assert events[0][5] == "marketing.published"
+    assert events[0][6] == "published"
+    assert events[0][8]["content_length"] == len("Hello from a test")
+    assert "message" not in events[0][8]

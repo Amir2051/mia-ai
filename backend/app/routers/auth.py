@@ -79,7 +79,7 @@ async def login_url(shop: str = Query(..., min_length=1, max_length=255)):
     try:
         shop_domain = _normalize_login_shop(shop)
     except (AuthorizationError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     if not settings.shopify_api_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Shopify app client ID is not configured")
     return {"login_url": f"https://{shop_domain}/admin/apps/{settings.shopify_api_key}", "shop_domain": shop_domain}
