@@ -27,6 +27,14 @@ def _parse_created_at(raw: Any) -> Optional[datetime]:
     if not raw:
         return None
     text = str(raw)
+    try:
+        # Shopify timestamps can include offsets and fractional seconds.
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        pass
     for fmt in (
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%SZ",
@@ -34,10 +42,10 @@ def _parse_created_at(raw: Any) -> Optional[datetime]:
         "%Y-%m-%d",
     ):
         try:
-            dt = datetime.strptime(text, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            parsed = datetime.strptime(text, fmt)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
         except ValueError:
             continue
     return None
@@ -257,6 +265,71 @@ def compute_aov(orders_response: Dict[str, Any]) -> Optional[float]:
         return None
     total = _sum_revenue(orders)
     return round(float(total / Decimal(str(len(orders)))), 2)
+
+
+def compute_period_comparison(
+    orders_response: Dict[str, Any],
+    *,
+    days: int = 30,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Compare rolling current and previous periods using returned Shopify orders.
+
+    Timestamps are compared in UTC. The caller should surface its order-history
+    coverage warning alongside this result when Shopify limits older records.
+    """
+    period_days = max(1, min(int(days), 365))
+    current_end = now or datetime.now(timezone.utc)
+    if current_end.tzinfo is None:
+        current_end = current_end.replace(tzinfo=timezone.utc)
+    current_end = current_end.astimezone(timezone.utc)
+    current_start = current_end - timedelta(days=period_days)
+    previous_start = current_start - timedelta(days=period_days)
+
+    current_orders: List[Dict[str, Any]] = []
+    previous_orders: List[Dict[str, Any]] = []
+    for order in _extract_orders(orders_response):
+        created = _parse_created_at(order.get("createdAt"))
+        if created is None:
+            continue
+        created = created.astimezone(timezone.utc)
+        if current_start <= created < current_end:
+            current_orders.append(order)
+        elif previous_start <= created < current_start:
+            previous_orders.append(order)
+
+    def stats(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+        paid_orders = sum(1 for order in orders if _is_paid_order(order))
+        net_sales = _sum_revenue(orders)
+        return {
+            "orders": len(orders),
+            "paid_orders": paid_orders,
+            "net_sales": float(net_sales),
+            "gross_order_value": float(_sum_gross_order_value(orders)),
+            "average_order_value": round(float(net_sales / Decimal(str(paid_orders))), 2) if paid_orders else 0.0,
+        }
+
+    current = stats(current_orders)
+    previous = stats(previous_orders)
+
+    def change(current_value: float, previous_value: float) -> Optional[float]:
+        if previous_value == 0:
+            return 0.0 if current_value == 0 else None
+        return round(((current_value - previous_value) / abs(previous_value)) * 100, 1)
+
+    return {
+        "period_days": period_days,
+        "timezone": "UTC",
+        "current_period": {"start": current_start.isoformat(), "end": current_end.isoformat()},
+        "previous_period": {"start": previous_start.isoformat(), "end": current_start.isoformat()},
+        "current": current,
+        "previous": previous,
+        "change_percent": {
+            "net_sales": change(current["net_sales"], previous["net_sales"]),
+            "orders": change(float(current["orders"]), float(previous["orders"])),
+            "average_order_value": change(current["average_order_value"], previous["average_order_value"]),
+        },
+    }
 
 
 def filter_orders_by_date(

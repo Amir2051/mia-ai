@@ -193,3 +193,84 @@ def test_filter_orders_by_date_includes_the_entire_end_date():
     response = _orders("2026-10-01T00:00:00Z", "2026-10-02T23:59:59Z", "2026-10-03T00:00:00Z")
     filtered = filter_orders_by_date(response, start="2026-10-02", end="2026-10-02")
     assert filtered["count"] == 1
+
+
+def test_compute_period_comparison_compares_current_and_previous_rolling_windows():
+    from datetime import datetime, timezone
+    from app.services.analytics import compute_period_comparison
+
+    response = {"orders": {"edges": [
+        {"node": {
+            "id": "current-paid", "createdAt": "2026-10-15T12:00:00Z", "displayFinancialStatus": "PAID",
+            "totalPriceSet": {"shopMoney": {"amount": "100.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "80.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "current-pending", "createdAt": "2026-10-10T12:00:00Z", "displayFinancialStatus": "PENDING",
+            "totalPriceSet": {"shopMoney": {"amount": "30.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "30.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "previous-paid", "createdAt": "2026-09-10T12:00:00Z", "displayFinancialStatus": "PAID",
+            "totalPriceSet": {"shopMoney": {"amount": "50.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "45.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "previous-cancelled", "createdAt": "2026-09-05T12:00:00Z", "displayFinancialStatus": "PAID",
+            "cancelledAt": "2026-09-06T12:00:00Z",
+            "totalPriceSet": {"shopMoney": {"amount": "20.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "0.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "outside", "createdAt": "2026-08-01T12:00:00Z", "displayFinancialStatus": "PAID",
+            "totalPriceSet": {"shopMoney": {"amount": "500.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "500.00", "currencyCode": "USD"}},
+        }},
+    ]}}
+
+    result = compute_period_comparison(
+        response,
+        days=30,
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["timezone"] == "UTC"
+    assert result["current_period"]["start"] == "2026-09-20T12:00:00+00:00"
+    assert result["previous_period"]["start"] == "2026-08-21T12:00:00+00:00"
+    assert result["current"] == {
+        "orders": 2,
+        "paid_orders": 1,
+        "net_sales": 80.0,
+        "gross_order_value": 130.0,
+        "average_order_value": 80.0,
+    }
+    assert result["previous"] == {
+        "orders": 2,
+        "paid_orders": 1,
+        "net_sales": 45.0,
+        "gross_order_value": 50.0,
+        "average_order_value": 45.0,
+    }
+    assert result["change_percent"]["net_sales"] == 77.8
+    assert result["change_percent"]["orders"] == 0.0
+    assert result["change_percent"]["average_order_value"] == 77.8
+
+
+def test_period_comparison_uses_null_when_previous_period_has_no_baseline():
+    from datetime import datetime, timezone
+    from app.services.analytics import compute_period_comparison
+
+    response = {"orders": {"edges": [
+        {"node": {
+            "id": "new-order", "createdAt": "2026-10-15T12:00:00Z", "displayFinancialStatus": "PAID",
+            "totalPriceSet": {"shopMoney": {"amount": "25.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "25.00", "currencyCode": "USD"}},
+        }},
+    ]}}
+    result = compute_period_comparison(
+        response,
+        days=30,
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    assert result["change_percent"]["net_sales"] is None
+    assert result["change_percent"]["orders"] is None

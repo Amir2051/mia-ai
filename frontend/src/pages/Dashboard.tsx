@@ -32,6 +32,22 @@ type Sale = {
   is_cancelled?: boolean;
 };
 type TopProduct = { title?: string | null; sku?: string | null; units_sold?: number | null; revenue?: number | null };
+type PeriodStats = {
+  orders: number;
+  paid_orders: number;
+  net_sales: number;
+  gross_order_value: number;
+  average_order_value: number;
+};
+type PeriodComparison = {
+  period_days: number;
+  timezone: string;
+  current_period: { start: string; end: string };
+  previous_period: { start: string; end: string };
+  current: PeriodStats;
+  previous: PeriodStats;
+  change_percent: { net_sales: number | null; orders: number | null; average_order_value: number | null };
+};
 type Summary = {
   revenue?: number | null;
   net_sales?: number | null;
@@ -46,11 +62,29 @@ type Summary = {
   customer_count_warning?: string | null;
   coverage_warning?: string | null;
   product_revenue_note?: string | null;
+  period_comparison?: PeriodComparison | null;
   average_order_value?: number | null;
   recent_sales?: Sale[] | null;
   top_products?: TopProduct[] | null;
 };
-type MiaContext = { low_stock?: Array<{ title: string; inventory: number }>; counts?: { products?: number } };
+type MiaContext = {
+  low_stock?: Array<{ title: string; inventory: number }>;
+  counts?: { products?: number | null };
+  available?: { products?: boolean };
+};
+type Insight = { title: string; description: string; tone: 'critical' | 'warning' | 'success' | 'info' };
+
+function changeLabel(value: number | null | undefined): string {
+  if (value == null) return 'No baseline';
+  return (value > 0 ? '+' : '') + value.toFixed(1) + '%';
+}
+
+function changeTone(value: number | null | undefined): 'critical' | 'warning' | 'success' | 'info' {
+  if (value == null) return 'warning';
+  if (value > 0) return 'success';
+  if (value < 0) return 'critical';
+  return 'info';
+}
 
 export default function Dashboard() {
   const session = useSession();
@@ -59,6 +93,7 @@ export default function Dashboard() {
   const [context, setContext] = useState<MiaContext | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -67,7 +102,15 @@ export default function Dashboard() {
       .then(([analytics, mia]) => {
         if (analytics.status === 'fulfilled') setSummary(analytics.value.data as Summary);
         else setError('We could not load your Shopify sales right now.');
-        if (mia.status === 'fulfilled') setContext(mia.value.data as MiaContext);
+        if (mia.status === 'fulfilled') {
+          const miaContext = mia.value.data as MiaContext;
+          setContext(miaContext);
+          setContextError(miaContext?.available?.products === false
+            ? 'Product inventory could not be read from Shopify; the low-stock list is unavailable, not empty.'
+            : null);
+        } else {
+          setContextError('Product inventory could not be loaded from Shopify.');
+        }
       })
       .finally(() => setLoading(false));
   }, []);
@@ -83,6 +126,53 @@ export default function Dashboard() {
   const sales = summary?.recent_sales ?? [];
   const topProducts = summary?.top_products ?? [];
   const lowStock = context?.low_stock ?? [];
+  const comparison = summary?.period_comparison;
+  const insights: Insight[] = [];
+  const netSalesChange = comparison?.change_percent.net_sales;
+  const orderChange = comparison?.change_percent.orders;
+  const aovChange = comparison?.change_percent.average_order_value;
+
+  if (netSalesChange != null && netSalesChange <= -10) {
+    insights.push({
+      title: 'Net sales are down ' + Math.abs(netSalesChange).toFixed(1) + '%',
+      description: 'Compare campaign traffic, conversion rates, and the top products from the current period before changing prices or ad spend.',
+      tone: 'critical',
+    });
+  } else if (netSalesChange != null && netSalesChange >= 10) {
+    insights.push({
+      title: 'Net sales are up ' + netSalesChange.toFixed(1) + '%',
+      description: 'Review which products and campaigns contributed most so you can prioritize the strongest performers.',
+      tone: 'success',
+    });
+  }
+  if (aovChange != null && aovChange <= -10) {
+    insights.push({
+      title: 'Average order value is down ' + Math.abs(aovChange).toFixed(1) + '%',
+      description: 'Consider testing bundles or relevant cross-sells on proven products; compare the results before making a permanent change.',
+      tone: 'warning',
+    });
+  }
+  if ((summary?.unpaid_orders ?? 0) > 0) {
+    insights.push({
+      title: String(summary?.unpaid_orders) + ' unpaid order' + (summary?.unpaid_orders === 1 ? '' : 's') + ' in the returned history',
+      description: 'Review their payment status before treating those orders as collected sales.',
+      tone: 'warning',
+    });
+  }
+  if ((summary?.cancelled_orders ?? 0) > 0) {
+    insights.push({
+      title: String(summary?.cancelled_orders) + ' cancelled order' + (summary?.cancelled_orders === 1 ? '' : 's') + ' in the returned history',
+      description: 'Review cancellation reasons to see whether product availability, shipping, or checkout issues are recurring.',
+      tone: 'warning',
+    });
+  }
+  if (lowStock.length > 0) {
+    insights.push({
+      title: String(lowStock.length) + ' product' + (lowStock.length === 1 ? ' is' : 's are') + ' low on stock',
+      description: lowStock.slice(0, 3).map((item) => item.title).join(', ') + (lowStock.length > 3 ? ' and more' : '') + '. Review inventory before promoting these products.',
+      tone: 'critical',
+    });
+  }
 
   return (
     <Page
@@ -100,6 +190,11 @@ export default function Dashboard() {
         {summary?.customer_count_warning && (
           <Banner tone="info" title="Customer count unavailable">
             <Text as="p">{summary.customer_count_warning}</Text>
+          </Banner>
+        )}
+        {contextError && (
+          <Banner tone="warning" title="Inventory insights unavailable">
+            <Text as="p">{contextError}</Text>
           </Banner>
         )}
 
@@ -130,6 +225,58 @@ export default function Dashboard() {
             loading={loading}
           />
         </InlineGrid>
+
+        {comparison && (
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+                <BlockStack gap="050">
+                  <Text as="h2" variant="headingMd">Sales trend</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Last {comparison.period_days} rolling days vs the previous {comparison.period_days} days · {comparison.timezone}
+                  </Text>
+                </BlockStack>
+                <Badge tone={changeTone(netSalesChange)}>{changeLabel(netSalesChange) + ' net sales'}</Badge>
+              </InlineStack>
+              <InlineGrid columns={{ xs: 1, md: 3 }} gap="400">
+                {([
+                  { label: 'Net sales', current: comparison.current.net_sales, previous: comparison.previous.net_sales, change: netSalesChange, format: (value: number) => formatMoney(value, currency) },
+                  { label: 'Orders', current: comparison.current.orders, previous: comparison.previous.orders, change: orderChange, format: (value: number) => formatNumber(value) },
+                  { label: 'Average order value', current: comparison.current.average_order_value, previous: comparison.previous.average_order_value, change: aovChange, format: (value: number) => formatMoney(value, currency) },
+                ]).map((metric) => (
+                  <Box key={metric.label} borderColor="border" borderWidth="025" borderRadius="200" padding="300">
+                    <BlockStack gap="200">
+                      <Text as="span" tone="subdued" variant="bodySm">{metric.label}</Text>
+                      <Text as="p" variant="headingLg">{metric.format(metric.current)}</Text>
+                      <InlineStack align="space-between" blockAlign="center" gap="200">
+                        <Text as="span" tone="subdued" variant="bodySm">Previous: {metric.format(metric.previous)}</Text>
+                        <Badge tone={changeTone(metric.change)}>{changeLabel(metric.change)}</Badge>
+                      </InlineStack>
+                    </BlockStack>
+                  </Box>
+                ))}
+              </InlineGrid>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Comparison uses the order history returned by Shopify. Net sales exclude unpaid and cancelled orders and use Shopify's current subtotal after refunds/returns; percentage change is unavailable when the prior period has no baseline. Any order-history warning above also applies here.
+              </Text>
+            </BlockStack>
+          </Card>
+        )}
+
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h2" variant="headingMd">Actionable insights</Text>
+            {insights.length ? insights.map((insight) => (
+              <Banner key={insight.title} tone={insight.tone} title={insight.title}>
+                <Text as="p">{insight.description}</Text>
+              </Banner>
+            )) : (
+              <Text as="p" tone="subdued">
+                No major trend or inventory flags were identified from the data returned by Shopify. Check the comparison baseline and order-history coverage before drawing conclusions.
+              </Text>
+            )}
+          </BlockStack>
+        </Card>
 
         <Card>
           <InlineStack align="space-between" blockAlign="center" gap="400" wrap>

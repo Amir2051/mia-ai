@@ -9,7 +9,7 @@ from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
 from app.models.schemas import Shop
 from app.security.tokens import decrypt_token
-from app.services.analytics import compute_dashboard, compute_recent_sales, compute_top_products, filter_orders_by_date, filter_orders_response
+from app.services.analytics import compute_dashboard, compute_period_comparison, compute_recent_sales, compute_top_products, filter_orders_by_date, filter_orders_response
 from app.services.orders import OrderService
 from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
@@ -40,6 +40,7 @@ class AnalyticsResponse(BaseModel):
     coverage_warning: Optional[str] = None
     data_complete: Optional[bool] = None
     product_revenue_note: Optional[str] = None
+    period_comparison: Optional[Dict[str, Any]] = None
 
 async def _current_shop_or_connected_error(current: Optional[CurrentUser], db) -> Optional[Shop]:
     if not current:
@@ -207,6 +208,7 @@ async def analytics(start: Optional[str] = Query(None), end: Optional[str] = Que
         coverage_warning=_coverage_warning(shop, start, end, data_complete),
         data_complete=data_complete,
         product_revenue_note=PRODUCT_REVENUE_NOTE,
+        period_comparison=compute_period_comparison(order_data) if not start and not end else None,
     )
 
 @router.get("/products", response_model=AnalyticsResponse)
