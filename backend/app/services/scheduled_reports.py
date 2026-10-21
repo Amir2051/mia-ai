@@ -8,7 +8,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from app.models.database import AsyncSessionLocal
 from app.models.schemas import ScheduledReport, Shop
@@ -331,13 +331,22 @@ async def dispatch_due_reports(limit: int = 5) -> int:
     """Claim due jobs with PostgreSQL row locks so multiple web workers do not duplicate runs."""
     now = datetime.now(timezone.utc)
     now_naive = now.replace(tzinfo=None)
+    stale_before = now_naive - timedelta(minutes=30)
     claimed: list[tuple[int, int]] = []
     async with AsyncSessionLocal() as db:
         async with db.begin():
             await db.execute(text("select set_config(:setting, 'true', true)"), {"setting": SCHEDULER_FLAG})
             result = await db.execute(
                 select(ScheduledReport)
-                .where(ScheduledReport.enabled.is_(True), ScheduledReport.next_run_at <= now_naive)
+                .where(
+                    ScheduledReport.enabled.is_(True),
+                    ScheduledReport.next_run_at <= now_naive,
+                    or_(
+                        ScheduledReport.last_status != "running",
+                        ScheduledReport.last_run_at.is_(None),
+                        ScheduledReport.last_run_at < stale_before,
+                    ),
+                )
                 .order_by(ScheduledReport.next_run_at)
                 .limit(limit)
                 .with_for_update(skip_locked=True)

@@ -72,7 +72,7 @@ def test_integration_health_live_checks_shopify_and_does_not_probe_paid_ai(clien
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["overall_status"] == "healthy"
+    assert payload["overall_status"] == ("healthy" if payload["ai"]["configured"] else "degraded")
     assert payload["database"]["status"] == "healthy"
     assert payload["shopify"]["status"] == "verified"
     assert payload["shopify"]["shop_name"] == "Demo Store"

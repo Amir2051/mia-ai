@@ -1,7 +1,7 @@
 """Manage recurring in-app sales reports for the authenticated Shopify shop."""
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -239,14 +239,43 @@ async def run_scheduled_report_now(
 ):
     shop = await _current_shop(current, db)
     result = await db.execute(
-        select(ScheduledReport).where(
+        select(ScheduledReport)
+        .where(
             ScheduledReport.id == schedule_id,
             ScheduledReport.shop_id == shop.id,
         )
+        .with_for_update()
     )
     schedule = result.scalar_one_or_none()
     if schedule is None:
         raise HTTPException(status_code=404, detail="Scheduled report not found")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stale_before = now - timedelta(minutes=30)
+    if (
+        schedule.last_status == "running"
+        and schedule.last_run_at is not None
+        and schedule.last_run_at >= stale_before
+    ):
+        raise HTTPException(status_code=409, detail="This report is already running. Wait for it to finish before starting another run.")
+
+    # If the scheduled time has already passed, move it forward before claiming
+    # the manual run; otherwise the dispatcher could immediately run it again.
+    if schedule.next_run_at is not None and schedule.next_run_at <= now:
+        schedule.next_run_at = next_report_run_at(
+            schedule.frequency,
+            schedule.schedule_time,
+            schedule.timezone,
+            schedule.day_of_week,
+            schedule.day_of_month,
+            now=datetime.now(timezone.utc),
+        )
+
+    # Claim the row before leaving this transaction so concurrent manual runs
+    # and the scheduled dispatcher cannot start duplicate work for this report.
+    schedule.last_status = "running"
+    schedule.last_run_at = now
+    schedule.last_error = None
     await db.commit()
     outcome = await execute_scheduled_report(
         schedule.id,

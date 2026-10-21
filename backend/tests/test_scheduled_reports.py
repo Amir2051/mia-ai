@@ -156,6 +156,20 @@ def test_scheduled_report_api_is_shop_scoped_and_supports_pause_and_delete(clien
         assert paused.status_code == 200, paused.text
         assert paused.json()["enabled"] is False
 
+        from app.models.database import AsyncSessionLocal
+        from app.models.schemas import ScheduledReport
+        from sqlalchemy import select
+
+        async def mark_schedule_due():
+            async with AsyncSessionLocal() as db:
+                row = (await db.execute(
+                    select(ScheduledReport).where(ScheduledReport.id == schedule["id"])
+                )).scalar_one()
+                row.next_run_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+                await db.commit()
+
+        asyncio.run(mark_schedule_due())
+
         run_call = {}
         async def fake_execute(schedule_id, shop_id, shop_domain, *, internal_scheduler=False):
             run_call.update({
@@ -169,9 +183,14 @@ def test_scheduled_report_api_is_shop_scoped_and_supports_pause_and_delete(clien
         monkeypatch.setattr("app.routers.reports.execute_scheduled_report", fake_execute)
         run_now = client.post(f"/api/reports/schedules/{schedule['id']}/run-now")
         assert run_now.status_code == 200, run_now.text
+        refreshed = client.get("/api/reports/schedules").json()["items"][0]
+        assert datetime.fromisoformat(refreshed["next_run_at"]) > datetime.now(timezone.utc).replace(tzinfo=None)
         assert run_call["schedule_id"] == schedule["id"]
         assert run_call["shop_domain"] == shop_domain
         assert run_call["internal_scheduler"] is False
+
+        duplicate_run = client.post(f"/api/reports/schedules/{schedule['id']}/run-now")
+        assert duplicate_run.status_code == 409, duplicate_run.text
 
         invalid_timezone = client.post("/api/reports/schedules", json={
             "name": "Bad timezone",
