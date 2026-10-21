@@ -88,6 +88,9 @@ export default function Social() {
     api
       .get('/social/accounts')
       .then((res) => {
+        if (res.data?.connected === false) {
+          throw new Error('Mia could not verify the Shopify session for social accounts. Close Mia and reopen it from Shopify Admin → Apps, then try again.');
+        }
         const rows: Account[] = res.data?.accounts ?? [];
         setAccounts(rows);
         const firstPage = rows.find((account) => account.account_type === 'facebook_page');
@@ -510,7 +513,7 @@ export default function Social() {
 
             {loading ? (
               <CardSkeleton />
-            ) : accounts.length === 0 ? (
+            ) : accounts.length === 0 && !error ? (
               <Card>
                 <EmptyState
                   heading="Connect Facebook and Instagram"
@@ -520,7 +523,7 @@ export default function Social() {
                   <p>Authorize Meta to link the Facebook Pages you manage. Mia can publish Facebook posts and, for eligible linked Instagram professional accounts, publish image posts too. You choose which Page to use.</p>
                 </EmptyState>
               </Card>
-            ) : (
+            ) : accounts.length === 0 ? null : (
               <>
                 {pages.length > 0 && (
                   <Card>

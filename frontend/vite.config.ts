@@ -23,6 +23,21 @@ const backend = 'http://127.0.0.1:8002';
 export default defineConfig({
   plugins: [fixPolarisCustomMedia(), react()],
 
+  // Keep the shared Shopify UI and framework code out of the application entry
+  // chunk so route-level lazy loading stays effective and shared code can be cached separately.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/node_modules/@shopify/polaris-icons/')) return 'shopify-icons';
+          if (id.includes('/node_modules/@shopify/polaris/')) return 'shopify-polaris';
+          if (id.includes('/node_modules/react-dom/') || id.includes('/node_modules/react/')) return 'react-vendor';
+          if (id.includes('/node_modules/react-router/') || id.includes('/node_modules/react-router-dom/')) return 'router-vendor';
+        },
+      },
+    },
+  },
+
   server: {
     host: '0.0.0.0',
     port: Number(process.env.FRONTEND_PORT || '5173'),
