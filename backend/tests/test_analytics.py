@@ -111,3 +111,85 @@ def test_filter_orders_response_includes_whole_end_day():
     ids = [edge["node"]["id"] for edge in filtered["orders"]["edges"]]
     assert ids == ["gid://shopify/Order/2", "gid://shopify/Order/3"]
     assert compute_dashboard(filtered, {})["revenue"] == 20.0
+
+
+def test_dashboard_excludes_cancelled_and_unpaid_orders_from_net_sales():
+    response = {"orders": {"edges": [
+        {"node": {
+            "id": "paid", "displayFinancialStatus": "PAID",
+            "totalPriceSet": {"shopMoney": {"amount": "100.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "80.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "pending", "displayFinancialStatus": "PENDING",
+            "totalPriceSet": {"shopMoney": {"amount": "200.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "200.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "cancelled", "displayFinancialStatus": "PAID", "cancelledAt": "2026-10-18T12:00:00Z",
+            "totalPriceSet": {"shopMoney": {"amount": "50.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "0.00", "currencyCode": "USD"}},
+        }},
+        {"node": {
+            "id": "refunded", "displayFinancialStatus": "REFUNDED",
+            "totalPriceSet": {"shopMoney": {"amount": "50.00", "currencyCode": "USD"}},
+            "currentSubtotalPriceSet": {"shopMoney": {"amount": "0.00", "currencyCode": "USD"}},
+        }},
+    ]}}
+
+    dashboard = compute_dashboard(response, customers_count=12)
+
+    assert dashboard["revenue"] == 80.0
+    assert dashboard["net_sales"] == 80.0
+    assert dashboard["gross_order_value"] == 350.0
+    assert dashboard["orders"] == 4
+    assert dashboard["paid_orders"] == 1
+    assert dashboard["unpaid_orders"] == 1
+    assert dashboard["refunded_orders"] == 1
+    assert dashboard["cancelled_orders"] == 1
+    assert dashboard["customers"] == 12
+    assert dashboard["average_order_value"] == 80.0
+
+
+def test_dashboard_does_not_report_unavailable_customer_count_as_zero():
+    response = {"orders": {"edges": []}}
+    assert compute_dashboard(response)["customers"] is None
+
+
+def test_top_products_uses_current_quantity_discounted_price_and_paid_orders_only():
+    response = {"orders": {"edges": [
+        {"node": {
+            "id": "paid", "displayFinancialStatus": "PAID",
+            "lineItems": {"edges": [{"node": {
+                "title": "Garden Kit", "sku": "GK-1", "quantity": 3, "currentQuantity": 2,
+                "originalUnitPriceSet": {"shopMoney": {"amount": "10.00", "currencyCode": "USD"}},
+                "discountedUnitPriceSet": {"shopMoney": {"amount": "8.00", "currencyCode": "USD"}},
+            }}]},
+        }},
+        {"node": {
+            "id": "pending", "displayFinancialStatus": "PENDING",
+            "lineItems": {"edges": [{"node": {
+                "title": "Garden Kit", "sku": "GK-1", "quantity": 20,
+                "originalUnitPriceSet": {"shopMoney": {"amount": "10.00", "currencyCode": "USD"}},
+            }}]},
+        }},
+        {"node": {
+            "id": "cancelled", "displayFinancialStatus": "PAID", "cancelledAt": "2026-10-18T12:00:00Z",
+            "lineItems": {"edges": [{"node": {
+                "title": "Garden Kit", "sku": "GK-1", "quantity": 99,
+                "originalUnitPriceSet": {"shopMoney": {"amount": "10.00", "currencyCode": "USD"}},
+            }}]},
+        }},
+    ]}}
+
+    top = compute_top_products(response)
+
+    assert len(top) == 1
+    assert top[0]["units_sold"] == 2
+    assert top[0]["revenue"] == 16.0
+
+
+def test_filter_orders_by_date_includes_the_entire_end_date():
+    response = _orders("2026-10-01T00:00:00Z", "2026-10-02T23:59:59Z", "2026-10-03T00:00:00Z")
+    filtered = filter_orders_by_date(response, start="2026-10-02", end="2026-10-02")
+    assert filtered["count"] == 1

@@ -43,13 +43,57 @@ def _parse_created_at(raw: Any) -> Optional[datetime]:
     return None
 
 
-def _sum_revenue(orders: List[Dict[str, Any]]) -> Decimal:
-    total = Decimal("0")
-    for order in orders:
-        price_set = (order.get("totalPriceSet") or {}).get("shopMoney", {})
+PAID_FINANCIAL_STATUSES = {"PAID", "PARTIALLY_REFUNDED"}
+UNPAID_FINANCIAL_STATUSES = {"AUTHORIZED", "EXPIRED", "PARTIALLY_PAID", "PENDING", "VOIDED"}
+
+
+def _is_cancelled(order: Dict[str, Any]) -> bool:
+    return bool(order.get("cancelledAt"))
+
+
+def _financial_status(order: Dict[str, Any]) -> str:
+    return str(order.get("displayFinancialStatus") or order.get("financialStatus") or "").upper()
+
+
+def _is_paid_order(order: Dict[str, Any]) -> bool:
+    if _is_cancelled(order):
+        return False
+    financial_status = _financial_status(order)
+    # Older fixtures/imported responses may omit status. Real Shopify order
+    # responses include it, so retain backwards compatibility for those inputs.
+    return financial_status in PAID_FINANCIAL_STATUSES if financial_status else True
+
+
+def _money_amount(order: Dict[str, Any], *field_names: str) -> Optional[Decimal]:
+    for field_name in field_names:
+        price_set = (order.get(field_name) or {}).get("shopMoney", {})
         amount = _to_float(price_set.get("amount"))
         if amount is not None:
-            total += Decimal(str(amount))
+            return Decimal(str(amount))
+    return None
+
+
+def _sum_revenue(orders: List[Dict[str, Any]]) -> Decimal:
+    """Net sales proxy: paid, non-cancelled orders after returns/refunds."""
+    total = Decimal("0")
+    for order in orders:
+        if not _is_paid_order(order):
+            continue
+        amount = _money_amount(order, "currentSubtotalPriceSet", "subtotalPriceSet", "totalPriceSet")
+        if amount is not None:
+            total += amount
+    return total
+
+
+def _sum_gross_order_value(orders: List[Dict[str, Any]]) -> Decimal:
+    """Original order totals for non-cancelled orders, before returns/refunds."""
+    total = Decimal("0")
+    for order in orders:
+        if _is_cancelled(order):
+            continue
+        amount = _money_amount(order, "totalPriceSet")
+        if amount is not None:
+            total += amount
     return total
 
 
@@ -70,23 +114,44 @@ def _extract_products(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def compute_dashboard(
     orders_response: Dict[str, Any],
-    customers_response: Dict[str, Any],
+    customers_response: Optional[Dict[str, Any]] = None,
+    *,
+    customers_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     orders = _extract_orders(orders_response)
-    customers = _extract_customers(customers_response)
+    customers = _extract_customers(customers_response or {})
 
-    total_revenue = _sum_revenue(orders)
+    net_sales = _sum_revenue(orders)
+    gross_order_value = _sum_gross_order_value(orders)
     order_count = len(orders)
-    customer_count = len(customers)
-    aov = (
-        float(total_revenue / Decimal(str(order_count)))
-        if order_count
-        else 0.0
+    paid_orders = sum(1 for order in orders if _is_paid_order(order))
+    cancelled_orders = sum(1 for order in orders if _is_cancelled(order))
+    unpaid_orders = sum(
+        1 for order in orders
+        if not _is_cancelled(order)
+        and _financial_status(order) in UNPAID_FINANCIAL_STATUSES
     )
+    refunded_orders = sum(
+        1 for order in orders
+        if not _is_cancelled(order) and _financial_status(order) == "REFUNDED"
+    )
+    if customers_count is not None:
+        customer_count = customers_count
+    elif customers_response is not None:
+        customer_count = len(customers)
+    else:
+        customer_count = None
+    aov = float(net_sales / Decimal(str(paid_orders))) if paid_orders else 0.0
 
     return {
-        "revenue": float(total_revenue),
+        "revenue": float(net_sales),
+        "net_sales": float(net_sales),
+        "gross_order_value": float(gross_order_value),
         "orders": order_count,
+        "paid_orders": paid_orders,
+        "unpaid_orders": unpaid_orders,
+        "refunded_orders": refunded_orders,
+        "cancelled_orders": cancelled_orders,
         "customers": customer_count,
         "average_order_value": round(aov, 2),
     }
@@ -116,20 +181,25 @@ def compute_top_products(
     )
 
     for order in orders:
+        if not _is_paid_order(order):
+            continue
         for item in _line_items_from_order(order):
             title = item.get("title") or "Unknown"
             sku = item.get("sku") or "N/A"
             key = f"{title}|||{sku}"
             product_stats[key]["title"] = title
             product_stats[key]["sku"] = sku
-            product_stats[key]["units_sold"] += int(item.get("quantity") or 0)
+            quantity = int(item.get("currentQuantity", item.get("quantity")) or 0)
+            if quantity <= 0:
+                continue
+            product_stats[key]["units_sold"] += quantity
             price = _to_float(
-                item.get("originalUnitPriceSet", {})
+                (item.get("discountedUnitPriceSet") or item.get("originalUnitPriceSet") or {})
                 .get("shopMoney", {})
                 .get("amount")
             )
             if price is not None:
-                product_stats[key]["revenue"] += Decimal(str(price)) * Decimal(str(item.get("quantity") or 0))
+                product_stats[key]["revenue"] += Decimal(str(price)) * Decimal(str(quantity))
 
     ranked = sorted(
         product_stats.values(),
@@ -157,7 +227,11 @@ def compute_recent_sales(
     enriched = []
     for order in orders:
         created = order.get("createdAt")
-        price_set = (order.get("totalPriceSet") or {}).get("shopMoney", {})
+        price_set = (
+            order.get("currentTotalPriceSet")
+            or order.get("totalPriceSet")
+            or {}
+        ).get("shopMoney", {})
         amount = _to_float(price_set.get("amount"))
         currency = price_set.get("currencyCode")
         enriched.append(
@@ -167,7 +241,9 @@ def compute_recent_sales(
                 "created_at": created,
                 "amount": amount,
                 "currency": currency,
-                "customer": order.get("customer"),
+                "financial_status": _financial_status(order) or None,
+                "cancelled_at": order.get("cancelledAt"),
+                "is_cancelled": _is_cancelled(order),
             }
         )
 
@@ -191,6 +267,8 @@ def filter_orders_by_date(
     orders = _extract_orders(orders_response)
     start_dt = _parse_created_at(start) if start else None
     end_dt = _parse_created_at(end) if end else None
+    if end_dt is not None and end and len(str(end)) == 10:
+        end_dt = end_dt + timedelta(days=1) - timedelta(microseconds=1)
 
     filtered = []
     for order in orders:
@@ -207,6 +285,18 @@ def filter_orders_by_date(
         "orders": filtered,
         "count": len(filtered),
         "revenue": float(_sum_revenue(filtered)),
+        "net_sales": float(_sum_revenue(filtered)),
+        "gross_order_value": float(_sum_gross_order_value(filtered)),
+        "paid_orders": sum(1 for order in filtered if _is_paid_order(order)),
+        "unpaid_orders": sum(
+            1 for order in filtered
+            if not _is_cancelled(order) and _financial_status(order) in UNPAID_FINANCIAL_STATUSES
+        ),
+        "refunded_orders": sum(
+            1 for order in filtered
+            if not _is_cancelled(order) and _financial_status(order) == "REFUNDED"
+        ),
+        "cancelled_orders": sum(1 for order in filtered if _is_cancelled(order)),
     }
 
 

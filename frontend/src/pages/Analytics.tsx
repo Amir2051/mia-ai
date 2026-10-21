@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Banner,
+  Badge,
   BlockStack,
   Box,
   Card,
@@ -20,11 +22,22 @@ import { useSession } from '../lib/session';
 
 type Summary = {
   revenue?: number | null;
+  net_sales?: number | null;
+  gross_order_value?: number | null;
   orders?: number | null;
+  paid_orders?: number | null;
+  unpaid_orders?: number | null;
+  refunded_orders?: number | null;
+  cancelled_orders?: number | null;
   customers?: number | null;
+  customer_count_precision?: string | null;
+  customer_count_warning?: string | null;
+  coverage_warning?: string | null;
+  data_complete?: boolean | null;
+  product_revenue_note?: string | null;
   average_order_value?: number | null;
   top_products?: Array<{ title?: string | null; sku?: string | null; units_sold?: number | null; revenue?: number | null }> | null;
-  recent_sales?: Array<{ id?: string | null; name?: string | null; created_at?: string | null; amount?: number | null; currency?: string | null }> | null;
+  recent_sales?: Array<{ id?: string | null; name?: string | null; created_at?: string | null; amount?: number | null; currency?: string | null; financial_status?: string | null; cancelled_at?: string | null; is_cancelled?: boolean }> | null;
 };
 
 const RANGES = [
@@ -36,7 +49,9 @@ const RANGES = [
   { label: 'Custom range', value: 'custom' },
 ];
 
-const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+const isoDate = (date: Date) => (
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+);
 
 export default function Analytics() {
   const session = useSession();
@@ -100,12 +115,43 @@ export default function Analytics() {
         </Card>
 
         {error && <ErrorBanner message={error} onRetry={load} />}
+        {data?.coverage_warning && (
+          <Banner tone="warning" title="Order history may be incomplete">
+            <Text as="p">{data.coverage_warning}</Text>
+          </Banner>
+        )}
+        {data?.customer_count_warning && (
+          <Banner tone="info" title="Customer count unavailable">
+            <Text as="p">{data.customer_count_warning}</Text>
+          </Banner>
+        )}
 
         <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
-          <StatCard label="Revenue" value={formatMoney(data?.revenue ?? 0, currency)} loading={loading} />
-          <StatCard label="Orders" value={formatNumber(data?.orders ?? 0)} loading={loading} />
-          <StatCard label="Average order value" value={formatMoney(data?.average_order_value ?? 0, currency)} loading={loading} />
-          <StatCard label="Customers" value={formatNumber(data?.customers ?? 0)} helpText="All time" loading={loading} />
+          <StatCard
+            label="Net sales"
+            value={formatMoney(data?.net_sales ?? data?.revenue ?? 0, currency)}
+            helpText="Shopify current subtotal after returns/refunds; tax treatment follows store settings."
+            loading={loading}
+          />
+          <StatCard
+            label="Gross order value"
+            value={formatMoney(data?.gross_order_value ?? 0, currency)}
+            helpText="Non-cancelled orders before returns/refunds; includes unpaid orders."
+            loading={loading}
+          />
+          <StatCard
+            label="Orders"
+            value={formatNumber(data?.orders ?? 0)}
+            helpText={data ? `Paid ${data.paid_orders ?? 0} · unpaid ${data.unpaid_orders ?? 0} · cancelled ${data.cancelled_orders ?? 0}` : undefined}
+            loading={loading}
+          />
+          <StatCard label="Average net paid order value" value={formatMoney(data?.average_order_value ?? 0, currency)} loading={loading} />
+          <StatCard
+            label="Customers"
+            value={data?.customers == null ? '—' : `${formatNumber(data.customers)}${data.customer_count_precision?.toUpperCase() === 'AT_LEAST' ? '+' : ''}`}
+            helpText={data?.customer_count_precision?.toUpperCase() === 'AT_LEAST' ? 'Shopify reports this as a minimum count.' : 'Shopify customer count.'}
+            loading={loading}
+          />
         </InlineGrid>
 
         <Layout>
@@ -116,6 +162,7 @@ export default function Analytics() {
               <Card>
                 <BlockStack gap="400">
                   <Text as="h2" variant="headingMd">Top products by sales</Text>
+                  {data?.product_revenue_note && <Text as="p" variant="bodySm" tone="subdued">{data.product_revenue_note}</Text>}
                   {topProducts.length === 0 ? (
                     <Text as="p" tone="subdued">No sales in this period.</Text>
                   ) : (
@@ -153,6 +200,13 @@ export default function Analytics() {
                         <BlockStack gap="050">
                           <Text as="span" fontWeight="medium">{sale.name || 'Order'}</Text>
                           <Text as="span" variant="bodySm" tone="subdued">{formatDateTime(sale.created_at)}</Text>
+                          {sale.is_cancelled ? (
+                            <Badge tone="critical">Cancelled</Badge>
+                          ) : sale.financial_status ? (
+                            <Badge tone={['PAID', 'PARTIALLY_REFUNDED'].includes(sale.financial_status) ? 'success' : 'warning'}>
+                              {sale.financial_status.replace(/_/g, ' ')}
+                            </Badge>
+                          ) : null}
                         </BlockStack>
                         <Text as="span" numeric>{formatMoney(sale.amount, sale.currency || currency)}</Text>
                       </InlineStack>

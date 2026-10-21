@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Button,
@@ -21,12 +22,30 @@ import { CardSkeleton, ErrorBanner, NotConnected, PageSkeleton } from '../compon
 import { formatDateTime, formatMoney, formatNumber, idPath } from '../lib/format';
 import { useSession } from '../lib/session';
 
-type Sale = { id?: string | null; name?: string | null; created_at?: string | null; amount?: number | null; currency?: string | null };
+type Sale = {
+  id?: string | null;
+  name?: string | null;
+  created_at?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  financial_status?: string | null;
+  is_cancelled?: boolean;
+};
 type TopProduct = { title?: string | null; sku?: string | null; units_sold?: number | null; revenue?: number | null };
 type Summary = {
   revenue?: number | null;
+  net_sales?: number | null;
+  gross_order_value?: number | null;
   orders?: number | null;
+  paid_orders?: number | null;
+  unpaid_orders?: number | null;
+  refunded_orders?: number | null;
+  cancelled_orders?: number | null;
   customers?: number | null;
+  customer_count_precision?: string | null;
+  customer_count_warning?: string | null;
+  coverage_warning?: string | null;
+  product_revenue_note?: string | null;
   average_order_value?: number | null;
   recent_sales?: Sale[] | null;
   top_products?: TopProduct[] | null;
@@ -73,12 +92,43 @@ export default function Dashboard() {
     >
       <BlockStack gap="500">
         {error && <ErrorBanner message={error} onRetry={load} />}
+        {summary?.coverage_warning && (
+          <Banner tone="warning" title="Order history may be incomplete">
+            <Text as="p">{summary.coverage_warning}</Text>
+          </Banner>
+        )}
+        {summary?.customer_count_warning && (
+          <Banner tone="info" title="Customer count unavailable">
+            <Text as="p">{summary.customer_count_warning}</Text>
+          </Banner>
+        )}
 
         <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
-          <StatCard label="Revenue" value={formatMoney(summary?.revenue ?? 0, currency)} loading={loading} />
-          <StatCard label="Orders" value={formatNumber(summary?.orders ?? 0)} loading={loading} />
-          <StatCard label="Average order value" value={formatMoney(summary?.average_order_value ?? 0, currency)} loading={loading} />
-          <StatCard label="Customers" value={formatNumber(summary?.customers ?? 0)} loading={loading} />
+          <StatCard
+            label="Net sales"
+            value={formatMoney(summary?.net_sales ?? summary?.revenue ?? 0, currency)}
+            helpText="Shopify current subtotal after returns/refunds; tax treatment follows store settings."
+            loading={loading}
+          />
+          <StatCard
+            label="Gross order value"
+            value={formatMoney(summary?.gross_order_value ?? 0, currency)}
+            helpText="Non-cancelled orders before returns/refunds; includes unpaid orders."
+            loading={loading}
+          />
+          <StatCard
+            label="Orders"
+            value={formatNumber(summary?.orders ?? 0)}
+            helpText={summary ? `Paid ${summary.paid_orders ?? 0} · unpaid ${summary.unpaid_orders ?? 0} · cancelled ${summary.cancelled_orders ?? 0}` : undefined}
+            loading={loading}
+          />
+          <StatCard label="Average net paid order value" value={formatMoney(summary?.average_order_value ?? 0, currency)} loading={loading} />
+          <StatCard
+            label="Customers"
+            value={summary?.customers == null ? '—' : `${formatNumber(summary.customers)}${summary.customer_count_precision?.toUpperCase() === 'AT_LEAST' ? '+' : ''}`}
+            helpText={summary?.customer_count_precision?.toUpperCase() === 'AT_LEAST' ? 'Shopify reports this as a minimum count.' : 'Shopify customer count.'}
+            loading={loading}
+          />
         </InlineGrid>
 
         <Card>
@@ -129,7 +179,7 @@ export default function Dashboard() {
                   resourceName={{ singular: 'order', plural: 'orders' }}
                   itemCount={sales.length}
                   selectable={false}
-                  headings={[{ title: 'Order' }, { title: 'Date' }, { title: 'Total', alignment: 'end' }]}
+                  headings={[{ title: 'Order' }, { title: 'Date' }, { title: 'Status' }, { title: 'Total', alignment: 'end' }]}
                   emptyState={
                     <Box padding="600">
                       <Text as="p" alignment="center" tone="subdued">
@@ -151,6 +201,17 @@ export default function Dashboard() {
                         </Text>
                       </IndexTable.Cell>
                       <IndexTable.Cell>{formatDateTime(sale.created_at)}</IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {sale.is_cancelled ? (
+                          <Badge tone="critical">Cancelled</Badge>
+                        ) : sale.financial_status ? (
+                          <Badge tone={['PAID', 'PARTIALLY_REFUNDED'].includes(sale.financial_status) ? 'success' : 'warning'}>
+                            {sale.financial_status.replace(/_/g, ' ')}
+                          </Badge>
+                        ) : (
+                          <Text as="span" tone="subdued">Unknown</Text>
+                        )}
+                      </IndexTable.Cell>
                       <IndexTable.Cell>
                         <Text as="span" alignment="end" numeric>
                           {formatMoney(sale.amount, sale.currency || currency)}
