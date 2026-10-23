@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ''
     openrouter_model: str = 'nvidia/nemotron-3-super-120b-a12b:free'
     # Optional stronger model for marketing/SEO copy; empty keeps openrouter_model.
-    openrouter_marketing_model: str = ''
+    openrouter_marketing_model: str = 'openai/gpt-4o-mini'
     openrouter_timeout_seconds: float = 45.0
     openrouter_retries: int = 2
     # Internal selector; resolves to a currently available free image model when one exists.
