@@ -15,6 +15,7 @@ from app.security.rls import set_shop_context
 from app.security.tokens import decrypt_token
 from app.services.meta import MetaAPIError, MetaClient
 from app.shopify.http_errors import shopify_http_error
+from app.shopify.config import settings
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 from app.services.products import ProductService
 from app.services.customers import CustomerService
