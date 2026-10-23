@@ -92,12 +92,6 @@ def test_user_reported_diagnostic_wording_is_detected():
     assert _is_memory_diagnostic(message)
 
 
-def test_user_reported_diagnostic_wording_is_detected():
-    message = ("Please check your available capabilities in this application: I do not have access to a persistent merchant memory feature. "
-               "Is it available for my connected Shopify store? How many merchant preferences are currently saved? "
-               "Do not save anything during this check.")
-    assert _is_memory_diagnostic(message)
-
 
 
 def test_saved_merchant_notes_are_included_in_generation_prompts():
