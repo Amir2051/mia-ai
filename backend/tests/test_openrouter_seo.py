@@ -192,3 +192,15 @@ async def test_chat_json_reports_model_selected_by_provider_failover(monkeypatch
     )
     assert result == {"ok": True}
     assert model == "fallback/actually-used-model"
+
+
+def test_seo_meta_description_fallback_is_in_recommended_length():
+    from app.services.seo import _build_meta_description, _build_seo_title
+
+    product = {"title": "The Inventory Not Tracked Snowboard", "productType": "Snowboard", "vendor": "SafeNestT"}
+    description = _build_meta_description(product)
+    title = _build_seo_title(product)
+    assert 120 <= len(description) <= 160
+    assert "Inventory Not Tracked Snowboard" in description
+    assert 30 <= len(title) <= 70
+    assert title.casefold().count("snowboard") == 1

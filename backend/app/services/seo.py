@@ -88,6 +88,36 @@ def normalize_handle(value: str) -> str:
     return value[:255]
 
 
+def _build_seo_title(product: dict[str, Any]) -> str:
+    """Build a concise, non-repetitive title from verified product fields."""
+    title = plain_text(str(product.get("title") or "Product"))
+    product_type = plain_text(str(product.get("productType") or ""))
+    vendor = plain_text(str(product.get("vendor") or ""))
+    suffix = product_type if product_type and product_type.casefold() not in title.casefold() else ""
+    if not suffix and vendor and vendor.casefold() not in title.casefold():
+        suffix = vendor
+    candidate = f"{title} | {suffix}" if suffix else title
+    return candidate[:70].rsplit(" ", 1)[0] if len(candidate) > 70 else candidate
+
+
+def _build_meta_description(product: dict[str, Any]) -> str:
+    """Use verified catalog facts and a useful 120–160 character description."""
+    title = plain_text(str(product.get("title") or "this product"))
+    if len(title) > 70:
+        title = title[:67].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+    vendor = plain_text(str(product.get("vendor") or ""))[:30]
+    vendor_phrase = f" from {vendor}" if vendor and vendor.casefold() not in title.casefold() else ""
+    description = (
+        f"Shop {title}{vendor_phrase}. Check product details and available options before ordering. "
+        "Visit the listing for more information."
+    )
+    if len(description) < 120:
+        description += " See the full listing online."
+    if len(description) > 160:
+        description = description[:157].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+    return description
+
+
 class SEOService:
     def __init__(self, ai: OpenRouterService | None = None):
         self.ai = ai or OpenRouterService()
@@ -117,7 +147,7 @@ class SEOService:
                     "Product tags are merchant-entered labels, not proof of physical attributes or performance. Do not turn a tag into a factual claim unless the label itself is simply repeated as a category. "
                     "The images field contains image metadata/URLs, not image pixels; do not infer colors, logos, patterns, materials, or other visible details from URLs or filenames. If visual content is not supplied, make image_alt_text a neutral product-name-based description and note that the actual image needs visual review. "
                     "Do not claim in-stock status unless an inventory/status field is supplied. Do not include the price in the SEO title by default. "
-                    "SEO title should normally be 50-60 characters; meta description about 140-160 characters. Use one clear primary keyword derived from the product title/type and repeat it naturally. "
+                    "SEO title should normally be 45-60 characters and never exceed 70; meta description should be 140-160 characters when possible. Use one clear primary keyword derived from the product title/type naturally, without duplicating the same keyword in a suffix. "
                     "Never leave seo_title, meta_description, optimized_title, or optimized_description_html empty. If the source description is empty or uninformative, keep the copy conservative and use only the product title, product type, vendor, and clearly labeled category tags; use placeholders or recommendations for missing specs instead of filling them in. "
                     "Put unverified details in issues/recommendations as questions for the merchant, not as product copy. Never fabricate keyword research, search volumes, or a numerical SEO score without explaining that the score is heuristic. "
                     "optimized_description_html may use only p,strong,em,b,i,ul,ol,li,h2,h3,br,a. "
@@ -169,14 +199,34 @@ class SEOService:
         vendor = str(product.get("vendor") or "").strip()
         primary_keyword = str((raw.get("keywords") or [""])[0]).strip() if isinstance(raw.get("keywords"), list) else str(raw.get("keywords") or "").strip()
         primary_keyword = primary_keyword or product_type or title
-        raw["seo_title"] = str(raw.get("seo_title") or f"{title} | {primary_keyword}")[:70].strip(" |")
-        raw["meta_description"] = str(raw.get("meta_description") or f"Shop {title}. Explore this {primary_keyword.lower()} from {vendor}. View product details and shop online." if vendor else f"Shop {title}. Explore this {primary_keyword.lower()} and view product details online.")[:320].strip()
+        proposed_title = plain_text(str(raw.get("seo_title") or ""))
+        # Keep a model's title only when it is concise, includes the primary keyword,
+        # and doesn't append a duplicate category already present in the product name.
+        if (30 <= len(proposed_title) <= 70
+                and primary_keyword.casefold() in proposed_title.casefold()
+                and not (title.casefold() in proposed_title.casefold()
+                         and proposed_title.casefold().count(primary_keyword.casefold()) > title.casefold().count(primary_keyword.casefold()))):
+            raw["seo_title"] = proposed_title
+        else:
+            raw["seo_title"] = _build_seo_title(product)
+        proposed_description = plain_text(str(raw.get("meta_description") or ""))
+        if 120 <= len(proposed_description) <= 170:
+            raw["meta_description"] = proposed_description
+        else:
+            raw["meta_description"] = _build_meta_description(product)
         raw["optimized_title"] = str(raw.get("optimized_title") or title)[:255].strip()
         description = sanitize_html(str(raw.get("optimized_description_html") or ""))
         if not description:
             context = f" from {vendor}" if vendor else ""
             description = f"<p>Discover {html.escape(title)}{html.escape(context)}. This {html.escape(primary_keyword.lower())} is available in the Shopify store.</p>"
         raw["optimized_description_html"] = description
+        # Keep the alt-text list aligned with the filtered Shopify image list so
+        # each approved value maps to exactly one real image, in stable order.
+        supplied_alt = raw.get("image_alt_text") or []
+        if isinstance(supplied_alt, str):
+            supplied_alt = [supplied_alt]
+        clean_alt = [str(value).strip()[:500] for value in supplied_alt if str(value).strip()]
+        raw["image_alt_text"] = (clean_alt[:len(images)] + [title] * max(0, len(images) - len(clean_alt))) if images else []
         raw["handle_suggestion"] = normalize_handle(str(raw.get("handle_suggestion") or title))
         raw["keywords"] = raw.get("keywords") or [primary_keyword]
         raw["issues"] = raw.get("issues") if isinstance(raw.get("issues"), list) else []
@@ -220,12 +270,14 @@ def marketing_prompt(product: dict[str, Any], merchant_notes: list[str] | None =
         "description": product.get("descriptionHtml"), "product_type": product.get("productType"),
         "vendor": product.get("vendor"), "tags": product.get("tags") or [],
         "handle": product.get("handle"), "images": product.get("images") or [],
-        "price": (((product.get("variants") or {}).get("edges") or [{}])[0].get("node") or {}).get("price"), "online_store_url": product.get("onlineStoreUrl"),
+        "status": product.get("status"),
+        "price": (((product.get("variants") or {}).get("edges") or [{}])[0].get("node") or {}).get("price"),
+        "online_store_url": product.get("onlineStoreUrl"),
         "merchant_preferences": [str(note)[:500] for note in (merchant_notes or [])[-30:]],
     }
     return [
-        {"role": "system", "content": "You are Mia's production ecommerce marketing engine. Return ONLY JSON. Ground every claim in the supplied Shopify product. Never invent discounts, features, guarantees, reviews, stock claims, or specifications. Create copy that can be posted immediately."},
-        {"role": "user", "content": "Create a complete ready-to-post marketing package for this Shopify product. Return exactly: product_id, product_title, image_url, enhanced_image_url, facebook{copy,cta}, instagram{copy,cta}, tiktok{copy,cta}, email{subject,body}, ad{primary_text,headline,description,cta}, creative_prompt, hashtags. Make each channel distinct, each with a scroll-stopping first line, concrete product-grounded benefits, a natural call to action, and 5-10 relevant hashtags. creative_prompt must be a detailed commercial product-photo prompt that uses the actual product appearance when an image exists, with no invented product features.\n\nPRODUCT JSON:\n" + json.dumps(compact, ensure_ascii=False)},
+        {"role": "system", "content": "You are Mia's production ecommerce marketing engine. Return ONLY JSON. Ground every claim in the supplied Shopify product. Never invent discounts, features, guarantees, reviews, stock claims, urgency, performance, or specifications. Only mention price if a price is supplied. Never claim a product is available or in stock unless the supplied status/inventory data proves it. Use natural, specific copy rather than generic hype. Create copy that can be posted after merchant review."},
+        {"role": "user", "content": "Create a complete marketing package for this Shopify product. Return exactly: product_id, product_title, image_url, enhanced_image_url, facebook{copy,cta}, instagram{copy,cta}, tiktok{copy,cta}, email{subject,body}, ad{primary_text,headline,description,cta}, creative_prompt, hashtags. Make each channel distinct, with a strong but truthful opening line, one clear call to action, and 5-8 relevant hashtags. For the paid ad, keep the headline concise (ideally 40 characters or fewer), the description short, and primary text readable on mobile. Do not invent audience research, conversion claims, promotions, scarcity, or benefits not supported by product data. If the product page URL is missing, use a review/details CTA rather than implying a direct product link. creative_prompt must use the actual product appearance when a source image exists and must not invent product features.\n\nPRODUCT JSON:\n" + json.dumps(compact, ensure_ascii=False)},
     ]
 
 
@@ -286,7 +338,14 @@ async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], mod
     raw["instagram"] = _channel("instagram", {"copy": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "cta": "Shop Now"})
     raw["tiktok"] = _channel("tiktok", {"copy": f"Take a closer look at {raw.get('product_title') or product.get('title') or 'this product'}.", "cta": "Shop Now"})
     raw["email"] = _channel("email", {"subject": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}", "body": f"Take a closer look at {raw.get('product_title') or product.get('title') or 'this product'} in the store."})
-    raw["ad"] = _channel("ad", {"primary_text": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "headline": str(raw.get('product_title') or product.get('title') or 'Shop now'), "description": "Discover it in store.", "cta": "Shop Now"})
+    raw["ad"] = _channel("ad", {"primary_text": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "headline": str(raw.get('product_title') or product.get('title') or 'Shop now'), "description": "Review product details online.", "cta": "Shop Now" if product.get("onlineStoreUrl") else "Learn More"})
+    # Enforce practical ad-field limits and avoid a purchase CTA when no live
+    # product URL is available. This is copy preparation only; it never publishes.
+    raw["ad"]["primary_text"] = str(raw["ad"].get("primary_text") or "")[:1000].strip()
+    raw["ad"]["headline"] = str(raw["ad"].get("headline") or product.get("title") or "Learn more")[:40].strip()
+    raw["ad"]["description"] = str(raw["ad"].get("description") or "Review product details online.")[:90].strip()
+    if not product.get("onlineStoreUrl") and str(raw["ad"].get("cta") or "").casefold() in {"shop now", "buy now", "order now", "purchase"}:
+        raw["ad"]["cta"] = "Learn More"
     raw["creative_prompt"] = str(raw.get("creative_prompt") or f"Create a clean commercial product photograph of {product.get('title') or 'the Shopify product'}, preserving the actual product appearance from the supplied reference image. No invented features or text.")
     _tags = raw.get("hashtags")
     raw["hashtags"] = _tags if isinstance(_tags, list) and _tags else build_fallback_hashtags(product)
