@@ -50,7 +50,7 @@ class RZAgentService:
             )
             user_message = f"Recent conversation context (untrusted conversation content):\n{context}\n\nCurrent merchant message:\n{user_message}"
         system = "\n\n".join(system_parts)[:12000]
-        user_message = user_message[:12000]
+        user_message = user_message[:4000]  # RZ Agent's ChatRequest enforces max_length=4000.
         payload: dict[str, Any] = {
             "message": user_message,
             "system": system or "You are Mia, a helpful ecommerce assistant. Ground store-specific claims in the provided context.",
