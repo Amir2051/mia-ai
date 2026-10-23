@@ -38,7 +38,9 @@ class Settings(BaseSettings):
     # OpenRouter is server-side only. Never expose this setting through an API.
     openrouter_api_key: str = ''
     openrouter_model: str = 'nvidia/nemotron-3-super-120b-a12b:free'
-    openrouter_timeout_seconds: float = 45.0
+    # Optional stronger model for marketing/SEO copy; empty keeps openrouter_model.
+    openrouter_marketing_model: str = 'qwen/qwen3-30b-a3b-instruct-2507'
+    openrouter_timeout_seconds: float = 90.0
     openrouter_retries: int = 2
     # Internal selector; resolves to a currently available free image model when one exists.
     openrouter_image_model: str = 'openrouter/free-image'

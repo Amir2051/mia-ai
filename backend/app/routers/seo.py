@@ -10,7 +10,7 @@ from sqlalchemy import or_, select
 
 from app.auth.dependencies import CurrentUser, get_current_shop
 from app.models.database import get_db
-from app.models.schemas import AuditLog, Shop
+from app.models.schemas import AuditLog, Shop, MiaMemory
 from app.security.tokens import decrypt_token
 from app.services.audit import record_audit_event
 from app.services.openrouter import OpenRouterError, OpenRouterService
@@ -458,10 +458,11 @@ async def generate_product_creative(
     shop = await _shop(current, db)
     client = _client(shop)
     shop_id, shop_domain = shop.id, shop.shop_domain
+    notes = await _merchant_notes(db, shop)
     await db.commit()
     try:
         product = await _get_product(client, body.product_id)
-        marketing_result, _, _ = await generate_marketing(OpenRouterService(), product, model=body.model)
+        marketing_result, _, _ = await generate_marketing(OpenRouterService(), product, model=body.model, merchant_notes=notes)
         image = marketing_result.enhanced_image_url or marketing_result.image_url
         model = settings.openrouter_image_model if marketing_result.enhanced_image_url else None
         latency = 0.0
@@ -519,13 +520,14 @@ async def generate_full_campaign(
     shop = await _shop(current, db)
     client = _client(shop)
     shop_id, shop_domain = shop.id, shop.shop_domain
+    notes = await _merchant_notes(db, shop)
     # Release the tenant DB transaction before the long-running external calls.
     await db.commit()
     try:
         product = await _get_product(client, body.product_id)
         ai = OpenRouterService()
-        seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model)
-        marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model)
+        seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
+        marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model, merchant_notes=notes)
         image = marketing_result.enhanced_image_url or marketing_result.image_url
         image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
         image_latency = None
@@ -592,6 +594,20 @@ async def generate_full_campaign(
     }
 
 
+
+
+async def _merchant_notes(db, shop) -> list[str]:
+    """Load this shop's saved brand/audience notes (owner-scoped) for grounding copy.
+    Must be called before the route releases its tenant transaction (db.commit())."""
+    try:
+        row = (await db.execute(select(MiaMemory).where(MiaMemory.shop_id == shop.id))).scalar_one_or_none()
+        if not row or not getattr(row, 'knowledge_json', None):
+            return []
+        data = json.loads(row.knowledge_json)
+        return [str(x)[:500] for x in data][-30:] if isinstance(data, list) else []
+    except Exception:
+        return []
+
 @router.post("/marketing")
 async def generate_product_marketing(
     body: GenerateRequest,
@@ -601,10 +617,11 @@ async def generate_product_marketing(
     shop = await _shop(current, db)
     client = _client(shop)
     shop_id, shop_domain = shop.id, shop.shop_domain
+    notes = await _merchant_notes(db, shop)
     await db.commit()
     try:
         product = await _get_product(client, body.product_id)
-        result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model)
+        result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model, merchant_notes=notes)
     except ShopifyAPIError as exc:
         _shopify_error(exc)
     except OpenRouterError as exc:
