@@ -44,3 +44,22 @@ def test_merchant_brand_notes_surface_in_marketing_prompt():
     msgs = marketing_prompt({"title": "T"}, merchant_notes=["Brand voice: playful and bold"])
     blob = " ".join(m["content"] for m in msgs)
     assert "playful and bold" in blob
+
+
+def test_marketing_backfills_hashtags_when_model_returns_none():
+    import asyncio
+    from app.services import seo
+
+    class _NoTagsAI:
+        async def chat_json(self, messages, model=None, temperature=0.7):
+            return (
+                {"facebook": {"copy": "a", "cta": "Shop"}, "instagram": {"copy": "b", "cta": "Shop"},
+                 "tiktok": {"copy": "c", "cta": "Shop"}, "email": {"subject": "s", "body": "body"},
+                 "ad": {"primary_text": "p", "headline": "h", "description": "d", "cta": "Shop"},
+                 "creative_prompt": "cp", "hashtags": []},
+                "m", 1.0,
+            )
+
+    prod = {"id": "gid://1", "title": "T", "productType": "Lighting", "tags": ["LED"], "images": []}
+    res, _, _ = asyncio.run(seo.generate_marketing(_NoTagsAI(), prod))
+    assert res.hashtags, "hashtags should be backfilled from product when the model omits them"

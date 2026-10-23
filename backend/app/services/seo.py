@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.product_image import ProductImageError, enhance_product_image
-from app.services.marketing_fallback import build_fallback_campaign
+from app.services.marketing_fallback import build_fallback_campaign, build_fallback_hashtags
 from app.shopify.config import settings
 
 
@@ -288,7 +288,8 @@ async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], mod
     raw["email"] = _channel("email", {"subject": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}", "body": f"Take a closer look at {raw.get('product_title') or product.get('title') or 'this product'} in the store."})
     raw["ad"] = _channel("ad", {"primary_text": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "headline": str(raw.get('product_title') or product.get('title') or 'Shop now'), "description": "Discover it in store.", "cta": "Shop Now"})
     raw["creative_prompt"] = str(raw.get("creative_prompt") or f"Create a clean commercial product photograph of {product.get('title') or 'the Shopify product'}, preserving the actual product appearance from the supplied reference image. No invented features or text.")
-    raw["hashtags"] = raw.get("hashtags") if isinstance(raw.get("hashtags"), list) else []
+    _tags = raw.get("hashtags")
+    raw["hashtags"] = _tags if isinstance(_tags, list) and _tags else build_fallback_hashtags(product)
     try:
         result = MarketingResult.model_validate(raw)
     except Exception as exc:
