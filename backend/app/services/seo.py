@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.product_image import ProductImageError, enhance_product_image
 from app.services.marketing_fallback import build_fallback_campaign
+from app.shopify.config import settings
 
 
 class SEOResult(BaseModel):
@@ -229,6 +230,7 @@ def marketing_prompt(product: dict[str, Any], merchant_notes: list[str] | None =
 
 
 async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], model: str | None = None, image_ai: OpenRouterService | None = None, merchant_notes: list[str] | None = None) -> tuple[MarketingResult, str, float]:
+    model = model or settings.openrouter_marketing_model or None
     try:
         raw, selected_model, latency = await ai.chat_json(marketing_prompt(product, merchant_notes), model=model, temperature=0.7)
     except OpenRouterError:
