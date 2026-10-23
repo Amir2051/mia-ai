@@ -20,6 +20,7 @@ from app.services.products import ProductService
 from app.services.customers import CustomerService
 from app.services.orders import OrderService
 from app.services.openrouter import OpenRouterError, OpenRouterService
+from app.services.rz_agent import RZAgentError, RZAgentService
 from app.services.seo import SEOService, generate_marketing
 
 router = APIRouter()
@@ -1341,9 +1342,32 @@ async def mia_chat(body: ChatRequest, current: Optional[CurrentUser] = Depends(g
         if content:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": text or body.message})
+    # MIA-RZ is an optional orchestration provider. Keep Mia's existing OpenRouter
+    # implementation as the automatic fallback, and never let provider failure bypass
+    # the existing approval flow for Shopify changes.
+    if settings.rz_agent_enabled:
+        try:
+            answer, model, latency = await RZAgentService().chat_text(messages, temperature=0.6)
+            return {
+                "answer": answer,
+                "model": model,
+                "provider": "mia-rz",
+                "latency_ms": round(latency, 2),
+                "data_used": data_used,
+            }
+        except RZAgentError:
+            # Provider errors are logged without including prompts, credentials, or
+            # merchant/store content. Continue through the existing Mia provider.
+            pass
     try:
         answer, model, latency = await OpenRouterService().chat_text(messages, temperature=0.6)
-        return {"answer": (answer or "").strip(), "model": model, "latency_ms": round(latency, 2), "data_used": data_used}
+        return {
+            "answer": (answer or "").strip(),
+            "model": model,
+            "provider": "openrouter",
+            "latency_ms": round(latency, 2),
+            "data_used": data_used,
+        }
     except OpenRouterError:
         if ctx:
             answer = _rule_answer(q, ctx)
