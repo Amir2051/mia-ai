@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timezone
 from typing import Any, Optional
@@ -561,8 +562,14 @@ async def generate_full_campaign(
     try:
         product = await _get_product(client, body.product_id)
         ai = OpenRouterService()
-        seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
-        marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model, merchant_notes=notes)
+        # These are independent, read-only AI generations. Run them concurrently so
+        # two slow provider responses don't stack up against Cloudflare's 120s limit.
+        seo_task = SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
+        marketing_task = generate_marketing(ai, product, model=body.model, merchant_notes=notes)
+        (seo_result, seo_model, seo_latency), (marketing_result, marketing_model, marketing_latency) = await asyncio.gather(
+            seo_task,
+            marketing_task,
+        )
         image = marketing_result.enhanced_image_url or marketing_result.image_url
         image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
         image_latency = None
