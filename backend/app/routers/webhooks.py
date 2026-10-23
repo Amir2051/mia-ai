@@ -25,6 +25,7 @@ SUPPORTED_TOPICS = [
     "products/delete",
     "orders/create",
     "orders/updated",
+    "app_subscriptions/update",
 ]
 
 
@@ -104,6 +105,11 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         action = "privacy.shop_redact"
         entity_type = "shop"
         entity_id = str(shop_id)
+    elif topic == "app_subscriptions/update":
+        sub = payload.get("app_subscription") or {}
+        action = "billing.subscription_update"
+        entity_type = "app_subscription"
+        entity_id = str(sub.get("admin_graphql_api_id") or sub.get("id") or "") or None
     else:
         object_key = "product" if topic.startswith("products/") else "order"
         raw_id = payload.get("id") or payload.get(f"{object_key}_id")

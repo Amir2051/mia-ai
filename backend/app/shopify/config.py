@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     linkedin_redirect_uri: str = ''
     linkedin_api_version: str = '202607'
 
+    # Shopify Billing (App Store compliant). billing_test uses Shopify TEST charges
+    # (no real money); billing_enforced gates paid AI features on an active subscription.
+    billing_test: bool = True
+    billing_enforced: bool = False
+
     @property
     def is_production(self) -> bool:
         return (self.environment or '').strip().lower() == 'production'
