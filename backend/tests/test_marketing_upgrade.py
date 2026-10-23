@@ -85,6 +85,9 @@ def test_generated_ad_fields_are_bounded_and_use_safe_cta_without_url():
     assert len(result.ad["headline"]) <= 40
     assert len(result.ad["description"]) <= 90
     assert result.ad["cta"] == "Learn More"
+    assert result.facebook["cta"] == "Learn More"
+    assert result.instagram["cta"] == "Learn More"
+    assert result.tiktok["cta"] == "Learn More"
 
 
 def test_insufficient_product_data_skips_ai_and_uses_grounded_fallback():

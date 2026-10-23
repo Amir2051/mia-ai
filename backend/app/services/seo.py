@@ -355,7 +355,12 @@ async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], mod
     raw["instagram"] = _channel("instagram", {"copy": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "cta": "Shop Now"})
     raw["tiktok"] = _channel("tiktok", {"copy": f"Take a closer look at {raw.get('product_title') or product.get('title') or 'this product'}.", "cta": "Shop Now"})
     raw["email"] = _channel("email", {"subject": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}", "body": f"Take a closer look at {raw.get('product_title') or product.get('title') or 'this product'} in the store."})
-    raw["ad"] = _channel("ad", {"primary_text": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "headline": str(raw.get('product_title') or product.get('title') or 'Shop now'), "description": "Review product details online.", "cta": "Shop Now" if product.get("onlineStoreUrl") else "Learn More"})
+    raw["ad"] = _channel("ad", {"primary_text": f"Discover {raw.get('product_title') or product.get('title') or 'this product'}.", "headline": str(raw.get('product_title') or product.get('title') or 'Learn more'), "description": "Review product details online.", "cta": "Shop Now" if product.get("onlineStoreUrl") else "Learn More"})
+    if not product.get("onlineStoreUrl"):
+        # No destination URL means a purchase CTA would mislead the merchant.
+        for channel in ("facebook", "instagram", "tiktok", "ad"):
+            if str(raw[channel].get("cta") or "").casefold() in {"shop", "shop now", "buy now", "order now", "purchase", "view product"}:
+                raw[channel]["cta"] = "Learn More"
     # Enforce practical ad-field limits and avoid a purchase CTA when no live
     # product URL is available. This is copy preparation only; it never publishes.
     raw["ad"]["primary_text"] = str(raw["ad"].get("primary_text") or "")[:1000].strip()
