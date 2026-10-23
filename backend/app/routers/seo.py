@@ -15,6 +15,7 @@ from app.security.tokens import decrypt_token
 from app.services.audit import record_audit_event
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
+from app.services import billing as _billing
 from app.shopify.http_errors import shopify_http_error
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 from app.shopify.config import settings
@@ -621,6 +622,8 @@ async def generate_product_marketing(
     await db.commit()
     try:
         product = await _get_product(client, body.product_id)
+        if not await _billing.is_entitled(client):
+            raise HTTPException(status_code=402, detail="An active Mia AI subscription is required. Open the Billing page to subscribe.")
         result, model, latency = await generate_marketing(OpenRouterService(), product, model=body.model, merchant_notes=notes)
     except ShopifyAPIError as exc:
         _shopify_error(exc)

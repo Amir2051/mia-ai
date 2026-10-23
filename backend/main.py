@@ -182,6 +182,7 @@ def create_app() -> FastAPI:
     from app.routers import (
         analytics,
         auth,
+        billing,
         customers,
         imports,
         marketing,
@@ -275,6 +276,12 @@ def create_app() -> FastAPI:
         social.router,
         prefix="/api/social",
         tags=["social"],
+    )
+
+    application.include_router(
+        billing.router,
+        prefix="/api/billing",
+        tags=["billing"],
     )
 
     application.include_router(

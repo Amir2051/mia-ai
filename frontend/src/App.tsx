@@ -18,6 +18,7 @@ const Settings = lazy(() => import('./pages/Settings'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Mia = lazy(() => import('./pages/Mia'));
 const Social = lazy(() => import('./pages/Social'));
+const Billing = lazy(() => import('./pages/Billing'));
 const Login = lazy(() => import('./pages/Login'));
 
 function NotFound() {
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/marketing" element={<Marketing />} />
           <Route path="/social" element={<Social />} />
+          <Route path="/billing" element={<Billing />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>
