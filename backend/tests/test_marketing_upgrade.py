@@ -63,3 +63,25 @@ def test_marketing_backfills_hashtags_when_model_returns_none():
     prod = {"id": "gid://1", "title": "T", "productType": "Lighting", "tags": ["LED"], "images": []}
     res, _, _ = asyncio.run(seo.generate_marketing(_NoTagsAI(), prod))
     assert res.hashtags, "hashtags should be backfilled from product when the model omits them"
+
+
+def test_generated_ad_fields_are_bounded_and_use_safe_cta_without_url():
+    import asyncio
+    from app.services.seo import generate_marketing
+
+    class _AdAI:
+        async def chat_json(self, messages, model=None, temperature=0.7):
+            return ({
+                "facebook": {"copy": "Facebook copy", "cta": "Shop Now"},
+                "instagram": {"copy": "Instagram copy", "cta": "Shop Now"},
+                "tiktok": {"copy": "TikTok copy", "cta": "Shop Now"},
+                "email": {"subject": "Subject", "body": "Body"},
+                "ad": {"primary_text": "p" * 1200, "headline": "H" * 60, "description": "D" * 120, "cta": "Shop Now"},
+                "creative_prompt": "Use the real product image", "hashtags": ["#Example"],
+            }, "test-model", 1.0)
+
+    result, _, _ = asyncio.run(generate_marketing(_AdAI(), {"id": "p1", "title": "Example product", "images": []}))
+    assert len(result.ad["primary_text"]) <= 1000
+    assert len(result.ad["headline"]) <= 40
+    assert len(result.ad["description"]) <= 90
+    assert result.ad["cta"] == "Learn More"

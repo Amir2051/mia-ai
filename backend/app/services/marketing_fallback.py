@@ -71,8 +71,10 @@ def build_fallback_campaign(product: dict) -> dict:
     snippet = _text(product.get("descriptionHtml") or "", 200)
     price = _price(product)
     brandline = f" by {vendor}" if vendor else ""
-    price_line = f" Available now for {price}." if price else ""
-    detail = snippet or (f"A {ptype.lower()} available in our store." if ptype else "Available in our store.")
+    # Only use a price when the live product payload actually supplies one. Do not
+    # imply availability or stock status when that data is absent.
+    price_line = f" Listed price: {price}." if price else ""
+    detail = snippet or (f"Product category: {ptype}." if ptype else "Review the product details in the store.")
     hashtags = build_fallback_hashtags(product)
     tag_str = " ".join(hashtags[:5])
     return {
@@ -81,26 +83,26 @@ def build_fallback_campaign(product: dict) -> dict:
         "image_url": None,
         "enhanced_image_url": None,
         "facebook": {
-            "copy": f"Meet {title}{brandline}. {detail}{price_line} Tap to see it in our store.",
-            "cta": "Shop Now",
+            "copy": f"Take a closer look at {title}{brandline}. {detail}{price_line} Explore the listing for full product details.",
+            "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
         },
         "instagram": {
-            "copy": f"{title} is here. {detail}\n\n{tag_str}".strip(),
+            "copy": f"On your list? Meet {title}. {detail}\n\n{tag_str}".strip(),
             "cta": "Shop Now",
         },
         "tiktok": {
-            "copy": f"POV: you just found {title}. {detail} Link in bio to shop.",
+            "copy": f"A closer look at {title}: {detail} See the product listing for the full details.",
             "cta": "Shop Now",
         },
         "email": {
-            "subject": f"{title} is now in our store",
-            "body": f"Hi there,\n\nWe'd love to introduce {title}{brandline}.\n\n{detail}{price_line}\n\nTake a closer look and shop it in our store today.\n\nThanks for being here.",
+            "subject": f"A closer look at {title}",
+            "body": f"Hi there,\n\nWe'd like to introduce {title}{brandline}.\n\n{detail}{price_line}\n\nReview the product details and available options in our store.\n\nThanks for being here.",
         },
         "ad": {
-            "primary_text": f"{title}{brandline}. {detail}{price_line}",
+            "primary_text": f"Discover {title}{brandline}. {detail}{price_line} Visit the product page to review the details.",
             "headline": title[:40].strip(),
-            "description": (f"Shop {ptype.lower()} in our store." if ptype else "Shop it in our store."),
-            "cta": "Shop Now",
+            "description": "Review product details online.",
+            "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
         },
         "creative_prompt": (
             f"Create a clean, professional commercial product photograph of {title}, "
