@@ -283,15 +283,32 @@ def marketing_prompt(product: dict[str, Any], merchant_notes: list[str] | None =
 
 async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], model: str | None = None, image_ai: OpenRouterService | None = None, merchant_notes: list[str] | None = None) -> tuple[MarketingResult, str, float]:
     model = model or settings.openrouter_marketing_model or None
-    try:
-        raw, selected_model, latency = await ai.chat_json(marketing_prompt(product, merchant_notes), model=model, temperature=0.7)
-    except OpenRouterError:
-        # Free/routed models can return policy text or malformed JSON instead of the
-        # requested marketing object. Keep the campaign usable with deterministic,
-        # product-grounded copy rather than turning the whole endpoint into a 502.
+    # A product name, category, and vendor are not evidence of product features.
+    # In particular, names such as "Inventory Not Tracked Snowboard" can be Shopify
+    # inventory metadata leaking into a sample title, not a claim about sensors,
+    # privacy, or performance. Do not ask a generative model to fill missing facts.
+    verified_description = plain_text(str(product.get("descriptionHtml") or "")).strip()
+    verified_tags = product.get("tags") or []
+    verified_images = product.get("images") or []
+    verified_price = (((product.get("variants") or {}).get("edges") or [{}])[0].get("node") or {}).get("price")
+    # Price, image presence, and product name alone don't establish benefits or
+    # specifications. Require meaningful descriptive copy or multiple merchant
+    # tags before using generative copy; otherwise use the safe deterministic path.
+    has_verified_detail = bool(len(verified_description) >= 60 or len([t for t in verified_tags if str(t).strip()]) >= 2)
+    if not has_verified_detail:
         raw = build_fallback_campaign(product)
-        selected_model = "deterministic-fallback"
+        selected_model = "deterministic-fallback-insufficient-product-details"
         latency = 0.0
+    else:
+        try:
+            raw, selected_model, latency = await ai.chat_json(marketing_prompt(product, merchant_notes), model=model, temperature=0.7)
+        except OpenRouterError:
+            # Free/routed models can return policy text or malformed JSON instead of the
+            # requested marketing object. Keep the campaign usable with deterministic,
+            # product-grounded copy rather than turning the whole endpoint into a 502.
+            raw = build_fallback_campaign(product)
+            selected_model = "deterministic-fallback"
+            latency = 0.0
     raw["product_id"] = product.get("id") or ""
     raw["product_title"] = product.get("title") or "Product"
     images = product.get("images") or []

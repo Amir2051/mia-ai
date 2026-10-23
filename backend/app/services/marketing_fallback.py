@@ -58,9 +58,8 @@ def build_fallback_hashtags(product: dict) -> list[str]:
         if word and word.lower() not in seen and len(word) <= 30:
             seen.add(word.lower())
             out.append("#" + word)
-    for generic in ("#ShopNow", "#NewArrival"):
-        if generic.lower() not in {t.lower() for t in out}:
-            out.append(generic)
+    # Avoid generic promotional tags that imply novelty or a purchase intent.
+    # Only emit hashtags supported by the merchant's actual catalog fields.
     return out[:8]
 
 
@@ -83,15 +82,15 @@ def build_fallback_campaign(product: dict) -> dict:
         "image_url": None,
         "enhanced_image_url": None,
         "facebook": {
-            "copy": f"Take a closer look at {title}{brandline}. {detail}{price_line} Explore the listing for full product details.",
+            "copy": f"A closer look at {title}{brandline}. {detail}{price_line} Review the product listing for verified details and available options.",
             "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
         },
         "instagram": {
-            "copy": f"On your list? Meet {title}. {detail}\n\n{tag_str}".strip(),
+            "copy": f"Meet {title}. Explore the listing to see its product details and available options.\n\n{tag_str}".strip(),
             "cta": "Shop Now",
         },
         "tiktok": {
-            "copy": f"A closer look at {title}: {detail} See the product listing for the full details.",
+            "copy": f"Take a closer look at {title}. See the product listing for verified details and available options.",
             "cta": "Shop Now",
         },
         "email": {
@@ -99,9 +98,9 @@ def build_fallback_campaign(product: dict) -> dict:
             "body": f"Hi there,\n\nWe'd like to introduce {title}{brandline}.\n\n{detail}{price_line}\n\nReview the product details and available options in our store.\n\nThanks for being here.",
         },
         "ad": {
-            "primary_text": f"Discover {title}{brandline}. {detail}{price_line} Visit the product page to review the details.",
+            "primary_text": f"Looking for a snowboard? Explore {title}{brandline}. Review the product listing for verified details and available options.{price_line}",
             "headline": title[:40].strip(),
-            "description": "Review product details online.",
+            "description": "Explore verified product details.",
             "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
         },
         "creative_prompt": (

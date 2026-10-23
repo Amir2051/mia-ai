@@ -26,7 +26,7 @@ def test_fallback_is_product_grounded_and_distinct():
 def test_fallback_handles_missing_fields_without_inventing():
     c = build_fallback_campaign({"title": "Mystery Item"})
     assert c["facebook"]["copy"] and c["instagram"]["copy"] and c["tiktok"]["copy"]
-    assert c["hashtags"]
+    assert c["hashtags"] == []
     assert "$" not in c["facebook"]["copy"]
     assert "Available now for" not in c["facebook"]["copy"]
 
