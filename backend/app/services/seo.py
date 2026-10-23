@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.product_image import ProductImageError, enhance_product_image
+from app.services.marketing_fallback import build_fallback_campaign
 
 
 class SEOResult(BaseModel):
@@ -218,11 +219,12 @@ def marketing_prompt(product: dict[str, Any], merchant_notes: list[str] | None =
         "description": product.get("descriptionHtml"), "product_type": product.get("productType"),
         "vendor": product.get("vendor"), "tags": product.get("tags") or [],
         "handle": product.get("handle"), "images": product.get("images") or [],
+        "price": (((product.get("variants") or {}).get("edges") or [{}])[0].get("node") or {}).get("price"), "online_store_url": product.get("onlineStoreUrl"),
         "merchant_preferences": [str(note)[:500] for note in (merchant_notes or [])[-30:]],
     }
     return [
         {"role": "system", "content": "You are Mia's production ecommerce marketing engine. Return ONLY JSON. Ground every claim in the supplied Shopify product. Never invent discounts, features, guarantees, reviews, stock claims, or specifications. Create copy that can be posted immediately."},
-        {"role": "user", "content": "Create a complete ready-to-post marketing package for this Shopify product. Return exactly: product_id, product_title, image_url, enhanced_image_url, facebook{copy,cta}, instagram{copy,cta}, tiktok{copy,cta}, email{subject,body}, ad{primary_text,headline,description,cta}, creative_prompt, hashtags. Make each channel distinct. creative_prompt must be a detailed commercial product-photo prompt that uses the actual product appearance when an image exists, with no invented product features.\n\nPRODUCT JSON:\n" + json.dumps(compact, ensure_ascii=False)},
+        {"role": "user", "content": "Create a complete ready-to-post marketing package for this Shopify product. Return exactly: product_id, product_title, image_url, enhanced_image_url, facebook{copy,cta}, instagram{copy,cta}, tiktok{copy,cta}, email{subject,body}, ad{primary_text,headline,description,cta}, creative_prompt, hashtags. Make each channel distinct, each with a scroll-stopping first line, concrete product-grounded benefits, a natural call to action, and 5-10 relevant hashtags. creative_prompt must be a detailed commercial product-photo prompt that uses the actual product appearance when an image exists, with no invented product features.\n\nPRODUCT JSON:\n" + json.dumps(compact, ensure_ascii=False)},
     ]
 
 
@@ -233,20 +235,7 @@ async def generate_marketing(ai: OpenRouterService, product: dict[str, Any], mod
         # Free/routed models can return policy text or malformed JSON instead of the
         # requested marketing object. Keep the campaign usable with deterministic,
         # product-grounded copy rather than turning the whole endpoint into a 502.
-        title = str(product.get("title") or "Product").strip()
-        raw = {
-            "product_id": product.get("id") or "",
-            "product_title": title,
-            "image_url": None,
-            "enhanced_image_url": None,
-            "facebook": {"copy": f"Discover {title} in the store.", "cta": "Shop Now"},
-            "instagram": {"copy": f"Take a closer look at {title}.", "cta": "Shop Now"},
-            "tiktok": {"copy": f"Check out {title} and see it in the store.", "cta": "Shop Now"},
-            "email": {"subject": f"Discover {title}", "body": f"Take a closer look at {title} in the store."},
-            "ad": {"primary_text": f"Discover {title}.", "headline": title[:255], "description": "Shop it in the store.", "cta": "Shop Now"},
-            "creative_prompt": f"Create a clean commercial product photograph of {title}, preserving the exact product appearance from the supplied Shopify reference image. Do not invent features, packaging, labels, or text.",
-            "hashtags": [],
-        }
+        raw = build_fallback_campaign(product)
         selected_model = "deterministic-fallback"
         latency = 0.0
     raw["product_id"] = product.get("id") or ""
