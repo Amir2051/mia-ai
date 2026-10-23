@@ -73,7 +73,7 @@ def build_fallback_campaign(product: dict) -> dict:
     # Only use a price when the live product payload actually supplies one. Do not
     # imply availability or stock status when that data is absent.
     price_line = f" Listed price: {price}." if price else ""
-    detail = snippet or (f"Product category: {ptype}." if ptype else "Review the product details in the store.")
+    detail = snippet or "Review the product listing for details."
     hashtags = build_fallback_hashtags(product)
     tag_str = " ".join(hashtags[:5])
     return {
@@ -82,23 +82,23 @@ def build_fallback_campaign(product: dict) -> dict:
         "image_url": None,
         "enhanced_image_url": None,
         "facebook": {
-            "copy": f"A closer look at {title}{brandline}. {detail}{price_line} Review the product listing for verified details and available options.",
+            "copy": f"A closer look at {title}{brandline}. {detail}{price_line}",
             "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
         },
         "instagram": {
-            "copy": f"Meet {title}. Explore the listing to see its product details and available options.\n\n{tag_str}".strip(),
-            "cta": "Shop Now",
+            "copy": f"Meet {title}. Explore the listing to review its product details.\n\n{tag_str}".strip(),
+            "cta": "Shop Now" if product.get("onlineStoreUrl") else "Learn More",
         },
         "tiktok": {
-            "copy": f"Take a closer look at {title}. See the product listing for verified details and available options.",
-            "cta": "Shop Now",
+            "copy": f"Take a closer look at {title}. Review the product listing for details.",
+            "cta": "Shop Now" if product.get("onlineStoreUrl") else "Learn More",
         },
         "email": {
             "subject": f"A closer look at {title}",
             "body": f"Hi there,\n\nWe'd like to introduce {title}{brandline}.\n\n{detail}{price_line}\n\nReview the product details and available options in our store.\n\nThanks for being here.",
         },
         "ad": {
-            "primary_text": f"Looking for a snowboard? Explore {title}{brandline}. Review the product listing for verified details and available options.{price_line}",
+            "primary_text": f"Looking for a {ptype.lower()}? Explore {title}{brandline}. Review the product listing for details.{price_line}" if ptype else f"Explore {title}{brandline}. Review the product listing for details.{price_line}",
             "headline": title[:40].strip(),
             "description": "Explore verified product details.",
             "cta": "Learn More" if not product.get("onlineStoreUrl") else "Shop Now",
