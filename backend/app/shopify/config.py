@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     openrouter_image_model: str = 'openrouter/free-image'
     openrouter_image_timeout_seconds: float = 90.0
 
+    # Optional MIA-RZ provider. Disabled by default; credentials remain server-side.
+    rz_agent_enabled: bool = False
+    rz_agent_base_url: str = ''
+    rz_agent_api_key: str = ''
+    rz_agent_timeout_seconds: float = 45.0
+
     # Meta/Facebook + Instagram integration. Secrets are environment variables.
     meta_app_id: str = ''
     meta_app_secret: str = ''
