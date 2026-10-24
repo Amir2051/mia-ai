@@ -113,6 +113,16 @@ def test_fetch_sales_report_uses_period_filter_and_stores_summary_only(monkeypat
 
 
 def test_scheduled_report_api_is_shop_scoped_and_supports_pause_and_delete(client, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.models.schemas import ScheduledReport
+    original_refresh = AsyncSession.refresh
+
+    async def reject_schedule_refresh_after_commit(self, instance, *args, **kwargs):
+        if isinstance(instance, ScheduledReport):
+            raise AssertionError("ScheduledReport must not be refreshed after commit without restoring RLS context")
+        return await original_refresh(self, instance, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "refresh", reject_schedule_refresh_after_commit)
     from app.auth.dependencies import CurrentUser, get_current_shop
     from app.models.database import AsyncSessionLocal
     from app.models.schemas import Shop
