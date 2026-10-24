@@ -17,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -211,3 +212,26 @@ class MiaMemory(Base):
     conversation_json: Mapped[str] = mapped_column(Text, default='[]')
     knowledge_json: Mapped[str] = mapped_column(Text, default='[]')
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class PublishingAction(Base):
+    """Merchant-scoped, approval-gated request to mutate an external channel."""
+    __tablename__ = "publishing_actions"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "idempotency_key", name="uq_publishing_action_shop_idempotency"),
+        Index("ix_publishing_actions_shop_status", "shop_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id", ondelete="CASCADE"), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending_approval", nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

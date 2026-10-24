@@ -70,14 +70,9 @@ async def list_sales_channels(current: Optional[CurrentUser] = Depends(get_optio
 
 @router.post("/sales-channels/products/{product_id:path}")
 async def set_product_sales_channels(product_id: str, body: ProductPublicationPayload, current: Optional[CurrentUser] = Depends(get_optional_shop), db=Depends(get_db)):
-    client = await _publication_client(current, db)
-    try:
-        data = await client.set_product_publications(product_id, body.publication_ids, publish=body.publish)
-        return {"data": data, "connected": True}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except ShopifyAPIError as exc:
-        raise shopify_http_error(exc) from exc
+    if not current:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Shopify session")
+    raise HTTPException(status_code=409, detail="Direct publishing is disabled. Create a publishing request, approve it, then execute it via /api/publishing/requests.")
 
 
 @router.put("/{product_id:path}", response_model=ProductUpdateResponse)

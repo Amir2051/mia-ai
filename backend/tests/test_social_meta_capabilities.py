@@ -179,7 +179,8 @@ def test_publish_facebook_blocked_without_publish_task(client: TestClient, monke
     client.app.dependency_overrides[get_optional_shop] = lambda: CurrentUser(domain)
     try:
         r = client.post("/api/social/meta/facebook/publish", json={"account_id": account_id, "message": "hi"})
-        assert r.status_code == 403, r.text
+        assert r.status_code == 409, r.text
+        assert "approve" in r.json()["detail"].lower()
     finally:
         client.app.dependency_overrides.clear()
 
