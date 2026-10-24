@@ -17,7 +17,7 @@ from app.models.schemas import Shop, SocialAccount
 from app.security.rls import set_shop_context
 from app.services.audit import record_audit_event
 from app.security.tokens import encrypt_token, decrypt_token
-from app.services.meta import MetaAPIError, MetaClient, serialize_meta_metadata
+from app.services.meta import MetaAPIError, MetaClient, page_capabilities, serialize_meta_metadata
 from app.services import social_oauth
 from app.shopify.config import settings
 
@@ -122,21 +122,22 @@ async def list_social_accounts(
         )
     )
     rows = result.scalars().all()
-    return {
-        "connected": True,
-        "accounts": [
-            {
-                "id": row.id,
-                "provider": row.provider,
-                "account_type": row.account_type,
-                "external_account_id": row.external_account_id,
-                "account_name": row.account_name,
-                "metadata": json.loads(row.metadata_json or "{}"),
-                "token_expires_at": row.token_expires_at.isoformat() if row.token_expires_at else None,
-            }
-            for row in rows
-        ],
-    }
+    accounts = []
+    for row in rows:
+        meta = json.loads(row.metadata_json or "{}")
+        caps = page_capabilities(meta) if row.provider == "meta" else None
+        accounts.append({
+            "id": row.id,
+            "provider": row.provider,
+            "account_type": row.account_type,
+            "external_account_id": row.external_account_id,
+            "account_name": row.account_name,
+            "metadata": meta,
+            "token_expires_at": row.token_expires_at.isoformat() if row.token_expires_at else None,
+            "capabilities": caps,
+            "publish_ready": bool(caps and caps["can_publish_facebook"]),
+        })
+    return {"connected": True, "accounts": accounts}
 
 
 @router.delete("/accounts/{account_id}")
@@ -254,6 +255,13 @@ async def meta_complete(
             account.is_active = True
         saved += 1
     await db.commit()
+    if saved == 0:
+        return {
+            "status": "no_pages",
+            "provider": "meta",
+            "pages_saved": 0,
+            "message": "Authorization succeeded but no Facebook Pages were returned. Confirm you granted Page access and have a role on at least one Page, then reconnect.",
+        }
     return {"status": "connected", "provider": "meta", "pages_saved": saved}
 
 
@@ -324,6 +332,8 @@ async def publish_facebook(
     db=Depends(get_db),
 ):
     account, token = await _get_meta_account(payload.account_id, current, db, "facebook_page")
+    if not page_capabilities(json.loads(account.metadata_json or "{}"))["can_publish_facebook"]:
+        raise HTTPException(status_code=403, detail="This Facebook Page has not granted Mia content-publishing permission (CREATE_CONTENT). Reconnect the Page and approve publishing access.")
     shop_id, account_name, page_id = account.shop_id, account.account_name, account.external_account_id
     await db.commit()
     try:
@@ -356,10 +366,13 @@ async def publish_instagram(
 ):
     account, token = await _get_meta_account(payload.account_id, current, db, "facebook_page")
     metadata = json.loads(account.metadata_json or "{}")
+    caps = page_capabilities(metadata)
+    if not caps["instagram_linked"]:
+        raise HTTPException(status_code=400, detail="No Instagram professional account is linked to this Facebook Page")
+    if not caps["can_publish_facebook"]:
+        raise HTTPException(status_code=403, detail="This Page has not granted Mia the content-publishing permission required to publish to Instagram. Reconnect and approve publishing access.")
     instagram = metadata.get("instagram_business_account") or {}
     instagram_id = instagram.get("id") if isinstance(instagram, dict) else instagram
-    if not instagram_id:
-        raise HTTPException(status_code=400, detail="No Instagram professional account is linked to this Facebook Page")
     shop_id, account_name = account.shop_id, account.account_name
     await db.commit()
     try:

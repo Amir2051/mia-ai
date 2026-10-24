@@ -175,6 +175,7 @@ def test_facebook_publish_records_outcome_without_storing_post_body(client, monk
             shop_id=41,
             account_name="Demo Page",
             external_account_id="page-123",
+            metadata_json='{"tasks": ["CREATE_CONTENT"]}',
         ), "provider-token"
 
     class FakeMetaClient:
