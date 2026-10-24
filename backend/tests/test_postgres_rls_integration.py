@@ -4,6 +4,7 @@ CI must provide separate administrative and restricted-role URLs. The normal
 API fixture uses SQLite, so these checks explicitly exercise PostgreSQL RLS.
 """
 import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timezone
