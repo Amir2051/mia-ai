@@ -212,7 +212,7 @@ class ShopifyAPIClient:
         gql = """
         query ListPublications($first: Int!, $after: String) {
             publications(first: $first, after: $after) {
-                edges { cursor node { id name supportsFuturePublishing } }
+                edges { cursor node { id supportsFuturePublishing catalog { title } } }
                 pageInfo { hasNextPage endCursor }
             }
         }

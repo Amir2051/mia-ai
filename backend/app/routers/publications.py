@@ -44,6 +44,24 @@ def _shopify_error(exc: ShopifyAPIError) -> HTTPException:
     )
 
 
+def _channel_from_node(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a Publication node (Admin API 2026-07) to Mia's stable channel shape.
+
+    API 2026-07 removed Publication.name; the channel label now comes from the
+    publication's catalog title. Catalog can be null, so fall back to a safe
+    placeholder rather than failing or dropping the channel.
+    """
+    catalog = node.get("catalog")
+    title = ""
+    if isinstance(catalog, dict):
+        title = (catalog.get("title") or "").strip()
+    return {
+        "id": node.get("id"),
+        "name": title or "Unnamed channel",
+        "supportsFuturePublishing": bool(node.get("supportsFuturePublishing")),
+    }
+
+
 @router.get("/sales-channels")
 async def list_sales_channels(
     current: Optional[CurrentUser] = Depends(get_optional_shop),
@@ -77,7 +95,7 @@ async def list_sales_channels(
             connection = data.get("publications") or {}
             edges = connection.get("edges") or []
             channels.extend(
-                edge["node"]
+                _channel_from_node(edge["node"])
                 for edge in edges
                 if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
             )
