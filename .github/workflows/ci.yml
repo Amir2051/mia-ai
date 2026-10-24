@@ -30,6 +30,8 @@ jobs:
       ENVIRONMENT: test
       SECRET_KEY: ci-test-secret
       DATABASE_URL: postgresql+asyncpg://mia:mia@127.0.0.1:5432/mia_test
+      MIA_RLS_TEST_ADMIN_URL: postgresql+asyncpg://mia:mia@127.0.0.1:5432/mia_test
+      MIA_RLS_TEST_RUNTIME_URL: postgresql+asyncpg://mia_runtime_test:mia-rls-ci-only@127.0.0.1:5432/mia_test
       SHOPIFY_API_KEY: ci-key
       SHOPIFY_API_SECRET: ci-secret
       SHOPIFY_APP_URL: https://mia.drivenest.info
@@ -43,6 +45,23 @@ jobs:
       - name: Generate ephemeral test encryption key
         run: python -c "from cryptography.fernet import Fernet; print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())" >> "$GITHUB_ENV"
       - run: alembic -c alembic.ini upgrade head
+      - name: Create restricted PostgreSQL RLS test role
+        env:
+          PGPASSWORD: mia
+        run: |
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE mia_runtime_test LOGIN PASSWORD 'mia-rls-ci-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE mia_test TO mia_runtime_test;
+          GRANT USAGE ON SCHEMA public TO mia_runtime_test;
+          GRANT SELECT ON TABLE shops TO mia_runtime_test;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scheduled_reports TO mia_runtime_test;
+          GRANT SELECT, UPDATE ON TABLE mia_memory TO mia_runtime_test;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE publishing_actions TO mia_runtime_test;
+          GRANT SELECT, INSERT ON TABLE audit_logs TO mia_runtime_test;
+          GRANT USAGE, SELECT ON SEQUENCE scheduled_reports_id_seq TO mia_runtime_test;
+          GRANT USAGE, SELECT ON SEQUENCE publishing_actions_id_seq TO mia_runtime_test;
+          GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO mia_runtime_test;
+          SQL
       - run: pytest -q
 
   frontend:

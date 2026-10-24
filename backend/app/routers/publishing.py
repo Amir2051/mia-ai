@@ -157,7 +157,7 @@ async def create_publishing_request(
     db.add(job)
     try:
         await db.commit()
-        await db.refresh(job)
+        # expire_on_commit=False; avoid a new query after transaction-local RLS context resets.
     except IntegrityError:
         await db.rollback()
         shop = await _current_shop(current, db)
@@ -213,6 +213,7 @@ async def approve_publishing_request(
     ).values(status="approved", approved_at=_now()))
     if result.rowcount != 1:
         await db.rollback()
+        await set_shop_context(db, shop_domain, shop_id)
         check = await db.execute(select(PublishingAction).where(
             PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
         job = check.scalar_one_or_none()
@@ -220,6 +221,7 @@ async def approve_publishing_request(
             raise HTTPException(404, "Publishing request not found")
         raise HTTPException(409, f"Request cannot be approved from status '{job.status}'")
     await db.commit()
+    await set_shop_context(db, shop_domain, shop_id)
     check = await db.execute(select(PublishingAction).where(
         PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
     job = check.scalar_one()
@@ -284,6 +286,7 @@ async def execute_publishing_request(
     ).values(status="publishing", attempt_count=PublishingAction.attempt_count + 1))
     if claim.rowcount != 1:
         await db.rollback()
+        await set_shop_context(db, shop_domain, shop_id)
         result = await db.execute(select(PublishingAction).where(
             PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
         job = result.scalar_one_or_none()
@@ -291,6 +294,7 @@ async def execute_publishing_request(
             raise HTTPException(404, "Publishing request not found")
         raise HTTPException(409, f"Request is not executable from status '{job.status}'. Publishing actions are never automatically retried.")
     await db.commit()  # claim before external I/O to prevent concurrent duplicate calls
+    await set_shop_context(db, shop_domain, shop_id)
     result = await db.execute(select(PublishingAction).where(
         PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
     job = result.scalar_one()
@@ -298,6 +302,7 @@ async def execute_publishing_request(
         safe_result = await _perform_action(job, shop, current, db)
     except HTTPException as exc:
         await db.rollback()
+        await set_shop_context(db, shop_domain, shop_id)
         result = await db.execute(select(PublishingAction).where(PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
         job = result.scalar_one()
         job.status = "failed" if exc.status_code < 500 else "needs_review"
@@ -310,6 +315,7 @@ async def execute_publishing_request(
         raise HTTPException(exc.status_code, job.error) from exc
     except (ShopifyAPIError, MetaAPIError) as exc:
         await db.rollback()
+        await set_shop_context(db, shop_domain, shop_id)
         result = await db.execute(select(PublishingAction).where(PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
         job = result.scalar_one()
         code = getattr(exc, "status_code", 0)
@@ -324,6 +330,7 @@ async def execute_publishing_request(
     except Exception as exc:
         logger.warning("Publishing action %s has an unconfirmed provider outcome (%s)", action_id, type(exc).__name__)
         await db.rollback()
+        await set_shop_context(db, shop_domain, shop_id)
         result = await db.execute(select(PublishingAction).where(PublishingAction.id == action_id, PublishingAction.shop_id == shop_id))
         job = result.scalar_one()
         job.status = "needs_review"
