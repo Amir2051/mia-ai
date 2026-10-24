@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timezone
+from datetime import datetime, timezone
+import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
 from app.auth.dependencies import CurrentUser, get_current_shop
-from app.models.database import get_db
-from app.models.schemas import AuditLog, Shop, MiaMemory
+from app.models.database import AsyncSessionLocal, get_db
+from app.models.schemas import AuditLog, Shop, MiaMemory, SyncJob
 from app.security.tokens import decrypt_token
+from app.security.rls import set_shop_context
 from app.services.audit import record_audit_event
 from app.services.openrouter import OpenRouterError, OpenRouterService
 from app.services.seo import SEOResult, SEOService, generate_marketing, normalize_handle, sanitize_html
@@ -547,95 +549,160 @@ async def generate_product_creative(
     }
 
 
-@router.post("/full-campaign")
+async def _execute_full_campaign_job(job_id: int, shop_id: int, shop_domain: str, product_id: str, model: str | None) -> None:
+    """Run a full campaign outside the request; persist progress/results per shop."""
+    async with AsyncSessionLocal() as db:
+        await set_shop_context(db, shop_domain, shop_id)
+        job = (await db.execute(select(SyncJob).where(SyncJob.id == job_id, SyncJob.shop_id == shop_id))).scalar_one_or_none()
+        shop = (await db.execute(select(Shop).where(Shop.id == shop_id, Shop.shop_domain == shop_domain))).scalar_one_or_none()
+        if not job or not shop or not shop.is_active:
+            return
+        job.status = "running"
+        job.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db.commit()
+        started = time.perf_counter()
+        try:
+            client = _client(shop)
+            await set_shop_context(db, shop_domain, shop_id)
+            notes = await _merchant_notes(db, shop)
+            await db.commit()
+            await set_shop_context(db, shop_domain, shop_id)
+            product = await _get_product(client, product_id)
+            ai = OpenRouterService()
+            seo_task = SEOService(ai).generate(product, model=model, merchant_notes=notes)
+            marketing_task = generate_marketing(ai, product, model=model, merchant_notes=notes)
+            (seo_result, seo_model, seo_latency), (marketing_result, marketing_model, marketing_latency) = await asyncio.gather(seo_task, marketing_task)
+            image = marketing_result.enhanced_image_url or marketing_result.image_url
+            image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
+            image_error = marketing_result.image_enhancement_error
+            if not image:
+                image_error = image_error or "No Shopify product image is available"
+            image_source = marketing_result.image_enhancement_source or "original"
+            total_latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            stage_timings = {
+                "seo_ms": round(seo_latency * 1000, 2),
+                "marketing_ms": round(marketing_latency * 1000, 2),
+                # Image work is currently included in marketing's service latency;
+                # do not claim a separate measurement until the service exposes it.
+                "image_ms": None,
+                "total_ms": total_latency_ms,
+            }
+            result = {
+                "product": product,
+                "audit_recorded": True,
+                "seo": seo_result.model_dump(),
+                "marketing": marketing_result.model_dump(),
+                "creative": {
+                    "image": image,
+                    "model": image_model,
+                    "latency_ms": None,
+                    "error": image_error,
+                    "image_enhancement_source": image_source,
+                    "retry_after_seconds": marketing_result.image_retry_after_seconds,
+                },
+                "models": {"seo": seo_model, "marketing": marketing_model},
+                "latency_ms": total_latency_ms,
+                "stage_timings_ms": stage_timings,
+                "partial_success": bool(image_error),
+            }
+            await set_shop_context(db, shop_domain, shop_id)
+            audit_ok = await record_audit_event(
+                db, shop_id=shop_id, shop_domain=shop_domain,
+                action="marketing.campaign_preview", entity_type="product", entity_id=product_id,
+                details={
+                    "status": "partial_success" if image_error else "preview_ready",
+                    "product_title": product.get("title"),
+                    "seo_score": _score_product_seo({
+                        **product, "seo_title": seo_result.seo_title,
+                        "seo_description": seo_result.meta_description,
+                        "descriptionHtml": seo_result.optimized_description_html,
+                        "tags": seo_result.tags,
+                    })[0],
+                    "has_marketing_copy": bool(marketing_result),
+                    "image_available": bool(image),
+                    "partial_success": bool(image_error),
+                    "image_error": image_error,
+                    "image_enhancement_source": image_source,
+                    "image_retry_after_seconds": marketing_result.image_retry_after_seconds,
+                    "models": {"seo": seo_model, "marketing": marketing_model, "image": image_model},
+                    "stage_timings_ms": stage_timings,
+                },
+            )
+            result["audit_recorded"] = audit_ok
+            job.details_json = json.dumps({"product_id": product_id, "result": result}, ensure_ascii=False)
+            job.status = "completed"
+            job.error = None
+            job.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            # Store a generic failure message only; provider errors and credentials must not leak.
+            async with AsyncSessionLocal() as failed_db:
+                await set_shop_context(failed_db, shop_domain, shop_id)
+                failed = (await failed_db.execute(select(SyncJob).where(SyncJob.id == job_id, SyncJob.shop_id == shop_id))).scalar_one_or_none()
+                if failed:
+                    failed.status = "failed"
+                    failed.error = "Campaign generation failed. Retry the campaign; if it persists, check provider and Shopify connectivity."
+                    failed.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    await failed_db.commit()
+                try:
+                    await set_shop_context(failed_db, shop_domain, shop_id)
+                    await record_audit_event(
+                        failed_db, shop_id=shop_id, shop_domain=shop_domain,
+                        action="marketing.campaign_failed", entity_type="product", entity_id=product_id,
+                        details={"status": "failed", "error_type": type(exc).__name__},
+                    )
+                    await failed_db.commit()
+                except Exception:
+                    await failed_db.rollback()
+
+
+@router.post("/full-campaign", status_code=status.HTTP_202_ACCEPTED)
 async def generate_full_campaign(
     body: GenerateRequest,
+    background_tasks: BackgroundTasks,
     current: CurrentUser = Depends(get_current_shop),
     db=Depends(get_db),
 ):
-    """Generate the complete SEO + marketing + creative package in one live-store workflow."""
+    """Queue complete SEO + marketing generation and return immediately."""
     shop = await _shop(current, db)
-    client = _client(shop)
-    shop_id, shop_domain = shop.id, shop.shop_domain
-    notes = await _merchant_notes(db, shop)
-    # Release the tenant DB transaction before the long-running external calls.
-    await db.commit()
-    try:
-        product = await _get_product(client, body.product_id)
-        ai = OpenRouterService()
-        # These are independent, read-only AI generations. Run them concurrently so
-        # two slow provider responses don't stack up against Cloudflare's 120s limit.
-        seo_task = SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
-        marketing_task = generate_marketing(ai, product, model=body.model, merchant_notes=notes)
-        (seo_result, seo_model, seo_latency), (marketing_result, marketing_model, marketing_latency) = await asyncio.gather(
-            seo_task,
-            marketing_task,
-        )
-        image = marketing_result.enhanced_image_url or marketing_result.image_url
-        image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
-        image_latency = None
-        image_error = marketing_result.image_enhancement_error
-        if not image:
-            image_error = "No Shopify product image is available"
-        image_status_source = marketing_result.image_enhancement_source
-    except ShopifyAPIError as exc:
-        _shopify_error(exc)
-    except OpenRouterError as exc:
-        await record_audit_event(
-            db,
-            shop_id=shop_id,
-            shop_domain=shop_domain,
-            action="marketing.campaign_failed",
-            entity_type="product",
-            entity_id=body.product_id,
-            details={"status": "failed", "product_title": product.get("title"), "error_type": "ai_provider_error"},
-        )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    campaign_audit_recorded = await record_audit_event(
-        db,
-        shop_id=shop_id,
-        shop_domain=shop_domain,
-        action="marketing.campaign_preview",
-        entity_type="product",
-        entity_id=body.product_id,
-        details={
-            "status": "partial_success" if image_error else "preview_ready",
-            "product_title": product.get("title"),
-            "seo_score": _score_product_seo({
-                **product,
-                "seo_title": seo_result.seo_title,
-                "seo_description": seo_result.meta_description,
-                "descriptionHtml": seo_result.optimized_description_html,
-                "tags": seo_result.tags,
-            })[0],
-            "has_marketing_copy": bool(marketing_result),
-            "image_available": bool(image),
-            "partial_success": bool(image_error),
-            "image_error": image_error,
-            "image_enhancement_source": image_status_source,
-            "image_retry_after_seconds": marketing_result.image_retry_after_seconds,
-            "models": {"seo": seo_model, "marketing": marketing_model, "image": image_model},
-            "latency_ms": round(seo_latency + marketing_latency + (image_latency or 0), 2),
-        },
+    await set_shop_context(db, shop.shop_domain, shop.id)
+    job = SyncJob(
+        shop_id=shop.id,
+        entity="full_campaign",
+        status="queued",
+        details_json=json.dumps({"product_id": body.product_id}),
     )
-    return {
-        "product": product,
-        "audit_recorded": campaign_audit_recorded,
-        "seo": seo_result.model_dump(),
-        "marketing": marketing_result.model_dump(),
-        "creative": {
-            "image": image,
-            "model": image_model,
-            "latency_ms": round(image_latency, 2) if image_latency is not None else None,
-            "error": image_error,
-            "image_enhancement_source": image_status_source,
-            "retry_after_seconds": marketing_result.image_retry_after_seconds,
-        },
-        "models": {"seo": seo_model, "marketing": marketing_model},
-        "latency_ms": round(seo_latency + marketing_latency + (image_latency or 0), 2),
-        "partial_success": bool(image_error),
-    }
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    background_tasks.add_task(_execute_full_campaign_job, job.id, shop.id, shop.shop_domain, body.product_id, body.model)
+    return {"job_id": job.id, "status": "queued", "status_url": f"/api/seo/full-campaign/{job.id}"}
 
+
+@router.get("/full-campaign/{job_id}")
+async def get_full_campaign_job(
+    job_id: int,
+    current: CurrentUser = Depends(get_current_shop),
+    db=Depends(get_db),
+):
+    """Return only the current merchant's campaign job and completed result."""
+    shop = await _shop(current, db)
+    await set_shop_context(db, shop.shop_domain, shop.id)
+    job = (await db.execute(select(SyncJob).where(
+        SyncJob.id == job_id, SyncJob.shop_id == shop.id, SyncJob.entity == "full_campaign"
+    ))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Campaign job not found")
+    details = {}
+    try:
+        details = json.loads(job.details_json or "{}")
+    except (TypeError, ValueError):
+        details = {}
+    payload = {"job_id": job.id, "status": job.status, "error": job.error}
+    if job.status == "completed":
+        payload["result"] = details.get("result")
+    return payload
 
 
 
