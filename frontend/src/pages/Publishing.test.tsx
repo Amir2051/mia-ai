@@ -35,6 +35,9 @@ function fb(overrides: Action = {}): Action {
 
 function serveList(actions: Action[]) {
   mockedApi.get.mockImplementation((url: string) => {
+    if (url === '/social/accounts') {
+      return Promise.resolve({ data: { connected: true, accounts: [{ id: 7, account_type: 'facebook_page', account_name: 'Demo Page' }] } });
+    }
     const m = /\/publishing\/requests\/(\d+)$/.exec(url);
     if (m) {
       const one = actions.find((a) => String(a.id) === m[1]);
@@ -89,7 +92,7 @@ describe('Publishing workflow', () => {
     renderPage();
     await screen.findByText(/No publishing requests yet/i);
     fireEvent.change(screen.getByLabelText('Destination'), { target: { value: 'meta_facebook' } });
-    fireEvent.change(screen.getByLabelText('Facebook Page account ID'), { target: { value: '7' } });
+    fireEvent.change(screen.getByLabelText('Facebook Page'), { target: { value: '7' } });
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Autumn linen sale is live' } });
     fireEvent.click(screen.getByRole('button', { name: /create request/i }));
     await waitFor(() => expect(mockedApi.post).toHaveBeenCalledTimes(1));
@@ -168,7 +171,7 @@ describe('Publishing workflow', () => {
     renderPage();
     await screen.findByText(/No publishing requests yet/i);
     fireEvent.change(screen.getByLabelText('Destination'), { target: { value: 'meta_facebook' } });
-    fireEvent.change(screen.getByLabelText('Facebook Page account ID'), { target: { value: '7' } });
+    fireEvent.change(screen.getByLabelText('Facebook Page'), { target: { value: '7' } });
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Hello' } });
     fireEvent.click(screen.getByRole('button', { name: /create request/i }));
     expect(await screen.findByText('Missing Shopify session')).toBeTruthy();
