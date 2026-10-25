@@ -58,6 +58,8 @@ jobs:
           GRANT SELECT, UPDATE ON TABLE mia_memory TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE publishing_actions TO mia_runtime_test;
           GRANT SELECT, INSERT ON TABLE audit_logs TO mia_runtime_test;
+          GRANT SELECT, INSERT, UPDATE ON TABLE webhook_events TO mia_runtime_test;
+          GRANT USAGE, SELECT ON SEQUENCE webhook_events_id_seq TO mia_runtime_test;
           GRANT USAGE, SELECT ON SEQUENCE scheduled_reports_id_seq TO mia_runtime_test;
           GRANT USAGE, SELECT ON SEQUENCE publishing_actions_id_seq TO mia_runtime_test;
           GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO mia_runtime_test;
