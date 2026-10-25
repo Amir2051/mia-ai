@@ -17,7 +17,7 @@ from app.models.schemas import Shop, SocialAccount
 from app.security.rls import set_shop_context
 from app.services.audit import record_audit_event
 from app.security.tokens import encrypt_token, decrypt_token
-from app.services.meta import MetaAPIError, MetaClient, serialize_meta_metadata
+from app.services.meta import MetaAPIError, MetaClient, page_capabilities, serialize_meta_metadata
 from app.services import social_oauth
 from app.shopify.config import settings
 
@@ -122,21 +122,22 @@ async def list_social_accounts(
         )
     )
     rows = result.scalars().all()
-    return {
-        "connected": True,
-        "accounts": [
-            {
-                "id": row.id,
-                "provider": row.provider,
-                "account_type": row.account_type,
-                "external_account_id": row.external_account_id,
-                "account_name": row.account_name,
-                "metadata": json.loads(row.metadata_json or "{}"),
-                "token_expires_at": row.token_expires_at.isoformat() if row.token_expires_at else None,
-            }
-            for row in rows
-        ],
-    }
+    accounts = []
+    for row in rows:
+        meta = json.loads(row.metadata_json or "{}")
+        caps = page_capabilities(meta) if row.provider == "meta" else None
+        accounts.append({
+            "id": row.id,
+            "provider": row.provider,
+            "account_type": row.account_type,
+            "external_account_id": row.external_account_id,
+            "account_name": row.account_name,
+            "metadata": meta,
+            "token_expires_at": row.token_expires_at.isoformat() if row.token_expires_at else None,
+            "capabilities": caps,
+            "publish_ready": bool(caps and caps["can_publish_facebook"]),
+        })
+    return {"connected": True, "accounts": accounts}
 
 
 @router.delete("/accounts/{account_id}")
@@ -254,6 +255,13 @@ async def meta_complete(
             account.is_active = True
         saved += 1
     await db.commit()
+    if saved == 0:
+        return {
+            "status": "no_pages",
+            "provider": "meta",
+            "pages_saved": 0,
+            "message": "Authorization succeeded but no Facebook Pages were returned. Confirm you granted Page access and have a role on at least one Page, then reconnect.",
+        }
     return {"status": "connected", "provider": "meta", "pages_saved": saved}
 
 
@@ -323,29 +331,9 @@ async def publish_facebook(
     current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
-    account, token = await _get_meta_account(payload.account_id, current, db, "facebook_page")
-    shop_id, account_name, page_id = account.shop_id, account.account_name, account.external_account_id
-    await db.commit()
-    try:
-        result = await MetaClient().publish_page_post(
-            page_id,
-            token,
-            payload.message,
-            payload.link,
-        )
-    except MetaAPIError as exc:
-        await _record_social_outcome(
-            db, current.shop_domain, shop_id, account_name, "meta_facebook",
-            "marketing.publish_failed", "failed", None,
-            {"stage": "publish", "error_code": exc.status_code},
-        )
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    audit_recorded = await _record_social_outcome(
-        db, current.shop_domain, shop_id, account_name, "meta_facebook",
-        "marketing.published", "published", _external_result_id(result),
-        {"content_length": len(payload.message), "has_link": bool(payload.link)},
-    )
-    return {"status": "published", "result": result, "audit_recorded": audit_recorded}
+    if not current:
+        raise HTTPException(status_code=401, detail="Missing Shopify session")
+    raise HTTPException(status_code=409, detail="Direct publishing is disabled. Create a publishing request, approve it, then execute it via /api/publishing/requests.")
 
 
 @router.post("/meta/instagram/publish")
@@ -354,33 +342,9 @@ async def publish_instagram(
     current: Optional[CurrentUser] = Depends(get_optional_shop),
     db=Depends(get_db),
 ):
-    account, token = await _get_meta_account(payload.account_id, current, db, "facebook_page")
-    metadata = json.loads(account.metadata_json or "{}")
-    instagram = metadata.get("instagram_business_account") or {}
-    instagram_id = instagram.get("id") if isinstance(instagram, dict) else instagram
-    if not instagram_id:
-        raise HTTPException(status_code=400, detail="No Instagram professional account is linked to this Facebook Page")
-    shop_id, account_name = account.shop_id, account.account_name
-    await db.commit()
-    try:
-        container = await MetaClient().create_instagram_media(str(instagram_id), payload.image_url, payload.caption, token)
-        creation_id = container.get("id")
-        if not creation_id:
-            raise MetaAPIError("Instagram media container was not created", 502)
-        result = await MetaClient().publish_instagram_media(str(instagram_id), creation_id, token)
-    except MetaAPIError as exc:
-        await _record_social_outcome(
-            db, current.shop_domain, shop_id, account_name, "meta_instagram",
-            "marketing.publish_failed", "failed", None,
-            {"stage": "publish", "error_code": exc.status_code},
-        )
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    audit_recorded = await _record_social_outcome(
-        db, current.shop_domain, shop_id, account_name, "meta_instagram",
-        "marketing.published", "published", _external_result_id(result),
-        {"content_length": len(payload.caption), "has_image": True},
-    )
-    return {"status": "published", "result": result, "audit_recorded": audit_recorded}
+    if not current:
+        raise HTTPException(status_code=401, detail="Missing Shopify session")
+    raise HTTPException(status_code=409, detail="Direct publishing is disabled. Create a publishing request, approve it, then execute it via /api/publishing/requests.")
 
 
 @router.get("/meta/facebook/{account_id}/monitor")

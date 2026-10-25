@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timezone
 from typing import Any, Optional
@@ -57,9 +58,10 @@ async def _get_product(client: ShopifyAPIClient, product_id: str) -> dict[str, A
     gql = """
     query GetSEOProduct($id: ID!) {
       product(id: $id) {
-        id title handle descriptionHtml productType vendor tags
+        id title handle descriptionHtml productType vendor tags status onlineStoreUrl
+        variants(first: 1) { edges { node { price } } }
         seo { title description }
-        media(first: 50) { nodes { alt preview { image { url altText } } } }
+        media(first: 50) { nodes { id mediaContentType alt preview { image { url altText } } } }
       }
     }
     """
@@ -71,7 +73,16 @@ async def _get_product(client: ShopifyAPIClient, product_id: str) -> dict[str, A
     for node in ((product.get("media") or {}).get("nodes") or []):
         preview = node.get("preview") or {}
         image = preview.get("image") or {}
-        media.append({"id": node.get("id"), "alt": node.get("alt"), "altText": image.get("altText"), "url": image.get("url")})
+        # Product media also contains videos and 3D models. Shopify's alt-text
+        # mutation only applies to image media, so never send non-image IDs.
+        if node.get("mediaContentType") != "IMAGE" or not image.get("url"):
+            continue
+        media.append({
+            "id": node.get("id"),
+            "alt": node.get("alt") or image.get("altText"),
+            "altText": image.get("altText"),
+            "url": image.get("url"),
+        })
     seo = product.get("seo") or {}
     return {
         **product,
@@ -93,21 +104,38 @@ def _score_product_seo(product: dict[str, Any]) -> tuple[int, list[str], list[st
     description = str(product.get("seo_description") or "").strip()
     body = str(product.get("descriptionHtml") or "").strip()
     tags = product.get("tags") or []
+    images = product.get("images") or []
     issues: list[str] = []
-    recommendations = ["Use one clear primary keyword", "Keep title and meta description specific to the product"]
+    recommendations: list[str] = []
     score = 100
     if not title:
         score -= 30; issues.append("Missing SEO title")
+        recommendations.append("Add a clear SEO title using the product name and primary keyword")
     elif not 30 <= len(title) <= 70:
         score -= 15; issues.append("SEO title length could be improved")
+        recommendations.append("Aim for an SEO title between 30 and 70 characters")
     if not description:
         score -= 30; issues.append("Missing meta description")
+        recommendations.append("Write a unique meta description for this product")
     elif not 120 <= len(description) <= 170:
         score -= 15; issues.append("Meta description length could be improved")
+        recommendations.append("Aim for a specific meta description around 140–160 characters")
     if not tags:
         score -= 10; issues.append("No Shopify tags")
+        recommendations.append("Add a small set of relevant product tags")
     if not body:
         score -= 15; issues.append("Product description is empty")
+        recommendations.append("Add a useful product description based only on verified product details")
+    product_type = str(product.get("productType") or "").strip()
+    primary_keyword = product_type or str(product.get("title") or "").strip()
+    if primary_keyword and title and primary_keyword.casefold() not in title.casefold():
+        score -= 10; issues.append("Primary product keyword is missing from the SEO title")
+        recommendations.append("Include the primary product keyword naturally in the SEO title")
+    if images and any(not str(image.get("alt") or image.get("altText") or "").strip() for image in images):
+        score -= 5; issues.append("One or more product images are missing alt text")
+        recommendations.append("Add concise, accurate alt text to each product image")
+    if not recommendations:
+        recommendations.append("Keep the product title, description, and metadata consistent with verified product details")
     return max(0, score), issues, recommendations
 
 
@@ -269,7 +297,7 @@ async def apply_seo(
         before = await _get_product(client, body.product_id)
         if image_alt_text and len(image_alt_text) > len(before.get("images") or []):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="More image alt-text values were supplied than this product has images.",
             )
         result = await client.update_product(body.product_id, changes) if changes else {"productUpdate": {"product": {"id": body.product_id}, "userErrors": []}}
@@ -293,7 +321,7 @@ async def apply_seo(
                 },
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Shopify rejected the requested changes: " + "; ".join(messages[:5]),
             )
         if changes and not update_payload.get("product"):
@@ -336,12 +364,16 @@ async def apply_seo(
                 try:
                     media_result = await client.graphql(media_gql, {"productId": body.product_id, "media": media_updates})
                     media_payload = media_result.get("productUpdateMedia") or {}
-                    if media_payload.get("mediaUserErrors"):
-                        media_error = "Shopify rejected image alt-text changes"
+                    media_user_errors = media_payload.get("mediaUserErrors") or []
+                    if media_user_errors:
+                        messages = [str(item.get("message") or "Shopify rejected an image alt-text change") for item in media_user_errors if isinstance(item, dict)]
+                        media_error = "; ".join(messages[:3]) or "Shopify rejected image alt-text changes"
+                    elif not media_payload.get("media"):
+                        media_error = "Shopify did not return updated image media for verification"
                 except ShopifyAPIError as exc:
-                    # Product text may already have been updated; report this as partial
-                    # success instead of implying the entire operation was rolled back.
-                    media_error = "Image alt-text update failed after product fields were applied"
+                    # Product text may already have been updated; preserve that success
+                    # while reporting the media failure and checking the actual saved state.
+                    media_error = f"Image alt-text update failed (Shopify HTTP {exc.status_code})"
         updated = await _get_product(client, body.product_id)
     except ShopifyAPIError as exc:
         await record_audit_event(
@@ -401,8 +433,12 @@ async def apply_seo(
             + ". Review the product before retrying.",
         )
 
-    partial_success = bool(media_error or "image_alt_text" in mismatched_fields)
+    # The post-update read is authoritative. A transient mutation response/error
+    # should not be labelled partial if Shopify's saved values actually match.
+    partial_success = "image_alt_text" in mismatched_fields
     failed_fields = ["image_alt_text"] if partial_success else []
+    if partial_success and not media_error:
+        media_error = "Shopify's saved image alt text did not match the approved values"
     before_snapshot = {
         "title": before.get("title"),
         "seo_title": before.get("seo_title"),
@@ -527,8 +563,14 @@ async def generate_full_campaign(
     try:
         product = await _get_product(client, body.product_id)
         ai = OpenRouterService()
-        seo_result, seo_model, seo_latency = await SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
-        marketing_result, marketing_model, marketing_latency = await generate_marketing(ai, product, model=body.model, merchant_notes=notes)
+        # These are independent, read-only AI generations. Run them concurrently so
+        # two slow provider responses don't stack up against Cloudflare's 120s limit.
+        seo_task = SEOService(ai).generate(product, model=body.model, merchant_notes=notes)
+        marketing_task = generate_marketing(ai, product, model=body.model, merchant_notes=notes)
+        (seo_result, seo_model, seo_latency), (marketing_result, marketing_model, marketing_latency) = await asyncio.gather(
+            seo_task,
+            marketing_task,
+        )
         image = marketing_result.enhanced_image_url or marketing_result.image_url
         image_model = settings.openrouter_image_model if marketing_result.image_enhancement_source == "openrouter" else None
         image_latency = None

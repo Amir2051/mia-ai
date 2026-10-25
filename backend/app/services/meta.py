@@ -15,10 +15,33 @@ class MetaAPIError(Exception):
         self.response = response or {}
 
 
+PAGE_PUBLISH_TASKS = frozenset({"CREATE_CONTENT", "MANAGE"})
+
+
+def page_capabilities(page_metadata):
+    # A returned Page access token is NOT proof of publishing permission. Meta
+    # reports per-Page tasks; posting needs CREATE_CONTENT (or MANAGE).
+    # Instagram publishing also needs a linked IG professional account.
+    if not isinstance(page_metadata, dict):
+        page_metadata = {}
+    raw_tasks = page_metadata.get("tasks")
+    tasks = [str(t) for t in raw_tasks] if isinstance(raw_tasks, list) else []
+    can_fb = any(t in PAGE_PUBLISH_TASKS for t in tasks)
+    ig = page_metadata.get("instagram_business_account")
+    ig_id = ig.get("id") if isinstance(ig, dict) else (ig if isinstance(ig, str) else None)
+    ig_linked = bool(ig_id)
+    return {
+        "tasks": tasks,
+        "can_publish_facebook": can_fb,
+        "instagram_linked": ig_linked,
+        "can_publish_instagram": bool(ig_linked and can_fb),
+    }
+
+
 class MetaClient:
     def __init__(self, access_token: Optional[str] = None):
         self.access_token = access_token
-        version = (settings.meta_graph_api_version or "").strip().strip("/")
+        version = (settings.meta_graph_api_version or settings.meta_oauth_version or "").strip().strip("/")
         base = settings.meta_graph_api_base_url.rstrip("/")
         self.base_url = f"{base}/{version}" if version else base
 

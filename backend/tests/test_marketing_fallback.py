@@ -26,6 +26,25 @@ def test_fallback_is_product_grounded_and_distinct():
 def test_fallback_handles_missing_fields_without_inventing():
     c = build_fallback_campaign({"title": "Mystery Item"})
     assert c["facebook"]["copy"] and c["instagram"]["copy"] and c["tiktok"]["copy"]
-    assert c["hashtags"]
+    assert c["hashtags"] == []
     assert "$" not in c["facebook"]["copy"]
     assert "Available now for" not in c["facebook"]["copy"]
+
+
+def test_fallback_ad_does_not_claim_stock_or_fake_price():
+    from app.services.marketing_fallback import build_fallback_campaign
+
+    result = build_fallback_campaign({
+        "id": "gid://shopify/Product/1",
+        "title": "Inventory Not Tracked Snowboard",
+        "productType": "Snowboard",
+        "vendor": "SafeNestT",
+        "descriptionHtml": "<p>Review the product details.</p>",
+        "images": [],
+    })
+    ad = result["ad"]
+    assert "available now" not in ad["primary_text"].lower()
+    assert "in stock" not in ad["primary_text"].lower()
+    assert "Listed price:" not in ad["primary_text"]
+    assert ad["headline"]
+    assert ad["cta"] == "Learn More"

@@ -175,6 +175,7 @@ def test_facebook_publish_records_outcome_without_storing_post_body(client, monk
             shop_id=41,
             account_name="Demo Page",
             external_account_id="page-123",
+            metadata_json='{"tasks": ["CREATE_CONTENT"]}',
         ), "provider-token"
 
     class FakeMetaClient:
@@ -205,13 +206,7 @@ def test_facebook_publish_records_outcome_without_storing_post_body(client, monk
     finally:
         client.app.dependency_overrides.pop(get_optional_shop, None)
 
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "published"
-    assert response.json()["audit_recorded"] is True
-    assert len(events) == 1
-    # The recorder receives metadata, not the post's actual text.
-    assert events[0][4] == "meta_facebook"
-    assert events[0][5] == "marketing.published"
-    assert events[0][6] == "published"
-    assert events[0][8]["content_length"] == len("Hello from a test")
-    assert "message" not in events[0][8]
+    assert response.status_code == 409, response.text
+    assert "approve" in response.json()["detail"].lower()
+    # The legacy route is deliberately blocked; provider and audit functions are not called.
+    assert events == []

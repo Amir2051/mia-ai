@@ -196,6 +196,7 @@ def create_app() -> FastAPI:
         legal,
         mia,
         social,
+        publishing,
     )
 
     application.include_router(
@@ -278,6 +279,11 @@ def create_app() -> FastAPI:
         tags=["social"],
     )
 
+    application.include_router(
+        publishing.router,
+        prefix="/api/publishing",
+        tags=["publishing"],
+    )
     application.include_router(
         billing.router,
         prefix="/api/billing",
