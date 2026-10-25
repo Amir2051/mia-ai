@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.auth.dependencies import CurrentUser, get_optional_shop
 from app.models.database import get_db
@@ -378,6 +378,23 @@ async def monitor_instagram(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+def _account_match(account_id):
+    """Match a connected account by Mia's internal id OR by the external Meta Page id.
+
+    Guards the integer primary key: an id outside the int32 range (a real Meta
+    Page id) is only compared against the string external_account_id column, so
+    it yields a clean not-found instead of an asyncpg int32 OverflowError.
+    """
+    conditions = [SocialAccount.external_account_id == str(account_id)]
+    try:
+        as_int = int(account_id)
+    except (TypeError, ValueError):
+        as_int = None
+    if as_int is not None and 1 <= as_int <= 2147483647:
+        conditions.insert(0, SocialAccount.id == as_int)
+    return or_(*conditions)
+
+
 async def _get_meta_account(
     account_id: int,
     current: Optional[CurrentUser],
@@ -394,7 +411,7 @@ async def _get_meta_account(
     await set_shop_context(db, current.shop_domain, shop.id)
     result = await db.execute(
         select(SocialAccount).where(
-            SocialAccount.id == account_id,
+            _account_match(account_id),
             SocialAccount.shop_id == shop.id,
             SocialAccount.provider == "meta",
             SocialAccount.account_type == account_type,

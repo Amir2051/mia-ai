@@ -108,12 +108,24 @@ export default function Publishing() {
   const [imageUrl, setImageUrl] = useState('');
   const [caption, setCaption] = useState('');
   const [formError, setFormError] = useState('');
+  const [pages, setPages] = useState<Array<{ value: string; label: string }>>([]);
 
   const load = useCallback(async () => {
     try {
       const res = await api.get('/publishing/requests');
       const rows = res.data?.actions;
       setActions(Array.isArray(rows) ? (rows as PublishingAction[]) : []);
+      try {
+        const accRes = await api.get('/social/accounts');
+        const accs = Array.isArray(accRes.data?.accounts) ? accRes.data.accounts : [];
+        setPages(
+          accs
+            .filter((a: any) => a.account_type === 'facebook_page')
+            .map((a: any) => ({ value: String(a.id), label: `${a.account_name ?? 'Facebook Page'} (#${a.id})` })),
+        );
+      } catch {
+        setPages([]);
+      }
       setListError('');
     } catch (err) {
       setListError(errorMessage(err, 'Could not load publishing requests'));
@@ -158,7 +170,7 @@ export default function Publishing() {
     }
     const acct = Number(accountId);
     if (!Number.isInteger(acct) || acct < 1) {
-      setFormError('Enter the numeric ID of a connected Meta Page account.');
+      setFormError('Select a connected Facebook Page.');
       return null;
     }
     if (actionType === 'meta_facebook') {
@@ -312,14 +324,14 @@ export default function Publishing() {
                 )}
                 {actionType === 'meta_facebook' && (
                   <>
-                    <TextField label="Facebook Page account ID" type="number" value={accountId} onChange={setAccountId} autoComplete="off" helpText="Numeric ID of a connected Meta Page (see Social)." />
+                    <Select label="Facebook Page" options={pages.length ? [{ label: 'Select a connected Page…', value: '' }, ...pages] : [{ label: 'No Pages connected — connect one in the Social tab', value: '' }]} value={accountId} onChange={setAccountId} disabled={pages.length === 0} helpText={pages.length ? 'Choose one of your connected Facebook Pages.' : 'Connect a Facebook Page in the Social tab first.'} />
                     <TextField label="Message" value={message} onChange={setMessage} autoComplete="off" multiline={4} maxLength={63206} showCharacterCount />
                     <TextField label="Link (optional)" value={link} onChange={setLink} autoComplete="off" placeholder="https://your-store.example/product" />
                   </>
                 )}
                 {actionType === 'meta_instagram' && (
                   <>
-                    <TextField label="Facebook Page account ID" type="number" value={accountId} onChange={setAccountId} autoComplete="off" helpText="Instagram publishes through its linked Facebook Page account." />
+                    <Select label="Facebook Page" options={pages.length ? [{ label: 'Select a connected Page…', value: '' }, ...pages] : [{ label: 'No Pages connected — connect one in the Social tab', value: '' }]} value={accountId} onChange={setAccountId} disabled={pages.length === 0} helpText={pages.length ? 'Instagram publishes through its linked Facebook Page.' : 'Connect a Facebook Page in the Social tab first.'} />
                     <TextField label="Image URL" value={imageUrl} onChange={setImageUrl} autoComplete="off" placeholder="https://…/image.jpg" />
                     <TextField label="Caption (optional)" value={caption} onChange={setCaption} autoComplete="off" multiline={3} maxLength={2200} showCharacterCount />
                   </>

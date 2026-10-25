@@ -130,8 +130,9 @@ async def create_publishing_request(
     shop = await _current_shop(current, db)
     payload = _safe_payload(body.action_type, body.payload)
     if body.action_type.startswith("meta_"):
+        from app.routers.social import _account_match
         result = await db.execute(select(SocialAccount).where(
-            SocialAccount.id == payload["account_id"],
+            _account_match(payload["account_id"]),
             SocialAccount.shop_id == shop.id,
             SocialAccount.provider == "meta",
             SocialAccount.account_type == "facebook_page",
