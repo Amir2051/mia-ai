@@ -281,3 +281,131 @@ def test_publishing_actions_are_isolated_under_restricted_postgres_role(monkeypa
             await admin_engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_webhook_processing_and_event_deduplication_under_restricted_postgres_role(monkeypatch):
+    """A signed webhook sees only its own shop and deduplicates events under RLS."""
+    import base64
+    import hashlib
+    import hmac
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from app.models.schemas import Shop, WebhookEvent
+    from app.routers.webhooks import receive_webhook
+    from app.security.rls import set_shop_context
+    from app.shopify.config import settings
+
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    if not admin_url or not runtime_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
+        pytest.skip("Dedicated PostgreSQL RLS URLs are not configured")
+
+    secret = "ci-webhook-rls-test-secret"
+    monkeypatch.setattr(settings, "shopify_api_secret", secret)
+
+    async def scenario():
+        admin_engine = create_async_engine(admin_url, pool_pre_ping=True)
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        admin_factory = sessionmaker(bind=admin_engine, class_=AsyncSession, expire_on_commit=False)
+        runtime_factory = sessionmaker(bind=runtime_engine, class_=AsyncSession, expire_on_commit=False)
+        suffix = uuid.uuid4().hex[:12]
+        shop_a_domain = f"webhook-a-{suffix}.myshopify.com"
+        shop_b_domain = f"webhook-b-{suffix}.myshopify.com"
+        event_a_id = f"webhook-a-event-{suffix}"
+        event_b_id = f"webhook-b-event-{suffix}"
+        body = json.dumps({"id": 123, "title": "RLS test product"}).encode()
+        signature = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+
+        def make_request():
+            headers = [
+                (b"x-shopify-topic", b"products/create"),
+                (b"x-shopify-shop-domain", shop_a_domain.encode()),
+                (b"x-shopify-event-id", event_a_id.encode()),
+                (b"x-shopify-hmac-sha256", signature.encode()),
+                (b"content-type", b"application/json"),
+            ]
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "https",
+                "path": "/api/webhooks",
+                "raw_path": b"/api/webhooks",
+                "query_string": b"",
+                "headers": headers,
+                "server": ("testserver", 443),
+                "client": ("127.0.0.1", 12345),
+            }
+
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            return Request(scope, receive)
+
+        try:
+            async with admin_factory() as admin:
+                shop_a = Shop(
+                    shop_domain=shop_a_domain,
+                    access_token_encrypted="ci-webhook-token-a",
+                    is_active=True,
+                )
+                shop_b = Shop(
+                    shop_domain=shop_b_domain,
+                    access_token_encrypted="ci-webhook-token-b",
+                    is_active=True,
+                )
+                admin.add_all([shop_a, shop_b])
+                await admin.flush()
+                shop_a_id = shop_a.id
+                shop_b_id = shop_b.id
+                foreign_event = WebhookEvent(
+                    shop_id=shop_b_id,
+                    topic="products/create",
+                    event_id=event_b_id,
+                    payload_json="{}",
+                    processed=True,
+                )
+                admin.add(foreign_event)
+                await admin.commit()
+                foreign_event_id = foreign_event.id
+
+            async with runtime_factory() as runtime:
+                first = await receive_webhook(make_request(), Response(), runtime)
+                assert first["processed"] is True
+
+                duplicate = await receive_webhook(make_request(), Response(), runtime)
+                assert duplicate["duplicate"] is True
+
+                await set_shop_context(runtime, shop_a_domain, shop_a_id)
+                own_event = await runtime.scalar(
+                    select(WebhookEvent).where(WebhookEvent.event_id == event_a_id)
+                )
+                hidden_event = await runtime.scalar(
+                    select(WebhookEvent).where(WebhookEvent.id == foreign_event_id)
+                )
+                assert own_event is not None
+                assert hidden_event is None
+
+                blocked_update = await runtime.execute(
+                    update(WebhookEvent)
+                    .where(WebhookEvent.id == foreign_event_id)
+                    .values(processed=False)
+                )
+                assert blocked_update.rowcount == 0
+                await runtime.commit()
+
+            async with admin_factory() as admin:
+                unchanged = await admin.scalar(
+                    select(WebhookEvent).where(WebhookEvent.id == foreign_event_id)
+                )
+                assert unchanged.processed is True
+        finally:
+            await runtime_engine.dispose()
+            await admin_engine.dispose()
+
+    asyncio.run(scenario())
