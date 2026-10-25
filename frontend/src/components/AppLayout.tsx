@@ -33,6 +33,7 @@ export default function AppLayout() {
         <a href="/reports">Scheduled reports</a>
         <a href="/social">Social</a>
         <a href="/publishing">Publishing</a>
+        <a href="/billing">Billing</a>
         <a href="/settings">Settings</a>
       </ui-nav-menu>
       {/* Shopify App Bridge moves ui-nav-menu into Shopify's sidebar. When Mia is
@@ -46,6 +47,7 @@ export default function AppLayout() {
           <a href="/products" onClick={(event) => { event.preventDefault(); navigate('/products'); }}>Products</a>
           <a href="/social" aria-current={window.location.pathname === '/social' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/social'); }}>Social media</a>
           <a href="/publishing" aria-current={window.location.pathname === '/publishing' ? 'page' : undefined} onClick={(event) => { event.preventDefault(); navigate('/publishing'); }}>Publishing</a>
+          <a href="/billing" onClick={(event) => { event.preventDefault(); navigate('/billing'); }}>Billing</a>
           <a href="/settings" onClick={(event) => { event.preventDefault(); navigate('/settings'); }}>Settings</a>
         </nav>
       )}
