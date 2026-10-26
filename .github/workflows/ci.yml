@@ -56,6 +56,8 @@ jobs:
           GRANT SELECT ON TABLE shops TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scheduled_reports TO mia_runtime_test;
           GRANT SELECT, UPDATE ON TABLE mia_memory TO mia_runtime_test;
+          GRANT SELECT, UPDATE ON TABLE product_imports TO mia_runtime_test;
+          GRANT SELECT, UPDATE ON TABLE social_accounts TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE publishing_actions TO mia_runtime_test;
           GRANT SELECT, INSERT ON TABLE audit_logs TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE ON TABLE webhook_events TO mia_runtime_test;
