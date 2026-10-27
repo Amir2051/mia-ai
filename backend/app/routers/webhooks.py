@@ -5,7 +5,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
@@ -40,6 +40,51 @@ def _verify_webhook_signature(hmac_header: str, body: bytes) -> bool:
     digest = hmac.new(settings.shopify_api_secret.encode("utf-8"), body, hashlib.sha256).digest()
     expected = base64.b64encode(digest).decode("utf-8")
     return hmac.compare_digest(expected, hmac_header)
+
+
+
+
+async def _purge_audit_logs_for_privacy(
+    db: AsyncSession,
+    shop_id: int,
+    *,
+    customer_id: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    all_shop: bool = False,
+) -> None:
+    """Erase audit rows for a GDPR request without granting general DELETE.
+
+    PostgreSQL uses a narrowly scoped SECURITY DEFINER function because the
+    normal runtime role intentionally has no DELETE privilege on audit_logs.
+    SQLite test/development databases retain the equivalent ORM behavior.
+    """
+    if db.bind and db.bind.dialect.name == "postgresql":
+        await db.execute(
+            text(
+                "SELECT public.mia_purge_audit_logs_for_privacy("
+                ":shop_id, :customer_id, :customer_email, :all_shop)"
+            ),
+            {
+                "shop_id": shop_id,
+                "customer_id": customer_id,
+                "customer_email": customer_email,
+                "all_shop": all_shop,
+            },
+        )
+        return
+
+    if all_shop:
+        await db.execute(delete(AuditLog).where(AuditLog.shop_id == shop_id))
+        return
+
+    for pattern in (customer_id, customer_email):
+        if pattern:
+            await db.execute(
+                delete(AuditLog).where(
+                    AuditLog.shop_id == shop_id,
+                    AuditLog.details_json.contains(pattern),
+                )
+            )
 
 
 def _extract_event_id(payload_json: str) -> Optional[str]:
@@ -84,11 +129,12 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
                     WebhookEvent.shop_id == shop.id, WebhookEvent.payload_json.contains(pattern)
                 )
             )
-            await db.execute(
-                delete(AuditLog).where(
-                    AuditLog.shop_id == shop.id, AuditLog.details_json.contains(pattern)
-                )
-            )
+        await _purge_audit_logs_for_privacy(
+            db,
+            shop.id,
+            customer_id=customer_id or None,
+            customer_email=customer_email or None,
+        )
         action = "privacy.customer_redact"
         entity_type = "customer"
         entity_id = customer_id or None
@@ -97,7 +143,7 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         shop_id = shop.id
         await db.execute(delete(ShopSession).where(ShopSession.shop_id == shop_id))
         await db.execute(delete(WebhookEvent).where(WebhookEvent.shop_id == shop_id))
-        await db.execute(delete(AuditLog).where(AuditLog.shop_id == shop_id))
+        await _purge_audit_logs_for_privacy(db, shop_id, all_shop=True)
         await db.execute(delete(SyncJob).where(SyncJob.shop_id == shop_id))
         await db.execute(delete(ProductImport).where(ProductImport.shop_id == shop_id))
         await db.execute(delete(AppSetting).where(AppSetting.shop_id == shop_id))
