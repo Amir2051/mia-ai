@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
@@ -117,6 +118,25 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                     text("SELECT has_table_privilege(current_user, 'public.audit_logs', 'DELETE')")
                 )
                 assert can_delete_audit is False
+
+                # A caller with Shop A context must not use the definer function
+                # to erase Shop B's audit trail.
+                from app.security.rls import set_shop_context
+                await set_shop_context(runtime, shop_a_domain, shop_a_id)
+                with pytest.raises(DBAPIError):
+                    await runtime.execute(
+                        text(
+                            "SELECT public.mia_purge_audit_logs_for_privacy("
+                            ":shop_id, :customer_id, :customer_email, :all_shop)"
+                        ),
+                        {
+                            "shop_id": shop_b_id,
+                            "customer_id": None,
+                            "customer_email": None,
+                            "all_shop": True,
+                        },
+                    )
+                await runtime.rollback()
 
                 redact_body = json.dumps({
                     "customer": {"id": int(customer_id), "email": customer_email}
