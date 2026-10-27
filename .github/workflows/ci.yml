@@ -59,6 +59,7 @@ jobs:
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE sync_jobs TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE app_settings TO mia_runtime_test;
           GRANT SELECT, INSERT ON TABLE audit_logs TO mia_runtime_test;
+          GRANT EXECUTE ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE ON TABLE webhook_events TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scheduled_reports TO mia_runtime_test;
           GRANT SELECT, INSERT, UPDATE ON TABLE mia_memory TO mia_runtime_test;
