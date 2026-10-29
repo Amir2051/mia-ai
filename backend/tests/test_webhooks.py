@@ -228,4 +228,5 @@ def test_customer_redact_removes_legacy_pii_records(client):
     assert response.status_code == 200
     events, audits = asyncio.run(remaining(shop_id))
     assert events == [("{}", "redact-event")]
-    assert audits == [("{}", "456")]
+    # The compliance audit records that redaction occurred without retaining the customer ID.
+    assert audits == [("{}", None)]
