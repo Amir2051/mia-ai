@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select, text
@@ -27,9 +28,13 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
     from app.models.schemas import (
         AppSetting,
         AuditLog,
+        MiaMemory,
         ProductImport,
+        PublishingAction,
+        ScheduledReport,
         Shop,
         ShopSession,
+        SocialAccount,
         SyncJob,
         WebhookEvent,
     )
@@ -109,6 +114,22 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                     WebhookEvent(shop_id=shop_a_id, topic="orders/create", event_id=f"legacy-pii-{suffix}", payload_json=customer_payload, processed=True),
                     AuditLog(shop_id=shop_a_id, action="legacy.customer", entity_type="customer", entity_id=customer_id, details_json=customer_payload),
                     AuditLog(shop_id=shop_a_id, action="legacy.non_pii", entity_type="product", entity_id="1", details_json="{}"),
+                    SocialAccount(
+                        shop_id=shop_a_id, provider="meta", account_type="page",
+                        external_account_id=f"page-{suffix}", account_name="GDPR test page",
+                        access_token_encrypted="ci-encrypted-token",
+                    ),
+                    MiaMemory(shop_id=shop_a_id, conversation_json="[]", knowledge_json="[]"),
+                    ScheduledReport(
+                        shop_id=shop_a_id, name="GDPR test report", report_type="sales_summary",
+                        frequency="daily", schedule_time="09:00", timezone="UTC",
+                        next_run_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    ),
+                    PublishingAction(
+                        shop_id=shop_a_id, action_type="product.publish",
+                        status="pending_approval", idempotency_key=f"gdpr-{suffix}",
+                        request_hash="a" * 64, payload_json="{}",
+                    ),
                     AuditLog(shop_id=shop_b_id, action="other_shop.customer", entity_type="customer", entity_id=customer_id, details_json=customer_payload),
                 ])
                 await admin.commit()
@@ -199,11 +220,27 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                 remaining_settings = (await admin.execute(
                     select(AppSetting).where(AppSetting.shop_id == shop_a_id)
                 )).scalars().all()
+                remaining_social_accounts = (await admin.execute(
+                    select(SocialAccount).where(SocialAccount.shop_id == shop_a_id)
+                )).scalars().all()
+                remaining_memory = (await admin.execute(
+                    select(MiaMemory).where(MiaMemory.shop_id == shop_a_id)
+                )).scalars().all()
+                remaining_reports = (await admin.execute(
+                    select(ScheduledReport).where(ScheduledReport.shop_id == shop_a_id)
+                )).scalars().all()
+                remaining_publishing_actions = (await admin.execute(
+                    select(PublishingAction).where(PublishingAction.shop_id == shop_a_id)
+                )).scalars().all()
                 assert remaining_audits == []
                 assert remaining_sessions == []
                 assert remaining_imports == []
                 assert remaining_jobs == []
                 assert remaining_settings == []
+                assert remaining_social_accounts == []
+                assert remaining_memory == []
+                assert remaining_reports == []
+                assert remaining_publishing_actions == []
                 other_audits = (await admin.execute(
                     select(AuditLog).where(AuditLog.shop_id == shop_b_id)
                 )).scalars().all()
