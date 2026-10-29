@@ -58,10 +58,12 @@ def upgrade() -> None:
                  WHERE a.shop_id = p_shop_id
                    AND (
                        (NULLIF(p_customer_id, '') IS NOT NULL
-                        AND strpos(coalesce(a.details_json, ''), p_customer_id) > 0)
+                        AND (strpos(coalesce(a.details_json, ''), p_customer_id) > 0
+                             OR a.entity_id = p_customer_id))
                        OR
                        (NULLIF(p_customer_email, '') IS NOT NULL
-                        AND strpos(coalesce(a.details_json, ''), p_customer_email) > 0)
+                        AND (strpos(coalesce(a.details_json, ''), p_customer_email) > 0
+                             OR a.entity_id = p_customer_email))
                    );
             END IF;
 
