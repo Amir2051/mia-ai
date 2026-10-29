@@ -155,11 +155,20 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                 shop_b_audits = (await admin.execute(
                     select(AuditLog).where(AuditLog.shop_id == shop_b_id)
                 )).scalars().all()
-                assert not any(customer_email in (row.details_json or "") for row in shop_a_audits)
-                assert not any(customer_id in (row.details_json or "") for row in shop_a_audits)
+                assert not any(
+                    customer_email in (row.details_json or "") or row.entity_id == customer_email
+                    for row in shop_a_audits
+                )
+                assert not any(
+                    customer_id in (row.details_json or "") or row.entity_id == customer_id
+                    for row in shop_a_audits
+                )
                 assert any(row.action == "legacy.non_pii" for row in shop_a_audits)
                 assert any(row.action == "other_shop.customer" for row in shop_b_audits)
-                assert any(row.action == "privacy.customer_redact" for row in shop_a_audits)
+                assert any(
+                    row.action == "privacy.customer_redact" and row.entity_id is None
+                    for row in shop_a_audits
+                )
 
             shop_redact_body = json.dumps({"shop_id": 123}).encode()
             async with runtime_factory() as runtime:
