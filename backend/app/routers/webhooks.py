@@ -85,6 +85,14 @@ async def _purge_audit_logs_for_privacy(
                     AuditLog.details_json.contains(pattern),
                 )
             )
+            # Customer identifiers may also be stored in the dedicated entity_id
+            # column by older audit records; erase those exact matches as well.
+            await db.execute(
+                delete(AuditLog).where(
+                    AuditLog.shop_id == shop_id,
+                    AuditLog.entity_id == pattern,
+                )
+            )
 
 
 def _extract_event_id(payload_json: str) -> Optional[str]:
@@ -137,7 +145,8 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         )
         action = "privacy.customer_redact"
         entity_type = "customer"
-        entity_id = customer_id or None
+        # Record that redaction happened without reintroducing the erased customer ID.
+        entity_id = None
     elif topic == "shop/redact":
         # Shopify sends this after uninstall. Erase every Mia-owned record.
         shop_id = shop.id
