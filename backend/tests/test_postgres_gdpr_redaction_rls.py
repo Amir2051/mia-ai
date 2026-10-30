@@ -192,7 +192,7 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                 legacy_customer_events = (await admin.execute(
                     select(WebhookEvent).where(
                         WebhookEvent.shop_id == shop_a_id,
-                        WebhookEvent.event_id == f"legacy-pii-{suffix}",
+                        func.lower(WebhookEvent.payload_json).contains(customer_email.lower()),
                     )
                 )).scalars().all()
                 assert legacy_customer_events == []
