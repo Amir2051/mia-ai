@@ -5,7 +5,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
@@ -82,7 +82,7 @@ async def _purge_audit_logs_for_privacy(
             await db.execute(
                 delete(AuditLog).where(
                     AuditLog.shop_id == shop_id,
-                    AuditLog.details_json.contains(pattern),
+                    func.lower(AuditLog.details_json).contains(pattern.lower()),
                 )
             )
             # Customer identifiers may also be stored in the dedicated entity_id
@@ -90,7 +90,7 @@ async def _purge_audit_logs_for_privacy(
             await db.execute(
                 delete(AuditLog).where(
                     AuditLog.shop_id == shop_id,
-                    AuditLog.entity_id == pattern,
+                    func.lower(AuditLog.entity_id) == pattern.lower(),
                 )
             )
 
@@ -134,7 +134,7 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         for pattern in patterns:
             await db.execute(
                 delete(WebhookEvent).where(
-                    WebhookEvent.shop_id == shop.id, WebhookEvent.payload_json.contains(pattern)
+                    WebhookEvent.shop_id == shop.id, func.lower(WebhookEvent.payload_json).contains(pattern.lower())
                 )
             )
         await _purge_audit_logs_for_privacy(
