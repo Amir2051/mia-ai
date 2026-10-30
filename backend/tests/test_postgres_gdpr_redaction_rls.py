@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -91,6 +91,9 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
         customer_payload = json.dumps({
             "customer": {"id": int(customer_id), "email": customer_email}
         })
+        legacy_customer_payload = json.dumps({
+            "customer": {"id": int(customer_id), "email": customer_email.upper()}
+        })
         try:
             async with admin_factory() as admin:
                 shop_a = Shop(
@@ -111,8 +114,9 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                     ProductImport(shop_id=shop_a_id, source="gdpr-test", status="pending", sync_status="pending"),
                     SyncJob(shop_id=shop_a_id, entity="products", status="queued", details_json="{}"),
                     AppSetting(shop_id=shop_a_id, key=f"gdpr-setting-{suffix}", value_json="{}"),
-                    WebhookEvent(shop_id=shop_a_id, topic="orders/create", event_id=f"legacy-pii-{suffix}", payload_json=customer_payload, processed=True),
-                    AuditLog(shop_id=shop_a_id, action="legacy.customer", entity_type="customer", entity_id=customer_id, details_json=customer_payload),
+                    WebhookEvent(shop_id=shop_a_id, topic="orders/create", event_id=f"legacy-pii-{suffix}", payload_json=legacy_customer_payload, processed=True),
+                    AuditLog(shop_id=shop_a_id, action="legacy.customer", entity_type="customer", entity_id=customer_id, details_json=legacy_customer_payload),
+                    AuditLog(shop_id=shop_a_id, action="legacy.email_entity", entity_type="customer", entity_id=customer_email.upper(), details_json="{}"),
                     AuditLog(shop_id=shop_a_id, action="legacy.non_pii", entity_type="product", entity_id="1", details_json="{}"),
                     SocialAccount(
                         shop_id=shop_a_id, provider="meta", account_type="page",
@@ -177,13 +181,21 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                     select(AuditLog).where(AuditLog.shop_id == shop_b_id)
                 )).scalars().all()
                 assert not any(
-                    customer_email in (row.details_json or "") or row.entity_id == customer_email
+                    customer_email.lower() in (row.details_json or "").lower()
+                    or (row.entity_id or "").lower() == customer_email.lower()
                     for row in shop_a_audits
                 )
                 assert not any(
                     customer_id in (row.details_json or "") or row.entity_id == customer_id
                     for row in shop_a_audits
                 )
+                legacy_customer_events = (await admin.execute(
+                    select(WebhookEvent).where(
+                        WebhookEvent.shop_id == shop_a_id,
+                        WebhookEvent.event_id == f"legacy-pii-{suffix}",
+                    )
+                )).scalars().all()
+                assert legacy_customer_events == []
                 assert any(row.action == "legacy.non_pii" for row in shop_a_audits)
                 assert any(row.action == "other_shop.customer" for row in shop_b_audits)
                 assert any(
