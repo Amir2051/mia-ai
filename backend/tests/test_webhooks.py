@@ -210,8 +210,11 @@ def test_customer_redact_removes_legacy_pii_records(client):
             shop = Shop(shop_domain="customer-redact.myshopify.com", is_active=True)
             db.add(shop)
             await db.flush()
-            db.add(WebhookEvent(shop_id=shop.id, topic="orders/create", event_id="legacy-1", payload_json='{"customer":{"id":456,"email":"customer@example.com"}}'))
-            db.add(AuditLog(shop_id=shop.id, action="legacy", entity_type="customer", entity_id="456", details_json='{"email":"customer@example.com"}'))
+            db.add(WebhookEvent(shop_id=shop.id, topic="orders/create", event_id="legacy-1", payload_json='{"customer":{"id":456,"email":"CUSTOMER@EXAMPLE.COM"}}'))
+            db.add_all([
+                AuditLog(shop_id=shop.id, action="legacy", entity_type="customer", entity_id="456", details_json='{"email":"CUSTOMER@EXAMPLE.COM"}'),
+                AuditLog(shop_id=shop.id, action="legacy.email_entity", entity_type="customer", entity_id="CUSTOMER@EXAMPLE.COM", details_json="{}"),
+            ])
             await db.commit()
             return shop.id
 
