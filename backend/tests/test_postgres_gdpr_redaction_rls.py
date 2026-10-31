@@ -87,12 +87,16 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
         shop_a_domain = f"gdpr-a-{suffix}.myshopify.com"
         shop_b_domain = f"gdpr-b-{suffix}.myshopify.com"
         customer_id = str(900000000 + int(suffix[:6], 16) % 99999999)
-        customer_email = f"customer-{suffix}@example.test"
+        customer_email = f"cust_omer-{suffix}@example.test"
+        near_match_email = customer_email.replace("_", "X")
         customer_payload = json.dumps({
             "customer": {"id": int(customer_id), "email": customer_email}
         })
         legacy_customer_payload = json.dumps({
             "customer": {"id": int(customer_id), "email": customer_email.upper()}
+        })
+        near_match_customer_payload = json.dumps({
+            "customer": {"id": int(customer_id) + 1, "email": near_match_email}
         })
         try:
             async with admin_factory() as admin:
@@ -115,8 +119,10 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                     SyncJob(shop_id=shop_a_id, entity="products", status="queued", details_json="{}"),
                     AppSetting(shop_id=shop_a_id, key=f"gdpr-setting-{suffix}", value_json="{}"),
                     WebhookEvent(shop_id=shop_a_id, topic="orders/create", event_id=f"legacy-pii-{suffix}", payload_json=legacy_customer_payload, processed=True),
+                    WebhookEvent(shop_id=shop_a_id, topic="orders/create", event_id=f"legacy-near-match-{suffix}", payload_json=near_match_customer_payload, processed=True),
                     AuditLog(shop_id=shop_a_id, action="legacy.customer", entity_type="customer", entity_id=customer_id, details_json=legacy_customer_payload),
                     AuditLog(shop_id=shop_a_id, action="legacy.email_entity", entity_type="customer", entity_id=customer_email.upper(), details_json="{}"),
+                    AuditLog(shop_id=shop_a_id, action="legacy.near_match", entity_type="customer", entity_id=near_match_email, details_json=json.dumps({"email": near_match_email})),
                     AuditLog(shop_id=shop_a_id, action="legacy.non_pii", entity_type="product", entity_id="1", details_json="{}"),
                     SocialAccount(
                         shop_id=shop_a_id, provider="meta", account_type="page",
@@ -192,10 +198,24 @@ def test_customer_and_shop_redaction_preserve_audit_log_least_privilege(monkeypa
                 legacy_customer_events = (await admin.execute(
                     select(WebhookEvent).where(
                         WebhookEvent.shop_id == shop_a_id,
-                        func.lower(WebhookEvent.payload_json).contains(customer_email.lower()),
+                        func.lower(WebhookEvent.payload_json).contains(customer_email.lower(), autoescape=True),
                     )
                 )).scalars().all()
                 assert legacy_customer_events == []
+                unrelated_customer_events = (await admin.execute(
+                    select(WebhookEvent).where(
+                        WebhookEvent.shop_id == shop_a_id,
+                        WebhookEvent.event_id == f"legacy-near-match-{suffix}",
+                    )
+                )).scalars().all()
+                assert len(unrelated_customer_events) == 1
+                assert near_match_email in unrelated_customer_events[0].payload_json
+                assert any(
+                    row.action == "legacy.near_match"
+                    and near_match_email in (row.details_json or "")
+                    and row.entity_id == near_match_email
+                    for row in shop_a_audits
+                )
                 assert any(row.action == "legacy.non_pii" for row in shop_a_audits)
                 assert any(row.action == "other_shop.customer" for row in shop_b_audits)
                 assert any(
