@@ -82,7 +82,7 @@ async def _purge_audit_logs_for_privacy(
             await db.execute(
                 delete(AuditLog).where(
                     AuditLog.shop_id == shop_id,
-                    func.lower(AuditLog.details_json).contains(pattern.lower()),
+                    func.lower(AuditLog.details_json).contains(pattern.lower(), autoescape=True),
                 )
             )
             # Customer identifiers may also be stored in the dedicated entity_id
@@ -134,7 +134,7 @@ async def _process_event(db: AsyncSession, shop: Optional[Shop], topic: str, pay
         for pattern in patterns:
             await db.execute(
                 delete(WebhookEvent).where(
-                    WebhookEvent.shop_id == shop.id, func.lower(WebhookEvent.payload_json).contains(pattern.lower())
+                    WebhookEvent.shop_id == shop.id, func.lower(WebhookEvent.payload_json).contains(pattern.lower(), autoescape=True)
                 )
             )
         await _purge_audit_logs_for_privacy(
