@@ -205,31 +205,100 @@ def test_customer_redact_removes_legacy_pii_records(client):
     from app.models.database import AsyncSessionLocal
     from app.models.schemas import AuditLog, Shop, WebhookEvent
 
+    target_email = "cust_omer@example.com"
+    near_match_email = "custXomer@example.com"
+
     async def seed():
         async with AsyncSessionLocal() as db:
             shop = Shop(shop_domain="customer-redact.myshopify.com", is_active=True)
             db.add(shop)
             await db.flush()
-            db.add(WebhookEvent(shop_id=shop.id, topic="orders/create", event_id="legacy-1", payload_json='{"customer":{"id":456,"email":"CUSTOMER@EXAMPLE.COM"}}'))
             db.add_all([
-                AuditLog(shop_id=shop.id, action="legacy", entity_type="customer", entity_id="456", details_json='{"email":"CUSTOMER@EXAMPLE.COM"}'),
-                AuditLog(shop_id=shop.id, action="legacy.email_entity", entity_type="customer", entity_id="CUSTOMER@EXAMPLE.COM", details_json="{}"),
+                WebhookEvent(
+                    shop_id=shop.id,
+                    topic="orders/create",
+                    event_id="legacy-target",
+                    payload_json=json.dumps({
+                        "customer": {"id": 456, "email": target_email.upper()}
+                    }),
+                ),
+                WebhookEvent(
+                    shop_id=shop.id,
+                    topic="orders/create",
+                    event_id="legacy-near-match",
+                    payload_json=json.dumps({
+                        "customer": {"id": 987, "email": near_match_email}
+                    }),
+                ),
+                AuditLog(
+                    shop_id=shop.id,
+                    action="legacy.customer",
+                    entity_type="customer",
+                    entity_id="456",
+                    details_json=json.dumps({"email": target_email.upper()}),
+                ),
+                AuditLog(
+                    shop_id=shop.id,
+                    action="legacy.email_entity",
+                    entity_type="customer",
+                    entity_id=target_email.upper(),
+                    details_json="{}",
+                ),
+                AuditLog(
+                    shop_id=shop.id,
+                    action="legacy.near_match",
+                    entity_type="customer",
+                    entity_id=near_match_email,
+                    details_json=json.dumps({"email": near_match_email}),
+                ),
             ])
             await db.commit()
             return shop.id
 
     async def remaining(shop_id):
         async with AsyncSessionLocal() as db:
-            events = (await db.execute(select(WebhookEvent).where(WebhookEvent.shop_id == shop_id))).scalars().all()
-            audits = (await db.execute(select(AuditLog).where(AuditLog.shop_id == shop_id))).scalars().all()
-            return [(e.payload_json, e.event_id) for e in events], [(a.details_json, a.entity_id) for a in audits]
+            events = (await db.execute(
+                select(WebhookEvent).where(WebhookEvent.shop_id == shop_id)
+            )).scalars().all()
+            audits = (await db.execute(
+                select(AuditLog).where(AuditLog.shop_id == shop_id)
+            )).scalars().all()
+            return [(e.payload_json, e.event_id) for e in events], [
+                (a.action, a.details_json, a.entity_id) for a in audits
+            ]
 
     shop_id = asyncio.run(seed())
     router_settings.shopify_api_secret = "test-secret"
-    body = b'{"customer":{"id":456,"email":"customer@example.com"}}'
-    response = client.post("/api/webhooks", headers=_signed_headers("customers/redact", "customer-redact.myshopify.com", "redact-event", body), content=body)
+    body = json.dumps({
+        "customer": {"id": 456, "email": target_email}
+    }).encode()
+    response = client.post(
+        "/api/webhooks",
+        headers=_signed_headers(
+            "customers/redact",
+            "customer-redact.myshopify.com",
+            "redact-event",
+            body,
+        ),
+        content=body,
+    )
     assert response.status_code == 200
+
     events, audits = asyncio.run(remaining(shop_id))
-    assert events == [("{}", "redact-event")]
-    # The compliance audit records that redaction occurred without retaining the customer ID.
-    assert audits == [("{}", None)]
+    # The actual customer's legacy event is erased, while an address that
+    # differs only at the SQL LIKE wildcard position remains untouched.
+    assert {event_id for _, event_id in events} == {
+        "legacy-near-match",
+        "redact-event",
+    }
+    assert any(
+        action == "legacy.near_match"
+        and near_match_email in details_json
+        and entity_id == near_match_email
+        for action, details_json, entity_id in audits
+    )
+    assert any(
+        action == "privacy.customer_redact" and entity_id is None
+        for action, _, entity_id in audits
+    )
+    assert len(audits) == 2
