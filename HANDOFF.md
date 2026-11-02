@@ -50,8 +50,10 @@ Required server secrets remain environment-only:
 Production must use PostgreSQL, HTTPS, secure/HttpOnly/SameSite=None cookies, and only the production origin in CORS.
 
 ## Shopify scopes
-Current declared scopes:
-`read_customers,read_inventory,read_orders,read_products,write_products`
+Current declared scopes (kept in sync with `shopify.app.toml`):
+`read_customers,read_inventory,read_orders,read_products,read_publications,write_products,write_publications`
+
+`read_publications`/`write_publications` are used for sales-channel publishing. Confirm the latest `shopify.app.toml` has been released with `shopify app deploy` and that merchants re-approve the new scopes; the last release recorded in this document is `mia-ai-9`.
 
 The app uses Shopify managed installation and embedded ID-token authentication.
 
