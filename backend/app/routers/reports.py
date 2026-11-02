@@ -169,7 +169,8 @@ async def create_scheduled_report(
     )
     db.add(schedule)
     await db.commit()
-    await db.refresh(schedule)
+    # Do not refresh after commit: transaction-local RLS context has been reset.
+    # expire_on_commit=False preserves the flushed values for response serialization.
     return _schedule_dict(schedule)
 
 
@@ -206,7 +207,8 @@ async def update_scheduled_report(
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     await db.commit()
-    await db.refresh(schedule)
+    # Do not refresh after commit: transaction-local RLS context has been reset.
+    # expire_on_commit=False preserves the flushed values for response serialization.
     return _schedule_dict(schedule)
 
 
