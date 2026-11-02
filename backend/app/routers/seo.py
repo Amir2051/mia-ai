@@ -675,7 +675,6 @@ async def generate_full_campaign(
     )
     db.add(job)
     await db.commit()
-    await db.refresh(job)
     background_tasks.add_task(_execute_full_campaign_job, job.id, shop.id, shop.shop_domain, body.product_id, body.model)
     return {"job_id": job.id, "status": "queued", "status_url": f"/api/seo/full-campaign/{job.id}"}
 
