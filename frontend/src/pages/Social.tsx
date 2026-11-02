@@ -237,22 +237,29 @@ export default function Social() {
 
   const connectMeta = async () => {
     setError(null);
-    // Open synchronously from the button click so browser popup blockers do not
-    // discard the user gesture while the authenticated API request is pending.
+    // Open synchronously from the click so OAuth remains compatible with popup blockers.
     const popup = window.open('about:blank', 'mia-meta-oauth', 'popup,width=640,height=760');
-    if (!popup) {
-      setError('Allow pop-ups for Mia, then click Connect Facebook again. Mia keeps this Shopify session open while Facebook authorization runs in a separate window.');
-      return;
-    }
     try {
+      // If OAuth credentials are not configured, use the explicitly configured
+      // server-side test token instead of showing a dead-end OAuth error.
+      const configRes = await api.get('/social/configuration');
+      const metaConfig = (configRes.data?.platforms ?? []).find((platform: PlatformConfig) => platform.provider === 'meta') as PlatformConfig | undefined;
+      if (metaConfig && !metaConfig.configured) {
+        popup?.close();
+        await connectTestToken();
+        return;
+      }
+      if (!popup) {
+        setError('Allow pop-ups for Mia, then click Connect Facebook again. Mia keeps this Shopify session open while Facebook authorization runs in a separate window.');
+        return;
+      }
       const res = await api.get('/social/meta/connect');
       const url = res.data?.authorization_url;
       if (!url) throw new Error('Meta did not return a sign-in link');
-      // Keep this authenticated Shopify Admin tab open. The callback popup
-      // relays its code/state back through BroadcastChannel after Meta returns.
+      // Keep this authenticated Shopify Admin tab open while Meta login runs.
       popup.location.href = url;
     } catch (err) {
-      popup.close();
+      popup?.close();
       setError(errorMessage(err, 'Could not start the Meta connection'));
     }
   };
