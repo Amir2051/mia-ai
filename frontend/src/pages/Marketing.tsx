@@ -129,12 +129,29 @@ export default function Marketing() {
         setImage(res.data.image || null);
         setTab(2);
       } else {
-        const res = await api.post('/seo/full-campaign', { product_id: productId });
-        if (res.data?.audit_recorded === false) showToast('Campaign prepared, but activity history could not be saved');
-        setCurrent(res.data.product);
-        setSeo(res.data.seo);
-        setMarketing(res.data.marketing);
-        setImage(res.data.creative?.image || null);
+        const queued = await api.post('/seo/full-campaign', { product_id: productId });
+        const jobId = queued.data?.job_id;
+        if (!jobId) throw new Error('Mia could not start the campaign job. Please try again.');
+        let completed: any = null;
+        // Poll short status requests rather than holding the Cloudflare request open
+        // while external AI and image providers finish their work.
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+          const status = await api.get(`/seo/full-campaign/${jobId}`);
+          if (status.data?.status === 'completed') {
+            completed = status.data.result;
+            break;
+          }
+          if (status.data?.status === 'failed') {
+            throw new Error(status.data?.error || 'Campaign generation failed. Please retry.');
+          }
+        }
+        if (!completed) throw new Error('This campaign is still processing. Refresh activity history shortly; do not start duplicate campaigns yet.');
+        if (completed.audit_recorded === false) showToast('Campaign prepared, but activity history could not be saved');
+        setCurrent(completed.product);
+        setSeo(completed.seo);
+        setMarketing(completed.marketing);
+        setImage(completed.creative?.image || null);
         setTab(0);
       }
     } catch (err) {
@@ -234,7 +251,7 @@ export default function Marketing() {
                   </Button>
                 </InlineStack>
                 {busy === 'campaign' && (
-                  <Text as="p" tone="subdued">Writing SEO, campaign copy and an enhanced image — this can take up to a minute.</Text>
+                  <Text as="p" tone="subdued">Generating SEO, campaign copy and image in the background. This may take several minutes; the page will check progress automatically.</Text>
                 )}
               </BlockStack>
             </Card>
