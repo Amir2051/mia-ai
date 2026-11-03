@@ -231,6 +231,7 @@ def upgrade() -> None:
     op.execute("ALTER TABLE public.scheduled_reports ENABLE ROW LEVEL SECURITY")
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_isolation ON public.scheduled_reports")
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler ON public.scheduled_reports")
+    op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_isolation ON public.scheduled_reports")
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler_read ON public.scheduled_reports")
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler_update ON public.scheduled_reports")
     op.execute("""
