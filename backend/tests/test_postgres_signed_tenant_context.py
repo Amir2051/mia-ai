@@ -188,7 +188,6 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                         .values(shop_name="tampered by scheduler")
                     )
                     assert blocked_shop_update.rowcount == 0
-                    await runtime.commit()
 
             async with admin_factory() as admin:
                 protected_schedule = await admin.scalar(
