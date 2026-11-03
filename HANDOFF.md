@@ -46,6 +46,7 @@ Required server secrets remain environment-only:
 - `TOKEN_ENCRYPTION_KEY`
 - `DATABASE_URL`
 - `OPENROUTER_API_KEY`
+- `RLS_CONTEXT_SECRET` (random, at least 32 bytes; must match the verifier provisioned by migration `0010_signed_tenant_context`)
 
 Production must use PostgreSQL, HTTPS, secure/HttpOnly/SameSite=None cookies, and only the production origin in CORS.
 
@@ -82,7 +83,7 @@ Build and restart the production container with Docker Compose after source chan
 docker-compose up -d --build mia-ai
 ```
 
-The container entrypoint runs Alembic migrations before Uvicorn. The image now includes a Docker healthcheck against `/health`.
+The container entrypoint runs Alembic migrations before Uvicorn. The image now includes a Docker healthcheck against `/health`. Ensure `RLS_CONTEXT_SECRET` is present in the protected runtime environment before applying migration `0010_signed_tenant_context`; the migration also needs it in its environment to provision the private database verifier. Do not rotate it independently on only one side.
 
 ## CI
 GitHub Actions runs:
