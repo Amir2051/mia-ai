@@ -8,11 +8,11 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select
 
 from app.models.database import AsyncSessionLocal
 from app.models.schemas import ScheduledReport, Shop
-from app.security.rls import set_shop_context
+from app.security.rls import set_internal_scheduler_context, set_shop_context
 from app.security.tokens import decrypt_token
 from app.services.analytics import compute_period_comparison
 from app.services.audit import record_audit_event
@@ -22,7 +22,6 @@ from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
 logger = logging.getLogger("mia_ai.scheduled_reports")
 
 REPORT_PERIOD_DAYS = {"daily": 1, "weekly": 7, "monthly": 30}
-SCHEDULER_FLAG = "app.internal_scheduler"
 
 
 def next_report_run_at(
@@ -168,7 +167,7 @@ async def _load_schedule_and_shop(
 ) -> tuple[ScheduledReport, Shop]:
     async with AsyncSessionLocal() as db:
         if internal_scheduler:
-            await db.execute(text("select set_config(:setting, 'true', true)"), {"setting": SCHEDULER_FLAG})
+            await set_internal_scheduler_context(db)
         elif shop_domain:
             await set_shop_context(db, shop_domain, shop_id)
         else:
@@ -252,7 +251,7 @@ async def _save_report_outcome(
 async def _mark_internal_load_failure(schedule_id: int, shop_id: int, error: str) -> None:
     """Mark a claimed job failed even when its shop configuration cannot be loaded."""
     async with AsyncSessionLocal() as db:
-        await db.execute(text("select set_config(:setting, 'true', true)"), {"setting": SCHEDULER_FLAG})
+        await set_internal_scheduler_context(db)
         schedule_result = await db.execute(
             select(ScheduledReport).where(
                 ScheduledReport.id == schedule_id,
@@ -335,7 +334,7 @@ async def dispatch_due_reports(limit: int = 5) -> int:
     claimed: list[tuple[int, int]] = []
     async with AsyncSessionLocal() as db:
         async with db.begin():
-            await db.execute(text("select set_config(:setting, 'true', true)"), {"setting": SCHEDULER_FLAG})
+            await set_internal_scheduler_context(db)
             result = await db.execute(
                 select(ScheduledReport)
                 .where(
