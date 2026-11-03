@@ -149,7 +149,19 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                         text("SELECT has_schema_privilege(current_user, 'mia_private', 'USAGE')")
                     )
                     can_read_signing_key = await runtime.scalar(
-                        text("SELECT has_table_privilege(current_user, 'mia_private.tenant_context_keys', 'SELECT')")
+                        text("""
+                            SELECT pg_catalog.has_table_privilege(
+                                current_user,
+                                (
+                                    SELECT c.oid
+                                      FROM pg_catalog.pg_class AS c
+                                      JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                                     WHERE n.nspname = 'mia_private'
+                                       AND c.relname = 'tenant_context_keys'
+                                ),
+                                'SELECT'
+                            )
+                        """)
                     )
                     assert can_use_private_schema is False
                     assert can_read_signing_key is False
