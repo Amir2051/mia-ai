@@ -174,6 +174,22 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                     assert {shop.id for shop in visible_shops} >= {shop_a_id, shop_b_id}
                     assert {item.id for item in visible_schedules} >= {schedule_b_id}
 
+                    # The scheduler needs to claim/update due schedules, but
+                    # its cross-shop read privilege must not become shop-write access.
+                    scheduler_claim = await runtime.execute(
+                        update(ScheduledReport)
+                        .where(ScheduledReport.id == schedule_b_id)
+                        .values(last_status="running")
+                    )
+                    assert scheduler_claim.rowcount == 1
+                    blocked_shop_update = await runtime.execute(
+                        update(Shop)
+                        .where(Shop.id == shop_b_id)
+                        .values(shop_name="tampered by scheduler")
+                    )
+                    assert blocked_shop_update.rowcount == 0
+                    await runtime.commit()
+
             async with admin_factory() as admin:
                 protected_schedule = await admin.scalar(
                     select(ScheduledReport).where(ScheduledReport.id == schedule_b_id)
@@ -181,7 +197,12 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                 protected_audit = await admin.scalar(
                     select(AuditLog).where(AuditLog.id == audit_b_id)
                 )
+                protected_shop = await admin.scalar(
+                    select(Shop).where(Shop.id == shop_b_id)
+                )
                 assert protected_schedule.name == "Shop B protected schedule"
+                assert protected_schedule.last_status == "running"
+                assert protected_shop.shop_name is None
                 assert protected_audit is not None
                 assert protected_audit.details_json == '{"marker":"shop-b-must-survive"}'
         finally:
