@@ -10,7 +10,9 @@ This document describes the production security controls currently implemented.
 - Shopify access and refresh tokens are encrypted at rest.
 - Runtime PostgreSQL access uses a dedicated `mia_runtime` role with no superuser, createdb, createrole, inheritance, replication, or BYPASSRLS privileges.
 - PostgreSQL Row-Level Security (RLS) isolates merchant-owned rows by the authenticated shop context.
-- RLS context is transaction-local and is populated only after Shopify authentication or webhook HMAC verification.
+- Tenant RLS uses a transaction-local shop domain plus an HMAC proof generated only after Shopify authentication or webhook HMAC verification. Policies validate the proof through SECURITY DEFINER functions; changing `app.shop_domain` or `app.shop_id` alone does not change the effective tenant.
+- The internal scheduled-report override also requires a separate HMAC proof. A caller-settable `app.internal_scheduler=true` flag alone grants no cross-shop access.
+- HMAC key material is stored in a migration-owned `mia_private` schema and is not readable by the runtime role. The application receives the same `RLS_CONTEXT_SECRET` through its protected environment.
 - Merchant-owned tables use default-deny RLS behavior when no shop context exists.
 
 ## Database security
@@ -44,7 +46,7 @@ This document describes the production security controls currently implemented.
 
 ## Dependency security
 
-- Production npm dependencies pass `npm audit --omit=dev` with zero known vulnerabilities at this checkpoint.
+- The configured npm audit gates pass at the moderate-severity threshold. The latest recorded audit still reports three low-severity `deepmerge` findings through the deprecated Polaris React dependency; this is not a zero-vulnerability result.
 - React Router was upgraded to the current 7.18.x security line.
 - Development tooling was upgraded to current Vite/Vitest releases so the full npm audit is clean at this checkpoint.
 
@@ -53,7 +55,8 @@ This document describes the production security controls currently implemented.
 - Environment files are ignored by Git.
 - Production environment files are restricted to mode 0600 on the audited host.
 - Secrets are never returned by API endpoints or printed in application diagnostics.
-- CI generates its test encryption key at runtime instead of storing a reusable key in the repository.
+- CI generates ephemeral test encryption and RLS-context keys at runtime instead of storing reusable keys in the repository.
+- Production must set a random `RLS_CONTEXT_SECRET` of at least 32 bytes before applying migration `0010_signed_tenant_context`; the migration stores its verifier copy in the restricted `mia_private` schema.
 
 ## Operational notes
 
