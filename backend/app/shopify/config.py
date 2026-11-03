@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     secret_key: str = ''
 
     database_url: str = 'sqlite+aiosqlite:///./dev.db'
+    # Shared by the application and migration-owned PostgreSQL verifier; never expose to SQL clients.
+    rls_context_secret: str = ''
 
     shopify_api_key: str = ''
     shopify_api_secret: str = ''
@@ -97,6 +99,8 @@ class Settings(BaseSettings):
                 issues.append('SHOPIFY_API_SECRET missing')
             if not self.token_encryption_key:
                 issues.append('TOKEN_ENCRYPTION_KEY missing')
+            if len(self.rls_context_secret.encode('utf-8')) < 32:
+                issues.append('RLS_CONTEXT_SECRET must contain at least 32 bytes')
             if not self.shopify_app_url or self.shopify_app_url.startswith('http://localhost'):
                 issues.append('SHOPIFY_APP_URL not set to production domain')
             if self.session_cookie_secure is False:
