@@ -251,6 +251,48 @@ def upgrade() -> None:
         WITH CHECK (public.mia_is_internal_scheduler())
     """)
 
+    # RLS policies authorize rows, not individual columns. Keep the trusted
+    # scheduler's cross-shop UPDATE capability limited to claim/status fields.
+    op.execute("""
+        CREATE OR REPLACE FUNCTION public.mia_guard_scheduled_report_scheduler_update()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog
+        AS $function$
+        BEGIN
+            IF public.mia_is_internal_scheduler() AND (
+                NEW.id IS DISTINCT FROM OLD.id
+                OR NEW.shop_id IS DISTINCT FROM OLD.shop_id
+                OR NEW.name IS DISTINCT FROM OLD.name
+                OR NEW.report_type IS DISTINCT FROM OLD.report_type
+                OR NEW.frequency IS DISTINCT FROM OLD.frequency
+                OR NEW.schedule_time IS DISTINCT FROM OLD.schedule_time
+                OR NEW.timezone IS DISTINCT FROM OLD.timezone
+                OR NEW.day_of_week IS DISTINCT FROM OLD.day_of_week
+                OR NEW.day_of_month IS DISTINCT FROM OLD.day_of_month
+                OR NEW.enabled IS DISTINCT FROM OLD.enabled
+                OR NEW.last_result_json IS DISTINCT FROM OLD.last_result_json
+                OR NEW.created_at IS DISTINCT FROM OLD.created_at
+            ) THEN
+                RAISE EXCEPTION 'internal scheduler may only update report claim/status fields'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END;
+        $function$;
+    """)
+    op.execute("REVOKE ALL ON FUNCTION public.mia_guard_scheduled_report_scheduler_update() FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION public.mia_guard_scheduled_report_scheduler_update() TO {runtime_role}")
+    op.execute("""
+        DROP TRIGGER IF EXISTS mia_guard_scheduler_report_update ON public.scheduled_reports
+    """)
+    op.execute("""
+        CREATE TRIGGER mia_guard_scheduler_report_update
+        BEFORE UPDATE ON public.scheduled_reports
+        FOR EACH ROW
+        EXECUTE FUNCTION public.mia_guard_scheduled_report_scheduler_update()
+    """)
+
     # Re-bind the GDPR SECURITY DEFINER function to the verified tenant
     # context. It must not trust app.shop_id or app.shop_domain on their own.
     op.execute("""
@@ -314,6 +356,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Explicit downgrade restores the previous GUC-only policies. Use only as
     # part of a reviewed rollback because it reintroduces the documented gap.
+    op.execute("DROP TRIGGER IF EXISTS mia_guard_scheduler_report_update ON public.scheduled_reports")
+    op.execute("DROP FUNCTION IF EXISTS public.mia_guard_scheduled_report_scheduler_update()")
     op.execute("DROP POLICY IF EXISTS mia_shop_isolation ON public.shops")
     op.execute("""
         CREATE POLICY mia_shop_isolation ON public.shops
