@@ -175,7 +175,23 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                     assert {item.id for item in visible_schedules} >= {schedule_b_id}
 
                     # The scheduler needs to claim/update due schedules, but
-                    # its cross-shop read privilege must not become shop-write access.
+                    # its cross-shop update privilege must not alter merchant-owned
+                    # schedule configuration or reassign a report to another shop.
+                    with pytest.raises(DBAPIError):
+                        async with runtime.begin_nested():
+                            await runtime.execute(
+                                update(ScheduledReport)
+                                .where(ScheduledReport.id == schedule_b_id)
+                                .values(name="tampered by scheduler")
+                            )
+                    with pytest.raises(DBAPIError):
+                        async with runtime.begin_nested():
+                            await runtime.execute(
+                                update(ScheduledReport)
+                                .where(ScheduledReport.id == schedule_b_id)
+                                .values(shop_id=shop_a_id)
+                            )
+
                     scheduler_claim = await runtime.execute(
                         update(ScheduledReport)
                         .where(ScheduledReport.id == schedule_b_id)
@@ -200,6 +216,7 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                     select(Shop).where(Shop.id == shop_b_id)
                 )
                 assert protected_schedule.name == "Shop B protected schedule"
+                assert protected_schedule.shop_id == shop_b_id
                 assert protected_schedule.last_status == "running"
                 assert protected_shop.shop_name is None
                 assert protected_audit is not None
