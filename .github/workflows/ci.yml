@@ -119,7 +119,7 @@ jobs:
           SQL
           alembic downgrade 0009_privacy_audit_purge
           psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
-          DO $
+          DO $body$
           BEGIN
             IF to_regclass('mia_private.rollback_sentinel') IS NULL THEN
               RAISE EXCEPTION 'downgrade removed an unrelated mia_private object';
@@ -156,7 +156,7 @@ jobs:
               RAISE EXCEPTION 'downgrade left signed scheduler policies behind';
             END IF;
           END
-          $;
+          $body$;
           SQL
           alembic upgrade head
           psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 -c "SELECT 1 FROM mia_private.rollback_sentinel WHERE id = 1 AND marker = 'preserve-me'"
