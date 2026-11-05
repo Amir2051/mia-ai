@@ -442,4 +442,7 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS public.mia_current_shop_id()")
     op.execute("DROP FUNCTION IF EXISTS public.mia_current_shop_domain()")
     op.execute("DROP FUNCTION IF EXISTS public.mia_is_internal_scheduler()")
-    op.execute("DROP SCHEMA IF EXISTS mia_private CASCADE")
+    # Remove only the key table created by this migration. mia_private may have
+    # existed before this revision or contain unrelated objects; never CASCADE
+    # drop the entire schema during rollback.
+    op.execute("DROP TABLE IF EXISTS mia_private.tenant_context_keys")
