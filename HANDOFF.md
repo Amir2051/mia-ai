@@ -41,6 +41,12 @@ The production web container is served through Cloudflare at `https://mia.driven
 
 A real merchant/development-store session and direct production checks are still required. Do not infer current production health or database migration state from the historical handoff entries above.
 
+## Shopify authentication configuration check
+
+- `shopify.app.toml` currently registers `https://mia.drivenest.info/auth/callback`.
+- The backend auth router currently exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`; no `/auth/callback` route is present.
+- The app uses Shopify managed installation and embedded ID-token token exchange, so the redirect URL may be legacy/unused. Confirm the actual install and re-authentication flow on a development store before changing the configured URL.
+
 ## Frontend
 
 The admin UI is built with Shopify Polaris and App Bridge:
