@@ -380,6 +380,7 @@ def downgrade() -> None:
 
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler_read ON public.scheduled_reports")
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler_update ON public.scheduled_reports")
+    op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_isolation ON public.scheduled_reports")
     op.execute("""
         CREATE POLICY mia_scheduled_reports_isolation ON public.scheduled_reports
         USING (shop_id = NULLIF(current_setting('app.shop_id', true), '')::bigint)
