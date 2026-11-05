@@ -159,7 +159,21 @@ jobs:
           $body$;
           SQL
           alembic upgrade head
-          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 -c "SELECT 1 FROM mia_private.rollback_sentinel WHERE id = 1 AND marker = 'preserve-me'"
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          DO $body$
+          BEGIN
+            IF to_regclass('mia_private.tenant_context_keys') IS NULL THEN
+              RAISE EXCEPTION 'upgrade did not recreate the signed-context key table';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM mia_private.rollback_sentinel
+               WHERE id = 1 AND marker = 'preserve-me'
+            ) THEN
+              RAISE EXCEPTION 're-upgrade did not preserve the unrelated private-schema object';
+            END IF;
+          END
+          $body$;
+          SQL
 
   frontend:
     runs-on: ubuntu-latest
