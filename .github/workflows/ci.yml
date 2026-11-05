@@ -104,6 +104,62 @@ jobs:
           $$;
           SQL
       - run: pytest -q
+      - name: Verify signed RLS migration downgrade and re-upgrade
+        env:
+          PGPASSWORD: mia
+        run: |
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS mia_private.rollback_sentinel (
+            id integer PRIMARY KEY,
+            marker text NOT NULL
+          );
+          INSERT INTO mia_private.rollback_sentinel (id, marker)
+          VALUES (1, 'preserve-me')
+          ON CONFLICT (id) DO UPDATE SET marker = EXCLUDED.marker;
+          SQL
+          alembic downgrade 0009_privacy_audit_purge
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          DO $
+          BEGIN
+            IF to_regclass('mia_private.rollback_sentinel') IS NULL THEN
+              RAISE EXCEPTION 'downgrade removed an unrelated mia_private object';
+            END IF;
+            IF to_regclass('mia_private.tenant_context_keys') IS NOT NULL THEN
+              RAISE EXCEPTION 'downgrade left the signed-context key table behind';
+            END IF;
+            IF to_regprocedure('public.mia_current_shop_domain()') IS NOT NULL
+               OR to_regprocedure('public.mia_current_shop_id()') IS NOT NULL
+               OR to_regprocedure('public.mia_is_internal_scheduler()') IS NOT NULL THEN
+              RAISE EXCEPTION 'downgrade left signed-context helper functions behind';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1
+                FROM pg_catalog.pg_policies
+               WHERE schemaname = 'public'
+                 AND tablename = 'scheduled_reports'
+                 AND policyname = 'mia_scheduled_reports_scheduler'
+                 AND COALESCE(qual, '') LIKE '%app.internal_scheduler%'
+                 AND COALESCE(with_check, '') LIKE '%app.internal_scheduler%'
+            ) THEN
+              RAISE EXCEPTION 'downgrade did not restore the legacy scheduler policy';
+            END IF;
+            IF EXISTS (
+              SELECT 1
+                FROM pg_catalog.pg_policies
+               WHERE schemaname = 'public'
+                 AND tablename = 'scheduled_reports'
+                 AND policyname IN (
+                   'mia_scheduled_reports_scheduler_read',
+                   'mia_scheduled_reports_scheduler_update'
+                 )
+            ) THEN
+              RAISE EXCEPTION 'downgrade left signed scheduler policies behind';
+            END IF;
+          END
+          $;
+          SQL
+          alembic upgrade head
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 -c "SELECT 1 FROM mia_private.rollback_sentinel WHERE id = 1 AND marker = 'preserve-me'"
 
   frontend:
     runs-on: ubuntu-latest
