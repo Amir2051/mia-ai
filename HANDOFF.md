@@ -15,20 +15,31 @@ The latest Shopify app configuration was deployed and released as version **mia-
 
 The production web container is served through Cloudflare at `https://mia.drivenest.info`.
 
-## Verified
-- Backend: 88 tests passed.
-- Frontend: lint, 7 tests and TypeScript build pass.
-- npm audit: 0 vulnerabilities.
-- npm production audit: 0 vulnerabilities.
-- npm full audit: 0 vulnerabilities.
-- Production `/health`: HTTP 200.
-- Production HTTPS/HSTS/security headers: verified.
-- PostgreSQL Alembic head: `0004_postgres_rls`.
-- Shopify app version deployment: successful.
-- App Bridge script is loaded from Shopify's official CDN.
-- Mandatory compliance topics are configured.
-- Unauthenticated API probes do not expose merchant data.
-- Settings mutation requires an authenticated Shopify session.
+## Current verified engineering evidence — 2026-11-05
+
+### Main branch
+- Main commit: `11ff8cc5f0b427117576e43edc4918907e72f750`.
+- Latest main CI run #231 (2026-11-02): **285 backend tests passed, 3 warnings; 17 frontend tests passed; lint/build and Docker production image build passed.**
+- The repository's latest merged Alembic revision is `0009_privacy_audit_purge`.
+- The current main-branch audit gates are configured at the moderate-severity threshold. They pass, but the audit still reports **3 low-severity `deepmerge` findings**. Do not describe the dependency tree as vulnerability-free.
+
+### Proposed tenant-isolation hardening
+- PR #27 adds proposed migration `0010_signed_tenant_context` with HMAC-verified tenant and scheduler contexts.
+- Current PR #27 head: `ef0d6a1b979500302cd780f9ff761cd7feea8be1`.
+- Latest CI run #245 (2026-11-05): **286 backend tests passed, 3 warnings; 17 frontend tests passed; frontend lint/build, both configured audit gates, and Docker image build passed.**
+- The backend CI also exercises a real downgrade to `0009_privacy_audit_purge`, checks that unrelated objects in `mia_private` survive, verifies the prior scheduler policy is restored, then upgrades back to `0010_signed_tenant_context`.
+- PR #27 is still a draft, unmerged, undeployed, and not production-approved. Independent security review is required before merge/deployment.
+
+### Production evidence — historical, not revalidated today
+- The previous handoff recorded a successful Shopify app configuration release as **`mia-ai-9` on 2026-09-18**.
+- The previous handoff also recorded `/health` HTTP 200 and HTTPS/HSTS/security-header checks. Those checks were not independently revalidated on 2026-11-05.
+- The previous handoff recorded production Alembic head `0004_postgres_rls`. The repository has since advanced through `0009_privacy_audit_purge`; the actual production database revision must be queried directly before any deployment or migration.
+- No newer Shopify app configuration release or currently running production commit SHA has been verified.
+- The declared `read_publications`/`write_publications` scopes still need a confirmed Shopify CLI release and merchant re-approval where required.
+
+## Production verification status
+
+A real merchant/development-store session and direct production checks are still required. Do not infer current production health or database migration state from the historical handoff entries above.
 
 ## Frontend
 
