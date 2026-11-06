@@ -260,19 +260,15 @@ def upgrade() -> None:
         SET search_path = pg_catalog
         AS $function$
         BEGIN
+            -- Use a positive allowlist so newly added report columns are protected by default.
+            -- The scheduler may only change the fields needed to claim and report execution.
             IF public.mia_is_internal_scheduler() AND (
-                NEW.id IS DISTINCT FROM OLD.id
-                OR NEW.shop_id IS DISTINCT FROM OLD.shop_id
-                OR NEW.name IS DISTINCT FROM OLD.name
-                OR NEW.report_type IS DISTINCT FROM OLD.report_type
-                OR NEW.frequency IS DISTINCT FROM OLD.frequency
-                OR NEW.schedule_time IS DISTINCT FROM OLD.schedule_time
-                OR NEW.timezone IS DISTINCT FROM OLD.timezone
-                OR NEW.day_of_week IS DISTINCT FROM OLD.day_of_week
-                OR NEW.day_of_month IS DISTINCT FROM OLD.day_of_month
-                OR NEW.enabled IS DISTINCT FROM OLD.enabled
-                OR NEW.last_result_json IS DISTINCT FROM OLD.last_result_json
-                OR NEW.created_at IS DISTINCT FROM OLD.created_at
+                (pg_catalog.to_jsonb(NEW) - ARRAY[
+                    'next_run_at', 'last_run_at', 'last_status', 'last_error', 'updated_at'
+                ]) IS DISTINCT FROM
+                (pg_catalog.to_jsonb(OLD) - ARRAY[
+                    'next_run_at', 'last_run_at', 'last_status', 'last_error', 'updated_at'
+                ])
             ) THEN
                 RAISE EXCEPTION 'internal scheduler may only update report claim/status fields'
                     USING ERRCODE = '42501';
