@@ -1,6 +1,6 @@
 # Mia AI — Security Review
 
-This document describes the production security controls currently implemented.
+This document distinguishes controls present on `main` from proposed controls in PR #27. Proposed controls are not production controls until the PR is independently reviewed, merged, deployed, and verified against the running database and application.
 
 ## Authentication and tenant isolation
 
@@ -9,11 +9,16 @@ This document describes the production security controls currently implemented.
 - Legacy session cookies remain a compatibility fallback and are HttpOnly, Secure, and SameSite=None in production.
 - Shopify access and refresh tokens are encrypted at rest.
 - Runtime PostgreSQL access uses a dedicated `mia_runtime` role with no superuser, createdb, createrole, inheritance, replication, or BYPASSRLS privileges.
-- PostgreSQL Row-Level Security (RLS) isolates merchant-owned rows by the authenticated shop context.
-- Tenant RLS uses a transaction-local shop domain plus an HMAC proof generated only after Shopify authentication or webhook HMAC verification. Policies validate the proof through SECURITY DEFINER functions; changing `app.shop_domain` or `app.shop_id` alone does not change the effective tenant.
-- The internal scheduled-report override also requires a separate HMAC proof. A caller-settable `app.internal_scheduler=true` flag alone grants no cross-shop access.
-- HMAC key material is stored in a migration-owned `mia_private` schema and is not readable by the runtime role. The application receives the same `RLS_CONTEXT_SECRET` through its protected environment.
+- PostgreSQL Row-Level Security (RLS) isolates merchant-owned rows when the application establishes the authenticated shop context.
+- On the current `main` branch, the RLS context uses transaction-local PostgreSQL settings populated by authenticated application paths. This protects normal application access, but does not by itself prevent arbitrary SQL under the shared runtime role from forging custom GUC values; that limitation is tracked in issue #23.
 - Merchant-owned tables use default-deny RLS behavior when no shop context exists.
+
+### Proposed hardening — PR #27 (not deployed)
+
+- PR #27 replaces caller-settable tenant trust with a transaction-local shop domain plus an HMAC proof generated after Shopify authentication or webhook HMAC verification. Its proposed SECURITY DEFINER policies validate the proof; changing `app.shop_domain` or `app.shop_id` alone should not change the effective tenant.
+- The proposed internal scheduled-report override requires a separate HMAC proof; a caller-settable `app.internal_scheduler=true` flag alone grants no cross-shop access.
+- The proposed migration stores HMAC key material in `mia_private`, which is denied to the runtime role. The application and migration process must receive the same protected `RLS_CONTEXT_SECRET`.
+- These controls have PostgreSQL CI coverage on PR #27, but remain unmerged and undeployed pending independent security review and production rollout verification.
 
 ## Database security
 
@@ -56,7 +61,7 @@ This document describes the production security controls currently implemented.
 - Production environment files are restricted to mode 0600 on the audited host.
 - Secrets are never returned by API endpoints or printed in application diagnostics.
 - CI generates ephemeral test encryption and RLS-context keys at runtime instead of storing reusable keys in the repository.
-- Production must set a random `RLS_CONTEXT_SECRET` of at least 32 bytes before applying migration `0010_signed_tenant_context`; the migration stores its verifier copy in the restricted `mia_private` schema.
+- If PR #27 is approved for deployment, provision a random `RLS_CONTEXT_SECRET` of at least 32 bytes in both the protected application environment and migration process before applying migration `0010_signed_tenant_context`; the migration stores its verifier copy in the restricted `mia_private` schema. This secret is not currently required by the merged `main` migration chain.
 
 ## Operational notes
 
