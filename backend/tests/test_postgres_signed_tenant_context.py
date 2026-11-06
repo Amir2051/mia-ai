@@ -2,7 +2,7 @@
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text, update
@@ -213,11 +213,32 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                                 .where(ScheduledReport.id == schedule_b_id)
                                 .values(shop_id=shop_a_id)
                             )
+                    with pytest.raises(DBAPIError):
+                        async with runtime.begin_nested():
+                            await runtime.execute(
+                                update(ScheduledReport)
+                                .where(ScheduledReport.id == schedule_b_id)
+                                .values(enabled=False)
+                            )
+                    with pytest.raises(DBAPIError):
+                        async with runtime.begin_nested():
+                            await runtime.execute(
+                                update(ScheduledReport)
+                                .where(ScheduledReport.id == schedule_b_id)
+                                .values(last_result_json='{"tampered":true}')
+                            )
 
+                    claim_time = datetime.now(timezone.utc).replace(tzinfo=None)
+                    next_run = claim_time + timedelta(days=1)
                     scheduler_claim = await runtime.execute(
                         update(ScheduledReport)
                         .where(ScheduledReport.id == schedule_b_id)
-                        .values(last_status="running")
+                        .values(
+                            next_run_at=next_run,
+                            last_status="running",
+                            last_run_at=claim_time,
+                            last_error="claim test",
+                        )
                     )
                     assert scheduler_claim.rowcount == 1
                     blocked_shop_update = await runtime.execute(
@@ -239,7 +260,12 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                 )
                 assert protected_schedule.name == "Shop B protected schedule"
                 assert protected_schedule.shop_id == shop_b_id
+                assert protected_schedule.enabled is True
+                assert protected_schedule.last_result_json is None
+                assert protected_schedule.next_run_at == next_run
                 assert protected_schedule.last_status == "running"
+                assert protected_schedule.last_run_at == claim_time
+                assert protected_schedule.last_error == "claim test"
                 assert protected_shop.shop_name is None
                 assert protected_audit is not None
                 assert protected_audit.details_json == '{"marker":"shop-b-must-survive"}'
