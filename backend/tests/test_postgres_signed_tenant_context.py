@@ -103,9 +103,31 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                 assert own_schedule is not None
                 assert hidden_schedule is None
 
-                # Simulate arbitrary SQL under the shared runtime role. The
-                # current valid signature belongs to A; changing the tenant
-                # GUCs and setting the old scheduler flag must not grant B.
+                # Each legacy caller-settable GUC must be ineffective on its own.
+                # First forge only shop_id while the valid signed domain remains A.
+                await runtime.execute(
+                    text("SELECT set_config('app.shop_id', :shop_id, true)"),
+                    {"shop_id": str(shop_b_id)},
+                )
+                assert await runtime.scalar(select(Shop).where(Shop.id == shop_b_id)) is None
+                assert await runtime.scalar(select(Shop).where(Shop.id == shop_a_id)) is not None
+
+                # Next forge shop_domain without changing A's valid signature.
+                await runtime.execute(
+                    text("SELECT set_config('app.shop_domain', :domain, true)"),
+                    {"domain": shop_b_domain},
+                )
+                assert await runtime.scalar(select(Shop).where(Shop.id == shop_b_id)) is None
+                assert await runtime.scalar(select(ScheduledReport).where(ScheduledReport.id == schedule_b_id)) is None
+
+                # A plain scheduler flag, without its HMAC proof, must not grant cross-shop reads.
+                await runtime.execute(
+                    text("SELECT set_config('app.internal_scheduler', 'true', true)")
+                )
+                assert await runtime.scalar(select(Shop).where(Shop.id == shop_b_id)) is None
+                assert await runtime.scalar(select(ScheduledReport).where(ScheduledReport.id == schedule_b_id)) is None
+
+                # Finally combine all three forged GUCs; the valid signature still belongs to A.
                 await runtime.execute(
                     text("""
                         SELECT
