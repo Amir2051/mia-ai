@@ -38,7 +38,201 @@ def _runtime_role(bind) -> str:
         raise RuntimeError("Both database URLs must include usernames")
     if runtime_user == migration_user:
         raise RuntimeError("DATABASE_URL must use a dedicated runtime role distinct from MIGRATION_DATABASE_URL")
-    return bind.dialect.identifier_preparer.quote(runtime_user)
+    return runtime_user
+
+
+def _verify_runtime_role(bind, runtime_user: str) -> None:
+    """Fail closed unless the app role cannot bypass RLS or reach verifier ownership."""
+    role = bind.execute(
+        sa.text("""
+            SELECT oid, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                   rolinherit, rolreplication, rolbypassrls
+              FROM pg_catalog.pg_roles
+             WHERE rolname = :runtime_user
+        """),
+        {"runtime_user": runtime_user},
+    ).mappings().one_or_none()
+    if role is None:
+        raise RuntimeError("DATABASE_URL runtime role does not exist in PostgreSQL")
+
+    unsafe_attributes = [
+        name for name, enabled in (
+            ("LOGIN", role["rolcanlogin"]),
+            ("SUPERUSER", role["rolsuper"]),
+            ("CREATEDB", role["rolcreatedb"]),
+            ("CREATEROLE", role["rolcreaterole"]),
+            ("INHERIT", role["rolinherit"]),
+            ("REPLICATION", role["rolreplication"]),
+            ("BYPASSRLS", role["rolbypassrls"]),
+        )
+        if (name == "LOGIN" and not enabled) or (name != "LOGIN" and enabled)
+    ]
+    if unsafe_attributes:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must be LOGIN, NOSUPERUSER, NOCREATEDB, "
+            "NOCREATEROLE, NOINHERIT, NOREPLICATION, and NOBYPASSRLS; "
+            f"unsafe attributes: {', '.join(unsafe_attributes)}"
+        )
+
+    # Even NOINHERIT members can SET ROLE on supported PostgreSQL versions.
+    # Reject every direct or transitive membership rather than relying on
+    # version-specific pg_auth_members.inherit_option/set_option semantics.
+    membership_count = bind.execute(
+        sa.text("""
+            WITH RECURSIVE reachable_roles(role_oid) AS (
+                SELECT m.roleid
+                  FROM pg_catalog.pg_auth_members AS m
+                 WHERE m.member = :runtime_oid
+                UNION
+                SELECT m.roleid
+                  FROM pg_catalog.pg_auth_members AS m
+                  JOIN reachable_roles AS r ON m.member = r.role_oid
+            )
+            SELECT count(*) FROM reachable_roles
+        """),
+        {"runtime_oid": role["oid"]},
+    ).scalar_one()
+    if membership_count:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must have no direct or indirect role memberships; "
+            "SET ROLE and inherited role privileges are not permitted"
+        )
+
+    protected_tables = sorted(set((*TENANT_TABLES, "shops", "scheduled_reports")))
+    owned_tables = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.format('%I.%I', n.nspname, c.relname)
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public'
+               AND c.relname IN :table_names
+               AND c.relkind IN ('r', 'p')
+               AND c.relowner = :runtime_oid
+        """).bindparams(sa.bindparam("table_names", expanding=True)),
+        {"table_names": protected_tables, "runtime_oid": role["oid"]},
+    ).scalars().all()
+    if owned_tables:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not own RLS-protected tables: "
+            + ", ".join(owned_tables)
+        )
+
+    owned_schemas = bind.execute(
+        sa.text("""
+            SELECT nspname
+              FROM pg_catalog.pg_namespace
+             WHERE nspname IN ('public', 'mia_private')
+               AND nspowner = :runtime_oid
+             ORDER BY nspname
+        """),
+        {"runtime_oid": role["oid"]},
+    ).scalars().all()
+    if owned_schemas:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not own protected schemas: "
+            + ", ".join(owned_schemas)
+        )
+
+    owned_private_objects = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.format('%I.%I', n.nspname, c.relname)
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'mia_private'
+               AND c.relowner = :runtime_oid
+            UNION ALL
+            SELECT pg_catalog.format('%I.%I()', n.nspname, p.proname)
+              FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'mia_private'
+               AND p.proowner = :runtime_oid
+        """),
+        {"runtime_oid": role["oid"]},
+    ).scalars().all()
+    if owned_private_objects:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not own private verifier objects: "
+            + ", ".join(owned_private_objects)
+        )
+
+    owned_security_definers = bind.execute(
+        sa.text("""
+            SELECT p.proname
+              FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'public'
+               AND p.proowner = :runtime_oid
+               AND p.prosecdef IS TRUE
+        """),
+        {"runtime_oid": role["oid"]},
+    ).scalars().all()
+    if owned_security_definers:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not own SECURITY DEFINER functions: "
+            + ", ".join(owned_security_definers)
+        )
+
+    public_schema_oid = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'")
+    ).scalar_one_or_none()
+    if public_schema_oid is not None:
+        can_create_in_public = bind.execute(
+            sa.text("SELECT pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'CREATE')"),
+            {"role_oid": role["oid"], "schema_oid": public_schema_oid},
+        ).scalar_one()
+        if can_create_in_public:
+            raise RuntimeError("DATABASE_URL runtime role must not have CREATE privilege on the public schema")
+
+    can_create_database_objects = bind.execute(
+        sa.text("SELECT pg_catalog.has_database_privilege(:role_oid, pg_catalog.current_database(), 'CREATE')"),
+        {"role_oid": role["oid"]},
+    ).scalar_one()
+    if can_create_database_objects:
+        raise RuntimeError("DATABASE_URL runtime role must not have CREATE privilege on the database")
+
+    private_schema_oid = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'mia_private'")
+    ).scalar_one_or_none()
+    if private_schema_oid is not None:
+        private_schema_access = bind.execute(
+            sa.text("""
+                SELECT pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'USAGE')
+                    OR pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'CREATE')
+            """),
+            {"role_oid": role["oid"], "schema_oid": private_schema_oid},
+        ).scalar_one()
+        if private_schema_access:
+            raise RuntimeError(
+                "DATABASE_URL runtime role must not have USAGE or CREATE privilege on mia_private"
+            )
+
+        key_table_oid = bind.execute(
+            sa.text("""
+                SELECT c.oid
+                  FROM pg_catalog.pg_class AS c
+                  JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'mia_private'
+                   AND c.relname = 'tenant_context_keys'
+                   AND c.relkind IN ('r', 'p')
+            """)
+        ).scalar_one_or_none()
+        if key_table_oid is not None:
+            key_table_access = bind.execute(
+                sa.text("""
+                    SELECT pg_catalog.has_table_privilege(:role_oid, :table_oid, 'SELECT')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'INSERT')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'UPDATE')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'DELETE')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'TRUNCATE')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'REFERENCES')
+                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'TRIGGER')
+                """),
+                {"role_oid": role["oid"], "table_oid": key_table_oid},
+            ).scalar_one()
+            if key_table_access:
+                raise RuntimeError(
+                    "DATABASE_URL runtime role must not have privileges on mia_private.tenant_context_keys"
+                )
 
 
 def upgrade() -> None:
@@ -47,7 +241,9 @@ def upgrade() -> None:
         raise RuntimeError("RLS_CONTEXT_SECRET must contain at least 32 bytes before applying signed tenant-context migration")
 
     bind = op.get_bind()
-    runtime_role = _runtime_role(bind)
+    runtime_role_name = _runtime_role(bind)
+    _verify_runtime_role(bind, runtime_role_name)
+    runtime_role = bind.dialect.identifier_preparer.quote(runtime_role_name)
 
     # pgcrypto may already live in Supabase's extensions schema. Resolve its
     # actual schema rather than assuming public or extensions.
