@@ -13,7 +13,7 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The last Shopify app configuration release recorded in this handoff is **mia-ai-9** on 2026-09-18; no later release has been verified. The production URL is `https://mia.drivenest.info`, but its current health and running commit are not revalidated here.
 
-## Current verified engineering evidence — 2026-11-06
+## Current verified engineering evidence — 2026-11-08
 
 ### Main branch
 - Main commit: `11ff8cc5f0b427117576e43edc4918907e72f750`.
@@ -23,13 +23,15 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 
 ### Proposed tenant-isolation hardening — PR #27
 - Branch: `security/signed-tenant-context-2026-11-03`.
-- Latest branch head at this handoff update: `25e45aa7837c1ca61c4b7d33496583585598a370`.
-- CI run #250 (2026-11-06): **all 3 jobs passed**. Backend: **286 passed, 3 warnings**; PostgreSQL restricted-role migration and regression tests passed; the explicit downgrade/re-upgrade check passed. Frontend: **17 tests passed**, lint and production build passed. Both configured moderate-threshold audit gates passed. Production Docker image build passed.
-- The latest regression test independently attempts to forge `app.shop_id`, forge `app.shop_domain` while retaining the original shop's valid signature, set `app.internal_scheduler=true` without its signature, and combine the forged GUCs. The test also verifies that scheduler claim/status fields remain writable while merchant-owned schedule fields remain blocked.
+- Latest branch head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`.
+- CI #261 (2026-11-08) on the current head: **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
+- The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
+- The scheduler HMAC is bound to the PostgreSQL transaction ID; a captured proof is rejected when replayed in a later transaction.
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
-- PR #27 remains a draft, unmerged, undeployed, and not production-approved. No independent security review has been recorded. CI #250 validates the current code branch, not production deployment.
+- PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
 
 ### Other open feature PRs
 - PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed, but the branch is **3 commits ahead and 1 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
@@ -138,6 +140,15 @@ The preflight also rejects:
 - USAGE/CREATE on mia_private or any privilege on mia_private.tenant_context_keys.
 
 The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exercises unsafe role attributes, transitive membership, protected-table/schema/key ownership, private-schema/key grants, and SECURITY DEFINER ownership.
+
+### Additional 2026-11-08 hardening after the initial preflight
+
+- Scheduler proof replay: the application now signs the internal-scheduler context with the current PostgreSQL transaction ID, and the database verifier recomputes against the current transaction. CI includes a negative replay attempt in a separate transaction.
+- Role attribute regression cases now cover NOLOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, and INHERIT, plus direct/transitive memberships and ownership/grant checks.
+- The preflight now rejects effective TRUNCATE, REFERENCES, and TRIGGER privileges on every public table. TRUNCATE is not subject to RLS; CI verifies direct grants and a TRUNCATE grant to PUBLIC are detected.
+- CI #260 passed all three jobs on the transaction-bound scheduler proof change (287 backend, 17 frontend).
+- CI #261 passed all three jobs on current head `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- The npm audit continues to report 3 low-severity deepmerge findings. Passing the moderate threshold is not a zero-vulnerability result.
 
 ### Verification
 
