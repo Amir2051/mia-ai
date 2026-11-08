@@ -274,3 +274,139 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
             await admin_engine.dispose()
 
     asyncio.run(scenario())
+
+
+
+def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
+    """Exercise the migration's fail-closed role/ownership/privilege checks."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "0010_signed_tenant_context.py"
+    )
+    spec = spec_from_file_location("mia_signed_tenant_context_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        suffix = uuid.uuid4().hex[:10]
+        safe_role = f"mia_preflight_safe_{suffix}"
+        bypass_role = f"mia_preflight_bypass_{suffix}"
+        inherit_role = f"mia_preflight_inherit_{suffix}"
+        member_role = f"mia_preflight_member_{suffix}"
+        elevated_role = f"mia_preflight_elevated_{suffix}"
+        try:
+            async with engine.begin() as admin:
+                await admin.execute(text(
+                    f'CREATE ROLE "{safe_role}" LOGIN PASSWORD \'ci-only\' '
+                    'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+                ))
+                await admin.run_sync(
+                    lambda connection: migration._verify_runtime_role(connection, safe_role)
+                )
+
+                await admin.execute(text(
+                    f'CREATE ROLE "{bypass_role}" LOGIN PASSWORD \'ci-only\' '
+                    'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS'
+                ))
+                with pytest.raises(RuntimeError, match="BYPASSRLS"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, bypass_role)
+                    )
+
+                await admin.execute(text(
+                    f'CREATE ROLE "{inherit_role}" LOGIN PASSWORD \'ci-only\' '
+                    'NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS'
+                ))
+                with pytest.raises(RuntimeError, match="INHERIT"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, inherit_role)
+                    )
+
+                await admin.execute(text(
+                    f'CREATE ROLE "{member_role}" LOGIN PASSWORD \'ci-only\' '
+                    'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+                ))
+                await admin.execute(text(
+                    f'CREATE ROLE "{elevated_role}" NOLOGIN NOSUPERUSER NOCREATEDB '
+                    'NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS'
+                ))
+                await admin.execute(text(f'GRANT "{elevated_role}" TO "{member_role}"'))
+                with pytest.raises(RuntimeError, match="role memberships"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, member_role)
+                    )
+                await admin.execute(text(f'REVOKE "{elevated_role}" FROM "{member_role}"'))
+
+                # Ownership of an RLS-protected table must fail the preflight.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON SCHEMA public TO "{safe_role}"'))
+                await admin.execute(text(f'ALTER TABLE public.shops OWNER TO "{safe_role}"'))
+                with pytest.raises(RuntimeError, match="RLS-protected tables"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                # Ownership of the protected private schema must also fail.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON DATABASE mia_test TO "{safe_role}"'))
+                await admin.execute(text(f'ALTER SCHEMA mia_private OWNER TO "{safe_role}"'))
+                with pytest.raises(RuntimeError, match="protected schemas"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                # Ownership of the verifier table is independently prohibited.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON SCHEMA mia_private TO "{safe_role}"'))
+                await admin.execute(text(
+                    f'ALTER TABLE mia_private.tenant_context_keys OWNER TO "{safe_role}"'
+                ))
+                with pytest.raises(RuntimeError, match="private verifier objects"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                # Direct schema/table grants must be rejected even without role membership.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT USAGE ON SCHEMA mia_private TO "{safe_role}"'))
+                with pytest.raises(RuntimeError, match="USAGE or CREATE privilege on mia_private"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(
+                    f'GRANT SELECT ON TABLE mia_private.tenant_context_keys TO "{safe_role}"'
+                ))
+                with pytest.raises(RuntimeError, match="privileges on mia_private.tenant_context_keys"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                await admin.execute(text(f'DROP ROLE "{safe_role}"'))
+                await admin.execute(text(f'DROP ROLE "{bypass_role}"'))
+                await admin.execute(text(f'DROP ROLE "{inherit_role}"'))
+                await admin.execute(text(f'DROP ROLE "{member_role}"'))
+                await admin.execute(text(f'DROP ROLE "{elevated_role}"'))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
