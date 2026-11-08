@@ -177,14 +177,18 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
     ).scalar_one_or_none()
     if public_schema_oid is not None:
         can_create_in_public = bind.execute(
-            sa.text("SELECT pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'CREATE')"),
+            sa.text("SELECT pg_catalog.has_schema_privilege(CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE')"),
             {"role_oid": role["oid"], "schema_oid": public_schema_oid},
         ).scalar_one()
         if can_create_in_public:
             raise RuntimeError("DATABASE_URL runtime role must not have CREATE privilege on the public schema")
 
     can_create_database_objects = bind.execute(
-        sa.text("SELECT pg_catalog.has_database_privilege(:role_oid, pg_catalog.current_database(), 'CREATE')"),
+        sa.text("SELECT pg_catalog.has_database_privilege(
+            CAST(:role_oid AS oid),
+            (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()),
+            'CREATE'
+        )"),
         {"role_oid": role["oid"]},
     ).scalar_one()
     if can_create_database_objects:
@@ -196,8 +200,8 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
     if private_schema_oid is not None:
         private_schema_access = bind.execute(
             sa.text("""
-                SELECT pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'USAGE')
-                    OR pg_catalog.has_schema_privilege(:role_oid, :schema_oid, 'CREATE')
+                SELECT pg_catalog.has_schema_privilege(CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'USAGE')
+                    OR pg_catalog.has_schema_privilege(CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE')
             """),
             {"role_oid": role["oid"], "schema_oid": private_schema_oid},
         ).scalar_one()
@@ -219,13 +223,13 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
         if key_table_oid is not None:
             key_table_access = bind.execute(
                 sa.text("""
-                    SELECT pg_catalog.has_table_privilege(:role_oid, :table_oid, 'SELECT')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'INSERT')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'UPDATE')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'DELETE')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'TRUNCATE')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'REFERENCES')
-                        OR pg_catalog.has_table_privilege(:role_oid, :table_oid, 'TRIGGER')
+                    SELECT pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'SELECT')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'INSERT')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'UPDATE')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'DELETE')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'TRUNCATE')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'REFERENCES')
+                        OR pg_catalog.has_table_privilege(CAST(:role_oid AS oid), CAST(:table_oid AS oid), 'TRIGGER')
                 """),
                 {"role_oid": role["oid"], "table_oid": key_table_oid},
             ).scalar_one()
