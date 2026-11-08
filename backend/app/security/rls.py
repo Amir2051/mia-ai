@@ -57,6 +57,11 @@ async def set_internal_scheduler_context(db: AsyncSession) -> None:
     if not db.bind or db.bind.dialect.name != "postgresql":
         return
 
-    signature = _context_signature(SCHEDULER_CONTEXT_MESSAGE)
+    # Bind the proof to this PostgreSQL transaction. A signature observed in
+    # one scheduler transaction must not be replayable in a later transaction.
+    txid = await db.scalar(text("SELECT pg_catalog.txid_current()"))
+    if txid is None:
+        raise RuntimeError("Could not bind scheduler context to the current PostgreSQL transaction")
+    signature = _context_signature(f"{SCHEDULER_CONTEXT_MESSAGE}:{txid}")
     await _set_local(db, SCHEDULER_FLAG_SETTING, "true")
     await _set_local(db, SCHEDULER_SIGNATURE_SETTING, signature)
