@@ -124,3 +124,30 @@ GitHub Actions runs:
 - Do not expose access tokens in logs or API responses.
 - Keep production and development Shopify configurations separate.
 - Re-run the production smoke tests after every deployment.
+## Latest runtime-role privilege preflight — 2026-11-08
+
+### New fail-closed migration checks on PR #27
+
+Migration 0010_signed_tenant_context now verifies the configured DATABASE_URL role before it changes RLS policies or creates verifier objects. It requires the role to be LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOINHERIT, NOREPLICATION, and NOBYPASSRLS.
+
+The preflight also rejects:
+- Any direct or transitive PostgreSQL role membership. NOINHERIT alone is insufficient because membership can still permit SET ROLE on supported PostgreSQL versions.
+- Ownership of the protected tenant tables, public/mia_private schemas, or any object in the private verifier schema.
+- Ownership of SECURITY DEFINER functions in public.
+- CREATE on the public schema or database.
+- USAGE/CREATE on mia_private or any privilege on mia_private.tenant_context_keys.
+
+The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exercises unsafe role attributes, transitive membership, protected-table/schema/key ownership, private-schema/key grants, and SECURITY DEFINER ownership.
+
+### Verification
+
+- CI #254 on commit 6fa2c6b2d91d5172e1c82da3da79ca5f234b5172: all three jobs passed. Backend: 287 passed, 3 warnings; frontend: 17 tests passed, lint/build passed; production Docker image build passed.
+- CI #255 on code/test commit 4bc64e96e00e2d8137aa033d54ba25b2fe8466e1: all three jobs passed. Backend: 287 passed, 3 warnings; frontend: 17 tests passed, lint/build passed; configured moderate-threshold audit gates and production Docker image build passed.
+- The two intermediate runs #252 and #253 exposed, respectively, an asyncpg OID parameter typing issue and a malformed multiline SQL string. Both were corrected before the successful #254/#255 runs.
+- These are PR-branch CI results only. They do not prove the production database role has the required catalog attributes; direct production catalog verification remains a deployment gate.
+
+### Current review and release state
+
+PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The runtime-role preflight finding is now implemented and covered by CI, but the review thread should remain open until an independent reviewer assesses the complete migration and deployment model.
+
+Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
