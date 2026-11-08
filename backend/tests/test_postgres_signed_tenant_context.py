@@ -346,6 +346,28 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                     lambda connection: migration._verify_runtime_role(connection, safe_role)
                 )
 
+                # RLS does not protect TRUNCATE; REFERENCES and TRIGGER are
+                # likewise outside the application's restricted DML contract.
+                for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER"):
+                    savepoint = await admin.begin_nested()
+                    await admin.execute(text(
+                        f'GRANT {privilege} ON TABLE public.shops TO "{safe_role}"'
+                    ))
+                    with pytest.raises(RuntimeError, match=privilege):
+                        await admin.run_sync(
+                            lambda connection: migration._verify_runtime_role(connection, safe_role)
+                        )
+                    await savepoint.rollback()
+
+                # Effective privilege checks must also see grants made to PUBLIC.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text("GRANT TRUNCATE ON TABLE public.shops TO PUBLIC"))
+                with pytest.raises(RuntimeError, match="TRUNCATE"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
                 # Exercise every role attribute that the migration requires to be disabled.
                 unsafe_role_specs = (
                     ("no_login", "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", "LOGIN"),
