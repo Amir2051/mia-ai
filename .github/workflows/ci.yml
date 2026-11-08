@@ -45,14 +45,14 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - name: Generate ephemeral test encryption and RLS context keys
+      - name: Generate and mask ephemeral test encryption and RLS context keys
         run: |
-          python - <<'PY' >> "$GITHUB_ENV"
-          import secrets
-          from cryptography.fernet import Fernet
-          print("TOKEN_ENCRYPTION_KEY=" + Fernet.generate_key().decode())
-          print("RLS_CONTEXT_SECRET=" + secrets.token_urlsafe(48))
-          PY
+          TOKEN_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          RLS_CONTEXT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          echo "::add-mask::$TOKEN_ENCRYPTION_KEY"
+          echo "::add-mask::$RLS_CONTEXT_SECRET"
+          echo "TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY" >> "$GITHUB_ENV"
+          echo "RLS_CONTEXT_SECRET=$RLS_CONTEXT_SECRET" >> "$GITHUB_ENV"
       - name: Create restricted PostgreSQL RLS test role
         env:
           PGPASSWORD: mia
