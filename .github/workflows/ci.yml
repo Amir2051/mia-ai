@@ -58,7 +58,7 @@ jobs:
           PGPASSWORD: mia
         run: |
           psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE mia_runtime_test LOGIN PASSWORD 'mia-rls-ci-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE mia_runtime_test LOGIN PASSWORD 'mia-rls-ci-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT CONNECT ON DATABASE mia_test TO mia_runtime_test;
           GRANT USAGE ON SCHEMA public TO mia_runtime_test;
           SQL
