@@ -191,6 +191,13 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                     # A plain scheduler GUC is not enough, but the trusted
                     # application helper supplies the verifiable scheduler proof.
                     await set_internal_scheduler_context(runtime)
+                    scheduler_signature = await runtime.scalar(
+                        text("SELECT current_setting('app.internal_scheduler_signature', true)")
+                    )
+                    scheduler_txid = await runtime.scalar(
+                        text("SELECT pg_catalog.txid_current()")
+                    )
+                    assert scheduler_signature
                     visible_shops = (await runtime.execute(select(Shop))).scalars().all()
                     visible_schedules = (await runtime.execute(select(ScheduledReport))).scalars().all()
                     assert {shop.id for shop in visible_shops} >= {shop_a_id, shop_b_id}
@@ -247,6 +254,27 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                         .values(shop_name="tampered by scheduler")
                     )
                     assert blocked_shop_update.rowcount == 0
+
+                # A captured scheduler proof must not grant cross-shop access
+                # when replayed in a different PostgreSQL transaction.
+                async with runtime.begin():
+                    replay_txid = await runtime.scalar(
+                        text("SELECT pg_catalog.txid_current()")
+                    )
+                    assert replay_txid != scheduler_txid
+                    await runtime.execute(
+                        text("SELECT set_config('app.internal_scheduler', 'true', true)")
+                    )
+                    await runtime.execute(
+                        text("SELECT set_config('app.internal_scheduler_signature', :signature, true)"),
+                        {"signature": scheduler_signature},
+                    )
+                    assert await runtime.scalar(
+                        select(Shop).where(Shop.id == shop_b_id)
+                    ) is None
+                    assert await runtime.scalar(
+                        select(ScheduledReport).where(ScheduledReport.id == schedule_b_id)
+                    ) is None
 
             async with admin_factory() as admin:
                 protected_schedule = await admin.scalar(
@@ -317,6 +345,27 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                 await admin.run_sync(
                     lambda connection: migration._verify_runtime_role(connection, safe_role)
                 )
+
+                # Exercise every role attribute that the migration requires to be disabled.
+                unsafe_role_specs = (
+                    ("no_login", "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", "LOGIN"),
+                    ("superuser", "LOGIN SUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", "SUPERUSER"),
+                    ("createdb", "LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", "CREATEDB"),
+                    ("createrole", "LOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", "CREATEROLE"),
+                    ("replication", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT REPLICATION NOBYPASSRLS", "REPLICATION"),
+                )
+                for label, attributes, expected in unsafe_role_specs:
+                    unsafe_role = f"mia_preflight_{label}_{suffix}"
+                    await admin.execute(text(
+                        f'CREATE ROLE "{unsafe_role}" PASSWORD \'ci-only\' {attributes}'
+                    ))
+                    with pytest.raises(RuntimeError, match=expected):
+                        await admin.run_sync(
+                            lambda connection, role_name=unsafe_role: migration._verify_runtime_role(
+                                connection, role_name
+                            )
+                        )
+                    await admin.execute(text(f'DROP ROLE "{unsafe_role}"'))
 
                 await admin.execute(text(
                     f'CREATE ROLE "{bypass_role}" LOGIN PASSWORD \'ci-only\' '
