@@ -387,7 +387,10 @@ def upgrade() -> None:
 
             v_expected := pg_catalog.encode(
                 {hmac_schema}.hmac(
-                    pg_catalog.convert_to('mia:internal-scheduler:v1', 'UTF8'),
+                    pg_catalog.convert_to(
+                    'mia:internal-scheduler:v1:' || pg_catalog.txid_current()::text,
+                    'UTF8'
+                ),
                     pg_catalog.convert_to(v_secret, 'UTF8'),
                     'sha256'
                 ),
