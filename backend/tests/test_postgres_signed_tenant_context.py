@@ -306,6 +306,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
         bypass_role = f"mia_preflight_bypass_{suffix}"
         inherit_role = f"mia_preflight_inherit_{suffix}"
         member_role = f"mia_preflight_member_{suffix}"
+        intermediate_role = f"mia_preflight_intermediate_{suffix}"
         elevated_role = f"mia_preflight_elevated_{suffix}"
         try:
             async with engine.begin() as admin:
@@ -343,12 +344,19 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                     f'CREATE ROLE "{elevated_role}" NOLOGIN NOSUPERUSER NOCREATEDB '
                     'NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS'
                 ))
-                await admin.execute(text(f'GRANT "{elevated_role}" TO "{member_role}"'))
+                await admin.execute(text(
+                    f'CREATE ROLE "{intermediate_role}" NOLOGIN NOSUPERUSER NOCREATEDB '
+                    'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+                ))
+                # The elevated role is granted transitively, not directly.
+                await admin.execute(text(f'GRANT "{elevated_role}" TO "{intermediate_role}"'))
+                await admin.execute(text(f'GRANT "{intermediate_role}" TO "{member_role}"'))
                 with pytest.raises(RuntimeError, match="role memberships"):
                     await admin.run_sync(
                         lambda connection: migration._verify_runtime_role(connection, member_role)
                     )
-                await admin.execute(text(f'REVOKE "{elevated_role}" FROM "{member_role}"'))
+                await admin.execute(text(f'REVOKE "{intermediate_role}" FROM "{member_role}"'))
+                await admin.execute(text(f'REVOKE "{elevated_role}" FROM "{intermediate_role}"'))
 
                 # Ownership of an RLS-protected table must fail the preflight.
                 savepoint = await admin.begin_nested()
@@ -382,6 +390,42 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                     )
                 await savepoint.rollback()
 
+                # Direct CREATE grants on public/database are not part of the runtime contract.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON SCHEMA public TO "{safe_role}"'))
+                with pytest.raises(RuntimeError, match="CREATE privilege on the public schema"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON DATABASE mia_test TO "{safe_role}"'))
+                with pytest.raises(RuntimeError, match="CREATE privilege on the database"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
+                # A SECURITY DEFINER function owned by the runtime role is also prohibited.
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'GRANT CREATE ON SCHEMA public TO "{safe_role}"'))
+                await admin.execute(text("""
+                    CREATE FUNCTION public.mia_preflight_owned_definer()
+                    RETURNS integer
+                    LANGUAGE sql
+                    SECURITY DEFINER
+                    AS 'SELECT 1'
+                """))
+                await admin.execute(text(
+                    f'ALTER FUNCTION public.mia_preflight_owned_definer() OWNER TO "{safe_role}"'
+                ))
+                with pytest.raises(RuntimeError, match="SECURITY DEFINER functions"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await savepoint.rollback()
+
                 # Direct schema/table grants must be rejected even without role membership.
                 savepoint = await admin.begin_nested()
                 await admin.execute(text(f'GRANT USAGE ON SCHEMA mia_private TO "{safe_role}"'))
@@ -405,6 +449,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                 await admin.execute(text(f'DROP ROLE "{bypass_role}"'))
                 await admin.execute(text(f'DROP ROLE "{inherit_role}"'))
                 await admin.execute(text(f'DROP ROLE "{member_role}"'))
+                await admin.execute(text(f'DROP ROLE "{intermediate_role}"'))
                 await admin.execute(text(f'DROP ROLE "{elevated_role}"'))
         finally:
             await engine.dispose()
