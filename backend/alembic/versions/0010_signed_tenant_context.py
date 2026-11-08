@@ -184,11 +184,13 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             raise RuntimeError("DATABASE_URL runtime role must not have CREATE privilege on the public schema")
 
     can_create_database_objects = bind.execute(
-        sa.text("SELECT pg_catalog.has_database_privilege(
-            CAST(:role_oid AS oid),
-            (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()),
-            'CREATE'
-        )"),
+        sa.text("""
+            SELECT pg_catalog.has_database_privilege(
+                CAST(:role_oid AS oid),
+                (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()),
+                'CREATE'
+            )
+        """),
         {"role_oid": role["oid"]},
     ).scalar_one()
     if can_create_database_objects:
