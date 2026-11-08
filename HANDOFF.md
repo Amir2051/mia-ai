@@ -23,7 +23,8 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 
 ### Proposed tenant-isolation hardening — PR #27
 - Branch: `security/signed-tenant-context-2026-11-03`.
-- Latest branch head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`.
+- Latest code/test head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`. Subsequent documentation-only PR #27 heads `48058e8141cec528c96eb2a5d60ec39e5c78bb8e` (CI #262 passed) and `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` (CI #264 passed) leave the code/test tree unchanged.
+- CI #264 on the subsequent SECURITY.md-only head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` also passed all three jobs: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
 - CI #261 (2026-11-08) on the current head: **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
