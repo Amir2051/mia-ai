@@ -117,6 +117,39 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             + ", ".join(owned_tables)
         )
 
+    # RLS does not apply to TRUNCATE. REFERENCES and TRIGGER are also outside
+    # the runtime DML contract, so reject those effective grants on every
+    # public application table (including privileges inherited from PUBLIC).
+    table_privilege_rows = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.format('%I.%I', n.nspname, c.relname) AS table_name,
+                   pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'TRUNCATE') AS can_truncate,
+                   pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
+                   pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'TRIGGER') AS can_trigger
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public'
+               AND c.relkind IN ('r', 'p')
+             ORDER BY c.relname
+        """),
+        {"runtime_oid": role["oid"]},
+    ).mappings().all()
+    unsafe_table_grants = [
+        f"{row['table_name']}:{privilege}"
+        for row in table_privilege_rows
+        for privilege, column in (
+            ("TRUNCATE", "can_truncate"),
+            ("REFERENCES", "can_reference"),
+            ("TRIGGER", "can_trigger"),
+        )
+        if row[column]
+    ]
+    if unsafe_table_grants:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not have TRUNCATE, REFERENCES, or TRIGGER "
+            "privileges on public tables: " + ", ".join(unsafe_table_grants)
+        )
+
     owned_schemas = bind.execute(
         sa.text("""
             SELECT nspname
