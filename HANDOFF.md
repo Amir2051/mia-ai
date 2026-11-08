@@ -145,6 +145,7 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 - CI #255 on code/test commit 4bc64e96e00e2d8137aa033d54ba25b2fe8466e1: all three jobs passed. Backend: 287 passed, 3 warnings; frontend: 17 tests passed, lint/build passed; configured moderate-threshold audit gates and production Docker image build passed.
 - The two intermediate runs #252 and #253 exposed, respectively, an asyncpg OID parameter typing issue and a malformed multiline SQL string. Both were corrected before the successful #254/#255 runs.
 - These are PR-branch CI results only. They do not prove the production database role has the required catalog attributes; direct production catalog verification remains a deployment gate.
+- Documentation/security-handoff head `2824c4c3e415142667ce9a77858f30f2d047768e` was also verified by CI #256: all three jobs passed, with 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker build successful.
 
 ### Current review and release state
 
