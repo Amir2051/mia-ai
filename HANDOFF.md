@@ -161,6 +161,37 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 
 ### Current review and release state
 
-PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The runtime-role preflight finding is now implemented and covered by CI, but the review thread should remain open until an independent reviewer assesses the complete migration and deployment model.
+PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The owner-authored inline thread requesting the runtime-role preflight has been resolved after the code/test implementation and CI verification. This is not an independent approval: all recorded review submissions remain owner-authored, no independent security reviewer has approved the migration, and PR #27 remains draft.
 
 Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
+
+
+## Verification refresh — 2026-11-09
+
+### Latest repository and CI evidence
+
+- Main remains at `11ff8cc5f0b427117576e43edc4918907e72f750`. Its latest recorded CI run #231 completed successfully: 285 backend tests, 17 frontend tests, and production Docker image build passed.
+- PR #27 current head is `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`. CI #264 completed successfully across all three jobs: 287 backend tests passed (3 warnings), 17 frontend tests passed, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
+- PR #28 head before this documentation refresh is `e17b21468c1ef924c92dd7088e9ca1fb959b8044`. CI #265 completed successfully across all three jobs: 285 backend tests passed (3 warnings), 17 frontend tests passed across 3 files, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
+- The npm audit logs continue to report 3 low-severity `deepmerge` findings. The current lockfile resolves `deepmerge@4.3.1`; GitHub Advisory GHSA-gcqx-w48m-w2h4 lists 4.2.0 through 4.3.1 as affected and currently lists no patched version. Do not describe the audit as clean or apply a forced major upgrade without compatibility testing. Advisory: https://github.com/advisories/GHSA-gcqx-w48m-w2h4
+
+### Review and repository governance
+
+- PR #27's two owner-authored inline review threads are now resolved. The runtime-role preflight request was addressed in migration 0010 and covered by PostgreSQL regression tests. This does not constitute independent security approval: recorded PR reviews are owner-authored comments only, and no independent reviewer has approved the migration.
+- PR #27 remains open, draft, unmerged, and undeployed.
+- GitHub reports the `main` branch as `protected: false`. Required CI/review branch protection is therefore not verified as enforced; configure it before treating main as a protected release branch.
+
+### Shopify acceptance items still requiring direct validation
+
+- `shopify.app.toml` registers `https://mia.drivenest.info/auth/callback`, but the backend auth router exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`; the frontend route table has no `/auth/callback` route. The current embedded ID-token exchange path is implemented, but the configured redirect must be tested in a real development-store install/reinstall flow and corrected if Shopify invokes it.
+- Publication scopes `read_publications` and `write_publications` are declared in `shopify.app.toml`; release of the updated app configuration and merchant re-approval are not verified.
+- No production database revision, production runtime-role catalog state, production `RLS_CONTEXT_SECRET`, deployed application SHA, or live merchant acceptance was directly verified in this run. Do not apply migration 0010 or claim production readiness from CI alone.
+
+### Next actions
+
+1. Obtain independent security review of migration 0010 and the deployment/rollback model.
+2. Read-only verify the production Alembic revision and runtime-role attributes, memberships, ownership, and effective privileges before planning migration.
+3. Enable required status checks and review protection on `main`.
+4. Run development-store install/reinstall, token exchange, publication-scope approval, product publishing, webhook, GDPR, and billing acceptance.
+5. Replace process-local FastAPI `BackgroundTasks` for campaign jobs with a durable worker/lease-recovery design before claiming restart-safe execution.
+6. Track the `deepmerge` advisory until upstream publishes a fix; assess the actual transitive usage and avoid unsafe forced upgrades.
