@@ -86,6 +86,13 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
             async with runtime_factory() as runtime:
                 # A normal authenticated shop context sees A, not B.
                 await set_shop_context(runtime, shop_a_domain, shop_a_id)
+                tenant_signature = await runtime.scalar(
+                    text("SELECT current_setting('app.shop_context_signature', true)")
+                )
+                tenant_txid = await runtime.scalar(
+                    text("SELECT pg_catalog.txid_current()")
+                )
+                assert tenant_signature
                 own_shop = await runtime.scalar(
                     select(Shop).where(Shop.id == shop_a_id)
                 )
@@ -274,6 +281,29 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                     ) is None
                     assert await runtime.scalar(
                         select(ScheduledReport).where(ScheduledReport.id == schedule_b_id)
+                    ) is None
+
+                    # A tenant proof captured in an earlier transaction must
+                    # not grant access when replayed with the same shop domain.
+                    tenant_replay_txid = await runtime.scalar(
+                        text("SELECT pg_catalog.txid_current()")
+                    )
+                    assert tenant_replay_txid != tenant_txid
+                    await runtime.execute(
+                        text("""
+                            SELECT
+                                set_config('app.shop_domain', :domain, true),
+                                set_config('app.shop_context_signature', :signature, true),
+                                set_config('app.shop_id', :shop_id, true)
+                        """),
+                        {
+                            "domain": shop_a_domain,
+                            "signature": tenant_signature,
+                            "shop_id": str(shop_a_id),
+                        },
+                    )
+                    assert await runtime.scalar(
+                        select(Shop).where(Shop.id == shop_a_id)
                     ) is None
 
             async with admin_factory() as admin:
