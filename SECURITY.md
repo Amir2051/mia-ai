@@ -15,7 +15,7 @@ This document distinguishes controls present on `main` from proposed controls in
 
 ### Proposed hardening — PR #27 (not deployed)
 
-- PR #27 replaces caller-settable tenant trust with a transaction-local shop domain plus an HMAC proof generated after Shopify authentication or webhook HMAC verification. Its proposed SECURITY DEFINER policies validate the proof; changing `app.shop_domain` or `app.shop_id` alone should not change the effective tenant.
+- PR #27 replaces caller-settable tenant trust with a transaction-local shop domain plus an HMAC proof over a versioned message containing the current PostgreSQL transaction ID and normalized shop domain, generated after Shopify authentication or webhook HMAC verification. Its proposed SECURITY DEFINER policies validate the proof; changing `app.shop_domain` or `app.shop_id` alone should not change the effective tenant, and a captured proof cannot be replayed in a later transaction.
 - The proposed internal scheduled-report override requires a separate HMAC proof bound to the current PostgreSQL transaction ID; a caller-settable `app.internal_scheduler=true` flag alone grants no cross-shop access, and a captured scheduler proof cannot be replayed in a later transaction.
 - The proposed migration stores HMAC key material in `mia_private`, which is denied to the runtime role. The application and migration process must receive the same protected `RLS_CONTEXT_SECRET`.
 - Before applying the proposed migration, its preflight rejects a runtime role that is superuser/BYPASSRLS, has database/role-creation/replication privileges, inherits or has any direct/transitive role membership, owns protected tables/schemas/private verifier objects or public SECURITY DEFINER functions, can create in `public`/the database, can access `mia_private`/the verifier table, or has effective TRUNCATE/REFERENCES/TRIGGER privileges on public tables (including grants to PUBLIC). TRUNCATE is not subject to RLS. CI exercises these rejection paths; production catalog verification remains mandatory.
@@ -54,7 +54,7 @@ This document distinguishes controls present on `main` from proposed controls in
 
 - The configured npm audit gates pass at the moderate-severity threshold. The latest recorded audit still reports three low-severity `deepmerge` findings through the deprecated Polaris React dependency; this is not a zero-vulnerability result.
 - React Router was upgraded to the current 7.18.x security line.
-- Development tooling was upgraded to current Vite/Vitest releases so the full npm audit is clean at this checkpoint.
+- Development tooling was upgraded to current Vite/Vitest releases; the three low-severity `deepmerge` findings listed above remain, so the full npm audit is not clean.
 
 ## Secret handling
 
