@@ -179,7 +179,7 @@ Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentatio
 - Wrapped RLS policy function calls in scalar subqueries so stable HMAC/key-lookup predicates are evaluated once per query rather than repeatedly per scanned row.
 - Updated `SECURITY.md` and this handoff to accurately describe transaction binding and the remaining low-severity dependency findings. CodeRabbit's two documentation threads were resolved after the fixes; the major tenant-proof thread remains open pending fresh CI and review.
 - The code/test change is on commit `ef7574533d6da51deb570ae7b4ec5ad761959ded`; the later handoff update is documentation-only. No fresh CI run is attached to these latest PR #27 commits yet. CI #264 passed on the earlier head and does not verify this remediation.
-- PR #27 remains draft, unmerged, and undeployed, with no independent APPROVE review. Its branch comparison is **49 commits ahead and 1 behind** main; GitHub currently reports `mergeable=false`, so branch synchronization/conflict reconciliation is still required.
+- PR #27 remains draft, unmerged, and undeployed, with no independent APPROVE review. Its branch is **1 commit behind main** and GitHub currently reports `mergeable=false`; branch synchronization/conflict reconciliation is still required before merge.
 
 ### PR #29 — Shopify publication-scope default correction
 
