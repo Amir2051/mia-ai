@@ -12,6 +12,7 @@ SHOP_ID_SETTING = "app.shop_id"
 SHOP_CONTEXT_SIGNATURE_SETTING = "app.shop_context_signature"
 SCHEDULER_FLAG_SETTING = "app.internal_scheduler"
 SCHEDULER_SIGNATURE_SETTING = "app.internal_scheduler_signature"
+SHOP_CONTEXT_MESSAGE = "mia:shop:v1"
 SCHEDULER_CONTEXT_MESSAGE = "mia:internal-scheduler:v1"
 
 
@@ -42,7 +43,12 @@ async def set_shop_context(db: AsyncSession, shop_domain: str, shop_id: int | No
     if not domain:
         raise ValueError("shop_domain is required for database security context")
 
-    signature = _context_signature(domain)
+    # Bind the tenant proof to this PostgreSQL transaction so a captured
+    # signature cannot be replayed in a later transaction.
+    txid = await db.scalar(text("SELECT pg_catalog.txid_current()"))
+    if txid is None:
+        raise RuntimeError("Could not bind shop context to the current PostgreSQL transaction")
+    signature = _context_signature(f"{SHOP_CONTEXT_MESSAGE}:{txid}:{domain}")
     await _set_local(db, SHOP_DOMAIN_SETTING, domain)
     await _set_local(db, SHOP_CONTEXT_SIGNATURE_SETTING, signature)
     await _set_local(db, SHOP_ID_SETTING, str(shop_id) if shop_id is not None else "")
