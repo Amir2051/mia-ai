@@ -347,7 +347,10 @@ def upgrade() -> None:
 
             v_expected := pg_catalog.encode(
                 {hmac_schema}.hmac(
-                    pg_catalog.convert_to(v_domain, 'UTF8'),
+                    pg_catalog.convert_to(
+                        'mia:shop:v1:' || pg_catalog.txid_current()::text || ':' || v_domain,
+                        'UTF8'
+                    ),
                     pg_catalog.convert_to(v_secret, 'UTF8'),
                     'sha256'
                 ),
@@ -447,14 +450,14 @@ def upgrade() -> None:
     op.execute("DROP POLICY IF EXISTS mia_shop_isolation ON public.shops")
     op.execute("""
         CREATE POLICY mia_shop_isolation ON public.shops
-        USING (pg_catalog.lower(shop_domain) = public.mia_current_shop_domain())
-        WITH CHECK (pg_catalog.lower(shop_domain) = public.mia_current_shop_domain())
+        USING (pg_catalog.lower(shop_domain) = (SELECT public.mia_current_shop_domain()))
+        WITH CHECK (pg_catalog.lower(shop_domain) = (SELECT public.mia_current_shop_domain()))
     """)
     op.execute("DROP POLICY IF EXISTS mia_shops_scheduler_read ON public.shops")
     op.execute("""
         CREATE POLICY mia_shops_scheduler_read ON public.shops
         FOR SELECT
-        USING (public.mia_is_internal_scheduler())
+        USING ((SELECT public.mia_is_internal_scheduler()))
     """)
 
     for table in TENANT_TABLES:
@@ -462,8 +465,8 @@ def upgrade() -> None:
         op.execute(f"DROP POLICY IF EXISTS mia_{table}_isolation ON public.{table}")
         op.execute(f"""
             CREATE POLICY mia_{table}_isolation ON public.{table}
-            USING (shop_id = public.mia_current_shop_id())
-            WITH CHECK (shop_id = public.mia_current_shop_id())
+            USING (shop_id = (SELECT public.mia_current_shop_id()))
+            WITH CHECK (shop_id = (SELECT public.mia_current_shop_id()))
         """)
 
     op.execute("ALTER TABLE public.scheduled_reports ENABLE ROW LEVEL SECURITY")
@@ -474,19 +477,19 @@ def upgrade() -> None:
     op.execute("DROP POLICY IF EXISTS mia_scheduled_reports_scheduler_update ON public.scheduled_reports")
     op.execute("""
         CREATE POLICY mia_scheduled_reports_isolation ON public.scheduled_reports
-        USING (shop_id = public.mia_current_shop_id())
-        WITH CHECK (shop_id = public.mia_current_shop_id())
+        USING (shop_id = (SELECT public.mia_current_shop_id()))
+        WITH CHECK (shop_id = (SELECT public.mia_current_shop_id()))
     """)
     op.execute("""
         CREATE POLICY mia_scheduled_reports_scheduler_read ON public.scheduled_reports
         FOR SELECT
-        USING (public.mia_is_internal_scheduler())
+        USING ((SELECT public.mia_is_internal_scheduler()))
     """)
     op.execute("""
         CREATE POLICY mia_scheduled_reports_scheduler_update ON public.scheduled_reports
         FOR UPDATE
-        USING (public.mia_is_internal_scheduler())
-        WITH CHECK (public.mia_is_internal_scheduler())
+        USING ((SELECT public.mia_is_internal_scheduler()))
+        WITH CHECK ((SELECT public.mia_is_internal_scheduler()))
     """)
 
     # RLS policies authorize rows, not individual columns. Keep the trusted
