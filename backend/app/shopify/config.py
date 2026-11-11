@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     shopify_api_secret: str = ''
     shopify_app_url: str = 'http://localhost:8000'
     shopify_scopes: str = (
-        'read_products,write_products,read_orders,read_customers,read_inventory'
+        'read_customers,read_inventory,read_orders,read_products,'
+        'read_publications,write_products,write_publications'
     )
     shopify_api_version: str = '2026-07'
     token_encryption_key: str = ''
