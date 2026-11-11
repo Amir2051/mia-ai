@@ -13,21 +13,22 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The last Shopify app configuration release recorded in this handoff is **mia-ai-9** on 2026-09-18; no later release has been verified. The production URL is `https://mia.drivenest.info`, but its current health and running commit are not revalidated here.
 
-## Current verified engineering evidence — 2026-11-08
+## Current verified engineering evidence — 2026-11-11
 
 ### Main branch
-- Main commit: `11ff8cc5f0b427117576e43edc4918907e72f750`.
-- Latest main CI run #231 (2026-11-02): **285 backend tests passed, 3 warnings; 17 frontend tests passed; lint/build and Docker production image build passed.**
+- Main commit: `59660d53d7c6b3ceeae7a584499e5ad392733fb8` (PR #28 documentation-only merge on 2026-11-10).
+- Main CI run #267 on that commit: **285 backend tests passed, 3 warnings; 17 frontend tests passed; frontend lint/build and Docker production image build passed.**
 - The latest merged Alembic revision in the repository is `0009_privacy_audit_purge`.
 - The main-branch audit gates pass at the configured moderate-severity threshold, but the audit still reports **3 low-severity `deepmerge` findings**. This is not a zero-vulnerability result.
 
 ### Proposed tenant-isolation hardening — PR #27
 - Branch: `security/signed-tenant-context-2026-11-03`.
-- Latest branch head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`.
-- CI #261 (2026-11-08) on the current head: **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #261 tested code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67` (historical snapshot): **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #264 tested documentation head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`: all 3 jobs passed, including 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CodeRabbit's 2026-11-10 review identified that the tenant HMAC, unlike the scheduler HMAC, was not transaction-bound. The current PR branch now binds tenant proofs to `txid_current()` and adds a cross-transaction replay regression test; this remediation is pending fresh CI and review.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
-- The scheduler HMAC is bound to the PostgreSQL transaction ID; a captured proof is rejected when replayed in a later transaction.
+- Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID; captured proofs are rejected when replayed in later transactions. The tenant replay fix is newly added and remains pending fresh CI verification.
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
@@ -147,7 +148,7 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 - Role attribute regression cases now cover NOLOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, and INHERIT, plus direct/transitive memberships and ownership/grant checks.
 - The preflight now rejects effective TRUNCATE, REFERENCES, and TRIGGER privileges on every public table. TRUNCATE is not subject to RLS; CI verifies direct grants and a TRUNCATE grant to PUBLIC are detected.
 - CI #260 passed all three jobs on the transaction-bound scheduler proof change (287 backend, 17 frontend).
-- CI #261 passed all three jobs on current head `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CI #261 passed all three jobs on historical code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
 - The npm audit continues to report 3 low-severity deepmerge findings. Passing the moderate threshold is not a zero-vulnerability result.
 
 ### Verification
@@ -160,6 +161,6 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 
 ### Current review and release state
 
-PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The runtime-role preflight finding is now implemented and covered by CI, but the review thread should remain open until an independent reviewer assesses the complete migration and deployment model.
+PR #27 remains open, draft, unmerged, and undeployed. Recorded reviews include repository-owner comments and a CodeRabbit COMMENTED review with actionable findings; no independent APPROVE review is recorded. Independent security approval remains outstanding. The runtime-role preflight finding is implemented and covered by CI, but the complete migration and deployment model still requires an independent assessment.
 
-Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
+Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentation-only PR #28 merge; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
