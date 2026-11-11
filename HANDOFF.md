@@ -35,8 +35,8 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
 
 ### Other open feature PRs
-- PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed, but the branch is **3 commits ahead and 1 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
-- PR #26 (Meta test-token fallback) remains open. Its last recorded CI #230 passed, but the branch is **1 commit ahead and 1 behind** current main. Its PR description says no new tests were added.
+- PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed; the 2026-11-11 comparison is **3 commits ahead and 2 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
+- PR #26 (Meta test-token fallback) remains open. Its last recorded CI #230 passed; the 2026-11-11 comparison is **1 commit ahead and 2 behind** current main. Its PR description says no new tests were added.
 - Rebase/synchronize these PRs and rerun CI before treating their previous results as current merge evidence.
 
 ### Production evidence — historical, not revalidated
@@ -164,3 +164,32 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 PR #27 remains open, draft, unmerged, and undeployed. Recorded reviews include repository-owner comments and a CodeRabbit COMMENTED review with actionable findings; no independent APPROVE review is recorded. Independent security approval remains outstanding. The runtime-role preflight finding is implemented and covered by CI, but the complete migration and deployment model still requires an independent assessment.
 
 Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentation-only PR #28 merge; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
+
+
+## Engineering update — 2026-11-11
+
+### Main branch and CI
+
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; CI #267 on that commit passed all three jobs: 285 backend tests (3 warnings), 17 frontend tests, frontend lint/build, and production Docker image build.
+
+### PR #27 security-review remediation
+
+- Added transaction binding to the tenant HMAC. The app signs `mia:shop:v1:<txid>:<normalized-domain>`; the migration verifier recomputes the same payload using the current transaction ID.
+- Added a restricted-runtime-role regression that captures a tenant proof and attempts to replay it in a different transaction; the replay must not read even the original shop's rows.
+- Wrapped RLS policy function calls in scalar subqueries so stable HMAC/key-lookup predicates are evaluated once per query rather than repeatedly per scanned row.
+- Updated `SECURITY.md` and this handoff to accurately describe transaction binding and the remaining low-severity dependency findings. CodeRabbit's two documentation threads were resolved after the fixes; the major tenant-proof thread remains open pending fresh CI and review.
+- The code/test change is on commit `ef7574533d6da51deb570ae7b4ec5ad761959ded`; the later handoff update is documentation-only. No fresh CI run is attached to these latest PR #27 commits yet. CI #264 passed on the earlier head and does not verify this remediation.
+- PR #27 remains draft, unmerged, and undeployed, with no independent APPROVE review. Its branch comparison is **49 commits ahead and 1 behind** main; GitHub currently reports `mergeable=false`, so branch synchronization/conflict reconciliation is still required.
+
+### PR #29 — Shopify publication-scope default correction
+
+- Opened PR #29 to align the backend `SHOPIFY_SCOPES` default with `shopify.app.toml`, including `read_publications` and `write_publications`.
+- Added a regression test for both publication scopes.
+- CI #268 on head `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs: **286 backend tests passed (3 warnings), 17 frontend tests passed, and Docker production image build passed**.
+- PR #29 is open, ready for review, mergeable, and not merged. No production configuration or Shopify app release was changed.
+
+### Feature-branch synchronization
+
+- PR #25 is 3 commits ahead / 2 behind main; its prior CI #232 is historical for the current base.
+- PR #26 is 1 commit ahead / 2 behind main; its prior CI #230 is historical for the current base.
+- Both branches need synchronization and fresh CI before merge.
