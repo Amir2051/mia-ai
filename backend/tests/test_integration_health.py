@@ -88,7 +88,7 @@ def test_integration_health_surfaces_missing_shopify_scopes(client, monkeypatch)
     from app.models.database import AsyncSessionLocal
     from app.models.schemas import Shop
     from app.routers import settings as settings_router
-    from app.shopify.config import settings as app_settings
+    from app.shopify.config import REQUIRED_SHOPIFY_SCOPES, settings as app_settings
 
     shop_domain = "mia-integration-health-scope-test.myshopify.com"
     async def seed():
