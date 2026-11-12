@@ -13,7 +13,7 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The last Shopify app configuration release recorded in this handoff is **mia-ai-9** on 2026-09-18; no later release has been verified. The production URL is `https://mia.drivenest.info`, but its current health and running commit are not revalidated here.
 
-## Current verified engineering evidence — 2026-11-11
+## Current verified engineering evidence — 2026-11-12
 
 ### Main branch
 - Main commit: `59660d53d7c6b3ceeae7a584499e5ad392733fb8` (PR #28 documentation-only merge on 2026-11-10).
@@ -25,7 +25,10 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - Branch: `security/signed-tenant-context-2026-11-03`.
 - CI #261 tested code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67` (historical snapshot): **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
 - CI #264 tested documentation head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`: all 3 jobs passed, including 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
-- CodeRabbit's 2026-11-10 review identified that the tenant HMAC, unlike the scheduler HMAC, was not transaction-bound. The current PR branch now binds tenant proofs to `txid_current()` and adds a cross-transaction replay regression test; this remediation is pending fresh CI and review.
+- CodeRabbit's 2026-11-10 review identified that the tenant HMAC, unlike the scheduler HMAC, was not transaction-bound. The branch now signs `mia:shop:v1:<txid>:<normalized-domain>` and the database verifier recomputes the same message with `txid_current()`. A restricted-role PostgreSQL regression captures a valid tenant signature and proves it cannot be replayed in a later transaction.
+- The PR branch was synchronized with current `main` using merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b`, whose second parent is `59660d53d7c6b3ceeae7a584499e5ad392733fb8`. GitHub now reports `mergeable=true` and zero commits behind `main` (the compare endpoint reports 52 commits ahead because the PR's existing commit history is preserved).
+- CI #269 on merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b` completed successfully on 2026-11-12: all 3 jobs passed. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build and configured moderate-threshold audit gates passed; PostgreSQL migration 0010 downgrade/re-upgrade passed; production Docker image build passed. The audit still reports 3 low-severity `deepmerge` findings.
+- The tenant cross-transaction replay regression is included in the 287-test backend suite. This verifies the PR branch, not production deployment or production database configuration.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
 - Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID; captured proofs are rejected when replayed in later transactions. The tenant replay fix is newly added and remains pending fresh CI verification.
@@ -33,6 +36,15 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
 - PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
+
+### Shopify publication scopes — PR #29
+- PR #29 aligns the backend default `shopify_scopes` with `shopify.app.toml`, including `read_publications` and `write_publications`, and adds a regression test.
+- CI #268 on commit `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs on 2026-11-11: **286 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed.**
+- PR #29 remains open, ready for review, unmerged, and undeployed. The current `main` backend default still omits publication scopes until this fix is merged; production environment overrides and the Shopify app release remain unverified.
+
+### Release governance
+- The GitHub branch endpoint reports `main.protected=false` and `protection.enabled=false`; the repository rulesets endpoint returned an empty list. Required CI and independent review are therefore not enforced by repository branch protection.
+- The connected GitHub integration cannot read the administrative branch-protection detail endpoint, but the public branch metadata and rulesets response establish that no protection/ruleset is currently active.
 
 ### Other open feature PRs
 - PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed; the 2026-11-11 comparison is **3 commits ahead and 2 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
