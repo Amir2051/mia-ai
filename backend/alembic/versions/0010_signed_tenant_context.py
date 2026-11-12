@@ -274,6 +274,39 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
                 )
 
 
+def _create_context_key_table(bind, runtime_role: str, secret: str) -> None:
+    """Create a fresh verifier table; never send the secret to an untrusted existing relation.
+
+    Reusing a pre-existing relation could activate unknown CHECK constraints or
+    triggers. PostgreSQL may include a failing row in error DETAIL, which could
+    disclose the signing secret even when SQLAlchemy hides bound parameters.
+    """
+    existing_relation = bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass('mia_private.tenant_context_keys')")
+    ).scalar_one()
+    if existing_relation is not None:
+        raise RuntimeError(
+            "mia_private.tenant_context_keys already exists; refusing to reuse an existing relation"
+        )
+
+    bind.execute(sa.text("""
+        CREATE TABLE mia_private.tenant_context_keys (
+            singleton boolean PRIMARY KEY DEFAULT TRUE CHECK (singleton IS TRUE),
+            secret text NOT NULL
+        )
+    """))
+    bind.execute(
+        sa.text("""
+            INSERT INTO mia_private.tenant_context_keys (singleton, secret)
+            VALUES (TRUE, :secret)
+        """),
+        {"secret": secret},
+    )
+    bind.execute(sa.text("REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM PUBLIC"))
+    bind.execute(sa.text(f"REVOKE ALL ON SCHEMA mia_private FROM {runtime_role}"))
+    bind.execute(sa.text(f"REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM {runtime_role}"))
+
+
 def upgrade() -> None:
     secret = os.environ.get("RLS_CONTEXT_SECRET", "")
     if len(secret.encode("utf-8")) < 32:
@@ -299,23 +332,8 @@ def upgrade() -> None:
 
     op.execute("CREATE SCHEMA IF NOT EXISTS mia_private AUTHORIZATION CURRENT_USER")
     op.execute("REVOKE ALL ON SCHEMA mia_private FROM PUBLIC")
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS mia_private.tenant_context_keys (
-            singleton boolean PRIMARY KEY DEFAULT TRUE CHECK (singleton IS TRUE),
-            secret text NOT NULL
-        )
-    """)
-    bind.execute(
-        sa.text("""
-            INSERT INTO mia_private.tenant_context_keys (singleton, secret)
-            VALUES (TRUE, :secret)
-            ON CONFLICT (singleton) DO UPDATE SET secret = EXCLUDED.secret
-        """),
-        {"secret": secret},
-    )
-    op.execute("REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM PUBLIC")
-    op.execute(f"REVOKE ALL ON SCHEMA mia_private FROM {runtime_role}")
-    op.execute(f"REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM {runtime_role}")
+    # A pre-existing verifier relation is rejected before the secret is bound to SQL.
+    _create_context_key_table(bind, runtime_role, secret)
 
     op.execute(f"""
         CREATE OR REPLACE FUNCTION public.mia_current_shop_domain()
