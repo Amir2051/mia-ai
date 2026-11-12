@@ -293,3 +293,84 @@ def test_shopify_rejection_uses_supported_http_status_constant(client, monkeypat
         client.app.dependency_overrides.clear()
     assert response.status_code == 422
     assert "Shopify rejected" in response.json()["detail"]
+
+
+def test_full_campaign_is_queued_and_returns_job_id(client, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from sqlalchemy import select
+    from app.auth.dependencies import CurrentUser, get_current_shop
+    from app.models.database import AsyncSessionLocal
+    from app.models.schemas import Shop, SyncJob
+    from app.routers import seo
+
+    async def seed_shop():
+        async with AsyncSessionLocal() as db:
+            shop = Shop(shop_domain="campaign-queue.myshopify.com", access_token_encrypted="encrypted", is_active=True)
+            db.add(shop)
+            await db.commit()
+            await db.refresh(shop)
+            return shop.id
+
+    shop_id = asyncio.run(seed_shop())
+    async def fake_shop(current, db):
+        return SimpleNamespace(id=shop_id, shop_domain="campaign-queue.myshopify.com", access_token_encrypted="encrypted", is_active=True)
+    async def fake_worker(*args, **kwargs):
+        return None
+
+    client.app.dependency_overrides[get_current_shop] = lambda: CurrentUser("campaign-queue.myshopify.com")
+    monkeypatch.setattr(seo, "_shop", fake_shop)
+    monkeypatch.setattr(seo, "_execute_full_campaign_job", fake_worker)
+    try:
+        response = client.post("/api/seo/full-campaign", json={"product_id": "gid://shopify/Product/123"})
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["job_id"] > 0
+        async def read_job():
+            async with AsyncSessionLocal() as db:
+                return (await db.execute(select(SyncJob).where(SyncJob.id == body["job_id"]))).scalar_one()
+        job = asyncio.run(read_job())
+        assert job.entity == "full_campaign"
+        assert job.status == "queued"
+        assert '"product_id": "gid://shopify/Product/123"' in job.details_json
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_full_campaign_job_status_is_scoped_to_current_shop(client, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from app.auth.dependencies import CurrentUser, get_current_shop
+    from app.models.database import AsyncSessionLocal
+    from app.models.schemas import Shop, SyncJob
+    from app.routers import seo
+
+    async def seed():
+        async with AsyncSessionLocal() as db:
+            shop = Shop(shop_domain="campaign-owner.myshopify.com", access_token_encrypted="encrypted", is_active=True)
+            other = Shop(shop_domain="campaign-other.myshopify.com", access_token_encrypted="encrypted", is_active=True)
+            db.add_all([shop, other])
+            await db.flush()
+            own = SyncJob(shop_id=shop.id, entity="full_campaign", status="completed", details_json='{"product_id":"p1","result":{"partial_success":false}}')
+            foreign = SyncJob(shop_id=other.id, entity="full_campaign", status="completed", details_json='{"result":{"secret":"other-shop"}}')
+            db.add_all([own, foreign])
+            await db.commit()
+            await db.refresh(own)
+            await db.refresh(foreign)
+            return shop.id, own.id, foreign.id
+
+    shop_id, own_id, foreign_id = asyncio.run(seed())
+    async def fake_shop(current, db):
+        return SimpleNamespace(id=shop_id, shop_domain="campaign-owner.myshopify.com", access_token_encrypted="encrypted", is_active=True)
+    client.app.dependency_overrides[get_current_shop] = lambda: CurrentUser("campaign-owner.myshopify.com")
+    monkeypatch.setattr(seo, "_shop", fake_shop)
+    try:
+        own = client.get(f"/api/seo/full-campaign/{own_id}")
+        foreign = client.get(f"/api/seo/full-campaign/{foreign_id}")
+        assert own.status_code == 200, own.text
+        assert own.json()["status"] == "completed"
+        assert own.json()["result"] == {"partial_success": False}
+        assert foreign.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()

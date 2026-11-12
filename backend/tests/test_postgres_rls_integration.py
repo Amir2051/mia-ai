@@ -409,3 +409,92 @@ def test_webhook_processing_and_event_deduplication_under_restricted_postgres_ro
             await admin_engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_full_campaign_queue_works_with_restricted_postgres_role(monkeypatch):
+    """The queue endpoint must insert and return its job under real PostgreSQL RLS."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    if not admin_url or not runtime_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
+        pytest.skip("Dedicated PostgreSQL RLS URLs are not configured")
+
+    from fastapi import BackgroundTasks
+    from types import SimpleNamespace
+
+    from app.auth.dependencies import CurrentUser
+    from app.models.schemas import Shop, SyncJob
+    from app.routers import seo as seo_router
+    from app.routers.seo import GenerateRequest, generate_full_campaign
+    from app.security.rls import set_shop_context
+
+    async def scenario():
+        admin_engine = create_async_engine(admin_url, pool_pre_ping=True)
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        admin_factory = sessionmaker(
+            bind=admin_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        runtime_factory = sessionmaker(
+            bind=runtime_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        suffix = uuid.uuid4().hex[:12]
+        shop_domain = f"campaign-rls-{suffix}.myshopify.com"
+        try:
+            async with admin_factory() as admin:
+                shop = Shop(
+                    shop_domain=shop_domain,
+                    access_token_encrypted="ci-campaign-token",
+                    is_active=True,
+                )
+                admin.add(shop)
+                await admin.commit()
+                shop_id = shop.id
+
+            async def fake_shop(current, db):
+                return SimpleNamespace(
+                    id=shop_id,
+                    shop_domain=shop_domain,
+                    access_token_encrypted="ci-campaign-token",
+                    is_active=True,
+                )
+
+            async def fake_worker(*args, **kwargs):
+                return None
+
+            monkeypatch.setattr(seo_router, "_shop", fake_shop)
+            monkeypatch.setattr(seo_router, "_execute_full_campaign_job", fake_worker)
+
+            async with runtime_factory() as runtime:
+                # Match the tenant-domain context established by get_current_shop.
+                await set_shop_context(runtime, shop_domain)
+                background_tasks = BackgroundTasks()
+                response = await generate_full_campaign(
+                    GenerateRequest(product_id="gid://shopify/Product/123"),
+                    background_tasks,
+                    CurrentUser(shop_domain),
+                    runtime,
+                )
+
+                assert response["status"] == "queued"
+                assert response["job_id"] > 0
+                assert len(background_tasks.tasks) == 1
+
+                # The endpoint's commit ends the transaction-local context. A new
+                # transaction must explicitly restore the shop context to read the job.
+                await set_shop_context(runtime, shop_domain, shop_id)
+                queued_job = await runtime.scalar(
+                    select(SyncJob).where(
+                        SyncJob.id == response["job_id"],
+                        SyncJob.shop_id == shop_id,
+                        SyncJob.entity == "full_campaign",
+                    )
+                )
+                assert queued_job is not None
+                assert queued_job.status == "queued"
+                await runtime.commit()
+        finally:
+            await runtime_engine.dispose()
+            await admin_engine.dispose()
+
+    asyncio.run(scenario())
