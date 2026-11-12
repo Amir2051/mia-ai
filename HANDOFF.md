@@ -31,7 +31,7 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - The tenant cross-transaction replay regression is included in the 287-test backend suite. This verifies the PR branch, not production deployment or production database configuration.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
-- Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID; captured proofs are rejected when replayed in later transactions. The tenant replay fix is newly added and remains pending fresh CI verification.
+- Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID. The restricted-role tenant and scheduler replay regressions are included in the passing CI #269 backend suite.
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
@@ -47,9 +47,9 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - The connected GitHub integration cannot read the administrative branch-protection detail endpoint, but the public branch metadata and rulesets response establish that no protection/ruleset is currently active.
 
 ### Other open feature PRs
-- PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed; the 2026-11-11 comparison is **3 commits ahead and 2 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
-- PR #26 (Meta test-token fallback) remains open. Its last recorded CI #230 passed; the 2026-11-11 comparison is **1 commit ahead and 2 behind** current main. Its PR description says no new tests were added.
-- Rebase/synchronize these PRs and rerun CI before treating their previous results as current merge evidence.
+- PR #25 (async full-campaign jobs) remains open and unmerged. It was synchronized with current `main` by merge commit `85eef38c40ca0990ccfa5c3188b17565ba41ee07`; the current comparison is **4 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. CI #271 on 2026-11-12 passed all three jobs: **288 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed**. It still uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
+- PR #26 (Meta test-token fallback) remains open and unmerged. It was synchronized with current `main` by merge commit `b9dbcab6df37f7f1c36a810a0a991b707fed1cc9`; the current comparison is **2 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. Added `frontend/src/pages/Social.test.tsx` to verify that an unconfigured Meta OAuth flow closes the popup and uses the server test-token endpoint. CI #273 on 2026-11-12 passed all three jobs: **285 backend tests passed, 3 warnings; 18 frontend tests passed across 4 files; Docker build passed**. Live Meta credentials, provider acceptance, and production publishing remain unverified.
+- Both PRs now have current-main ancestry and fresh CI. PR #25 remains blocked on durable campaign execution; PR #26 is ready for review of the fallback implementation and test.
 
 ### Production evidence — historical, not revalidated
 - The last release recorded in this handoff is Shopify app version **`mia-ai-9` on 2026-09-18**.
