@@ -35,6 +35,8 @@ The last Shopify app configuration release recorded in this handoff is **mia-ai-
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
+- CodeRabbit's 2026-11-12 follow-up confirmed the original tenant-proof replay finding is addressed, but identified a separate secret-disclosure risk: the Alembic engine did not hide bound parameters for the migration that inserts `RLS_CONTEXT_SECRET`. The branch now enables SQLAlchemy `hide_parameters=True` and adds a forced-error regression that checks the sentinel secret is absent from the SQLAlchemy exception text; fresh CI is pending.
+- Before production migration 0010, directly verify PostgreSQL 16 bind-parameter logging settings: `log_parameter_max_length=0`, `log_parameter_max_length_on_error=0`, and `auto_explain.log_parameter_max_length=0` if auto_explain is loaded. Also verify provider/proxy/application logs do not capture bind values. These production logging settings are unknown and remain a deployment gate.
 - PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
 
 ### Shopify publication scopes — PR #29

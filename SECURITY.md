@@ -64,6 +64,11 @@ This document distinguishes controls present on `main` from proposed controls in
 - CI generates ephemeral test encryption and RLS-context keys at runtime instead of storing reusable keys in the repository.
 - If PR #27 is approved for deployment, provision a random `RLS_CONTEXT_SECRET` of at least 32 bytes in both the protected application environment and migration process before applying migration `0010_signed_tenant_context`; the migration stores its verifier copy in the restricted `mia_private` schema. This secret is not currently required by the merged `main` migration chain.
 
+### Migration-secret logging protection
+- The Alembic migration engine uses SQLAlchemy `hide_parameters=True` so bound parameter values, including `RLS_CONTEXT_SECRET`, are not included in SQLAlchemy exception strings.
+- Before deploying migration 0010, verify the PostgreSQL logging configuration and any proxy/provider logging path. On PostgreSQL 16, require `log_parameter_max_length=0` for non-error statement/duration logs and `log_parameter_max_length_on_error=0` for error logs. If `auto_explain` is loaded, require `auto_explain.log_parameter_max_length=0`.
+- The actual production PostgreSQL, extension, proxy, and application logging settings have not been verified; this remains a deployment gate.
+
 ## Operational notes
 
 - The active Shopify app deployment is managed through `shopify app deploy`.
