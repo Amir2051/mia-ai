@@ -16,9 +16,12 @@ def test_default_shopify_scopes_match_app_manifest():
     assert default_scopes == manifest_scopes == set(REQUIRED_SHOPIFY_SCOPES)
 
 
-def test_environment_override_cannot_hide_manifest_required_scopes():
-    effective = _health_check_scopes("read_products,write_products,read_marketing_events")
+def test_environment_override_cannot_hide_manifest_required_scopes(monkeypatch):
+    monkeypatch.setenv("SHOPIFY_SCOPES", "read_products,read_marketing_events")
+    configured = Settings(_env_file=None).shopify_scopes
+    assert configured == "read_products,read_marketing_events"
 
+    effective = _health_check_scopes(configured)
     assert set(REQUIRED_SHOPIFY_SCOPES).issubset(effective)
     assert "read_publications" in effective
     assert "write_publications" in effective
