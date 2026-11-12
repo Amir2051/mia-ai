@@ -11,7 +11,7 @@ from app.models.database import get_db
 from app.models.schemas import AppSetting, Shop, SocialAccount
 from app.security.tokens import decrypt_token
 from app.shopify.client import ShopifyAPIClient, ShopifyAPIError
-from app.shopify.config import settings
+from app.shopify.config import REQUIRED_SHOPIFY_SCOPES, settings
 
 router = APIRouter()
 
@@ -93,6 +93,11 @@ def _scope_set(value: Optional[str]) -> set[str]:
     return {item.strip() for item in (value or "").split(",") if item.strip()}
 
 
+def _health_check_scopes(configured: Optional[str]) -> set[str]:
+    """Keep manifest-required scopes visible even when SHOPIFY_SCOPES is overridden."""
+    return set(REQUIRED_SHOPIFY_SCOPES) | _scope_set(configured)
+
+
 def _effective_scopes(granted: set[str]) -> set[str]:
     effective = set(granted)
     for scope in list(granted):
@@ -166,7 +171,7 @@ async def integration_health(
 
     shop, access_token = await _get_shop_from_current(current, db)
     granted_scopes = _scope_set(shop.scope)
-    configured_scopes = _scope_set(settings.shopify_scopes)
+    configured_scopes = _health_check_scopes(settings.shopify_scopes)
     missing_scopes = sorted(configured_scopes - _effective_scopes(granted_scopes))
 
     shopify_status = "unavailable"
