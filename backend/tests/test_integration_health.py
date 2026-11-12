@@ -9,7 +9,7 @@ def test_integration_health_live_checks_shopify_and_does_not_probe_paid_ai(clien
     from app.models.database import AsyncSessionLocal
     from app.models.schemas import Shop, SocialAccount
     from app.routers import settings as settings_router
-    from app.shopify.config import settings as app_settings
+    from app.shopify.config import REQUIRED_SHOPIFY_SCOPES, settings as app_settings
 
     shop_domain = "mia-integration-health-test.myshopify.com"
 
@@ -131,7 +131,11 @@ def test_integration_health_surfaces_missing_shopify_scopes(client, monkeypatch)
     payload = response.json()
     assert payload["overall_status"] == "degraded"
     assert payload["shopify"]["status"] == "verified_with_permission_gaps"
-    assert payload["shopify"]["missing_scopes"] == ["read_orders"]
+    expected_missing = sorted(set(REQUIRED_SHOPIFY_SCOPES) - {"read_products"})
+    assert payload["shopify"]["missing_scopes"] == expected_missing
+    assert {"read_publications", "write_publications"}.issubset(
+        set(payload["shopify"]["missing_scopes"])
+    )
 
 
 def test_integration_health_database_failure_is_reported_without_leaking_details(client, monkeypatch):
