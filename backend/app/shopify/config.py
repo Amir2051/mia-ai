@@ -1,6 +1,19 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Required by the app manifest and always checked by /api/settings/health,
+# even when an environment override supplies additional or narrower scopes.
+REQUIRED_SHOPIFY_SCOPES = frozenset({
+    "read_customers",
+    "read_inventory",
+    "read_orders",
+    "read_products",
+    "read_publications",
+    "write_products",
+    "write_publications",
+})
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file='.env',
