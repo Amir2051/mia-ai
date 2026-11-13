@@ -1,11 +1,11 @@
 """Prevent the RLS signing secret from appearing in migration SQLAlchemy errors."""
 
+import uuid
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
-import uuid
 
 
 def test_alembic_migration_engine_hides_bound_parameters_on_error():
@@ -125,16 +125,30 @@ def test_migration_revokes_named_default_acl_grants_before_secret_insert():
                     f"GRANT SELECT ON TABLES TO {reader_identifier}"
                 ))
 
+                role_oid = connection.scalar(
+                    text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :role_name"),
+                    {"role_name": reader_role_name},
+                )
+                assert role_oid is not None
+                connection.execute(text(
+                    "CREATE TABLE mia_private.default_acl_probe (id integer)"
+                ))
+                probe_oid = connection.scalar(
+                    text("SELECT pg_catalog.to_regclass('mia_private.default_acl_probe')::oid")
+                )
+                assert probe_oid is not None
+                assert connection.scalar(
+                    text("SELECT pg_catalog.has_table_privilege(:role_oid, :table_oid, 'SELECT')"),
+                    {"role_oid": role_oid, "table_oid": probe_oid},
+                ) is True
+                connection.execute(text("DROP TABLE mia_private.default_acl_probe"))
+
                 connection.execute(text(
                     "ALTER TABLE mia_private.tenant_context_keys "
                     "RENAME TO tenant_context_keys_before_acl_test"
                 ))
                 migration._create_context_key_table(connection, runtime_role, sentinel)
 
-                role_oid = connection.scalar(
-                    text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :role_name"),
-                    {"role_name": reader_role_name},
-                )
                 table_oid = connection.scalar(
                     text("SELECT pg_catalog.to_regclass('mia_private.tenant_context_keys')::oid")
                 )
