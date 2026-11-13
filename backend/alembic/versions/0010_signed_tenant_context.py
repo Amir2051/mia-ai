@@ -274,12 +274,90 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
                 )
 
 
+def _revoke_non_owner_table_privileges(bind) -> None:
+    """Remove default-ACL grants and fail closed on effective non-owner access.
+
+    A pre-existing schema can have named USAGE grants, and the migration role
+    can have default table privileges that grant access to other roles. Revoking
+    only PUBLIC and the runtime role is insufficient in that environment.
+    """
+    table = bind.execute(sa.text("""
+        SELECT c.oid, c.relowner
+          FROM pg_catalog.pg_class AS c
+          JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'mia_private'
+           AND c.relname = 'tenant_context_keys'
+           AND c.relkind IN ('r', 'p')
+    """)).mappings().one_or_none()
+    if table is None:
+        raise RuntimeError("mia_private.tenant_context_keys was not created")
+
+    grantees = bind.execute(
+        sa.text("""
+            SELECT DISTINCT acl.grantee AS grantee_oid, roles.rolname AS role_name
+              FROM pg_catalog.pg_class AS c
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                  COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))
+              ) AS acl
+              LEFT JOIN pg_catalog.pg_roles AS roles ON roles.oid = acl.grantee
+             WHERE c.oid = :table_oid
+               AND acl.grantee <> c.relowner
+        """),
+        {"table_oid": table["oid"]},
+    ).mappings().all()
+
+    preparer = bind.dialect.identifier_preparer
+    for grantee in grantees:
+        if grantee["grantee_oid"] == 0:
+            bind.execute(sa.text(
+                "REVOKE ALL PRIVILEGES ON TABLE mia_private.tenant_context_keys FROM PUBLIC CASCADE"
+            ))
+            continue
+        role_name = grantee["role_name"]
+        if not role_name:
+            raise RuntimeError(
+                "unable to identify a non-owner grantee on mia_private.tenant_context_keys"
+            )
+        role_identifier = preparer.quote(role_name)
+        bind.execute(sa.text(
+            "REVOKE ALL PRIVILEGES ON TABLE mia_private.tenant_context_keys "
+            f"FROM {role_identifier} CASCADE"
+        ))
+
+    unexpected_roles = bind.execute(
+        sa.text("""
+            SELECT r.rolname
+              FROM pg_catalog.pg_roles AS r
+             WHERE r.rolsuper IS FALSE
+               AND r.oid <> :owner_oid
+               AND (
+                   pg_catalog.has_table_privilege(r.oid, :table_oid, 'SELECT')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'INSERT')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'UPDATE')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'DELETE')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'TRUNCATE')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'REFERENCES')
+                   OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'TRIGGER')
+                   OR pg_catalog.pg_has_role(r.oid, :owner_oid, 'MEMBER')
+               )
+             ORDER BY r.rolname
+        """),
+        {"owner_oid": table["relowner"], "table_oid": table["oid"]},
+    ).scalars().all()
+    if unexpected_roles:
+        raise RuntimeError(
+            "non-owner roles retain effective privileges or membership on "
+            "mia_private.tenant_context_keys: " + ", ".join(unexpected_roles)
+        )
+
+
 def _create_context_key_table(bind, runtime_role: str, secret: str) -> None:
-    """Create a fresh verifier table; never send the secret to an untrusted existing relation.
+    """Create a fresh, owner-only verifier table before binding the secret.
 
     Reusing a pre-existing relation could activate unknown CHECK constraints or
-    triggers. PostgreSQL may include a failing row in error DETAIL, which could
-    disclose the signing secret even when SQLAlchemy hides bound parameters.
+    triggers. Default ACLs on a pre-existing schema could also grant the new
+    table to named roles, so all non-owner table privileges are removed and
+    effective access is checked before the secret is inserted.
     """
     existing_relation = bind.execute(
         sa.text("SELECT pg_catalog.to_regclass('mia_private.tenant_context_keys')")
@@ -295,6 +373,8 @@ def _create_context_key_table(bind, runtime_role: str, secret: str) -> None:
             secret text NOT NULL
         )
     """))
+    bind.execute(sa.text(f"REVOKE ALL ON SCHEMA mia_private FROM {runtime_role}"))
+    _revoke_non_owner_table_privileges(bind)
     bind.execute(
         sa.text("""
             INSERT INTO mia_private.tenant_context_keys (singleton, secret)
@@ -302,9 +382,6 @@ def _create_context_key_table(bind, runtime_role: str, secret: str) -> None:
         """),
         {"secret": secret},
     )
-    bind.execute(sa.text("REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM PUBLIC"))
-    bind.execute(sa.text(f"REVOKE ALL ON SCHEMA mia_private FROM {runtime_role}"))
-    bind.execute(sa.text(f"REVOKE ALL ON TABLE mia_private.tenant_context_keys FROM {runtime_role}"))
 
 
 def upgrade() -> None:
