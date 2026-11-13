@@ -13,31 +13,45 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The last Shopify app configuration release recorded in this handoff is **mia-ai-9** on 2026-09-18; no later release has been verified. The production URL is `https://mia.drivenest.info`, but its current health and running commit are not revalidated here.
 
-## Current verified engineering evidence — 2026-11-08
+## Current verified engineering evidence — 2026-11-12
 
 ### Main branch
-- Main commit: `11ff8cc5f0b427117576e43edc4918907e72f750`.
-- Latest main CI run #231 (2026-11-02): **285 backend tests passed, 3 warnings; 17 frontend tests passed; lint/build and Docker production image build passed.**
+- Main commit: `59660d53d7c6b3ceeae7a584499e5ad392733fb8` (PR #28 documentation-only merge on 2026-11-10).
+- Main CI run #267 on that commit: **285 backend tests passed, 3 warnings; 17 frontend tests passed; frontend lint/build and Docker production image build passed.**
 - The latest merged Alembic revision in the repository is `0009_privacy_audit_purge`.
 - The main-branch audit gates pass at the configured moderate-severity threshold, but the audit still reports **3 low-severity `deepmerge` findings**. This is not a zero-vulnerability result.
 
 ### Proposed tenant-isolation hardening — PR #27
 - Branch: `security/signed-tenant-context-2026-11-03`.
-- Latest code/test head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`. Subsequent documentation-only PR #27 heads `48058e8141cec528c96eb2a5d60ec39e5c78bb8e` (CI #262 passed) and `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` (CI #264 passed) leave the code/test tree unchanged.
-- CI #264 on the subsequent SECURITY.md-only head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` also passed all three jobs: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
-- CI #261 (2026-11-08) on the current head: **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #261 tested code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67` (historical snapshot): **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #264 tested documentation head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`: all 3 jobs passed, including 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CodeRabbit's 2026-11-10 review identified that the tenant HMAC, unlike the scheduler HMAC, was not transaction-bound. The branch now signs `mia:shop:v1:<txid>:<normalized-domain>` and the database verifier recomputes the same message with `txid_current()`. A restricted-role PostgreSQL regression captures a valid tenant signature and proves it cannot be replayed in a later transaction.
+- The PR branch was synchronized with current `main` using merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b`, whose second parent is `59660d53d7c6b3ceeae7a584499e5ad392733fb8`. GitHub now reports `mergeable=true` and zero commits behind `main` (the compare endpoint reports 52 commits ahead because the PR's existing commit history is preserved).
+- CI #269 on merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b` completed successfully on 2026-11-12: all 3 jobs passed. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build and configured moderate-threshold audit gates passed; PostgreSQL migration 0010 downgrade/re-upgrade passed; production Docker image build passed. The audit still reports 3 low-severity `deepmerge` findings.
+- The tenant cross-transaction replay regression is included in the 287-test backend suite. This verifies the PR branch, not production deployment or production database configuration.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
-- The scheduler HMAC is bound to the PostgreSQL transaction ID; a captured proof is rejected when replayed in a later transaction.
+- Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID. The restricted-role tenant and scheduler replay regressions are included in the passing CI #269 backend suite.
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
+- CodeRabbit's 2026-11-12 follow-up confirmed the original tenant-proof replay finding is addressed, but identified a separate secret-disclosure risk: the Alembic engine did not hide bound parameters for the migration that inserts `RLS_CONTEXT_SECRET`. The branch now enables SQLAlchemy `hide_parameters=True` and adds a forced-error regression that checks the sentinel secret is absent from the SQLAlchemy exception text; fresh CI is pending.
+- Before production migration 0010, directly verify PostgreSQL 16 bind-parameter logging settings: `log_parameter_max_length=0`, `log_parameter_max_length_on_error=0`, and `auto_explain.log_parameter_max_length=0` if auto_explain is loaded. Also verify provider/proxy/application logs do not capture bind values. These production logging settings are unknown and remain a deployment gate.
 - PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
 
+### Shopify publication scopes — PR #29
+- PR #29 aligns the backend default `shopify_scopes` with `shopify.app.toml`, including `read_publications` and `write_publications`, and adds a regression test.
+- CI #268 on commit `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs on 2026-11-11: **286 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed.**
+- PR #29 remains open, ready for review, unmerged, and undeployed. The current `main` backend default still omits publication scopes until this fix is merged; production environment overrides and the Shopify app release remain unverified.
+
+### Release governance
+- The GitHub branch endpoint reports `main.protected=false` and `protection.enabled=false`; the repository rulesets endpoint returned an empty list. Required CI and independent review are therefore not enforced by repository branch protection.
+- The connected GitHub integration cannot read the administrative branch-protection detail endpoint, but the public branch metadata and rulesets response establish that no protection/ruleset is currently active.
+
 ### Other open feature PRs
-- PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed, but the branch is **3 commits ahead and 1 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
-- PR #26 (Meta test-token fallback) remains open. Its last recorded CI #230 passed, but the branch is **1 commit ahead and 1 behind** current main. Its PR description says no new tests were added.
-- Rebase/synchronize these PRs and rerun CI before treating their previous results as current merge evidence.
+- PR #25 (async full-campaign jobs) remains open and unmerged. It was synchronized with current `main` by merge commit `85eef38c40ca0990ccfa5c3188b17565ba41ee07`; the current comparison is **4 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. CI #271 on 2026-11-12 passed all three jobs: **288 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed**. It still uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
+- PR #26 (Meta test-token fallback) remains open and unmerged. It was synchronized with current `main` by merge commit `b9dbcab6df37f7f1c36a810a0a991b707fed1cc9`; the current comparison is **2 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. Added `frontend/src/pages/Social.test.tsx` to verify that an unconfigured Meta OAuth flow closes the popup and uses the server test-token endpoint. CI #273 on 2026-11-12 passed all three jobs: **285 backend tests passed, 3 warnings; 18 frontend tests passed across 4 files; Docker build passed**. Live Meta credentials, provider acceptance, and production publishing remain unverified.
+- Both PRs now have current-main ancestry and fresh CI. PR #25 remains blocked on durable campaign execution; PR #26 is ready for review of the fallback implementation and test.
 
 ### Production evidence — historical, not revalidated
 - The last release recorded in this handoff is Shopify app version **`mia-ai-9` on 2026-09-18**.
@@ -148,7 +162,7 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 - Role attribute regression cases now cover NOLOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, and INHERIT, plus direct/transitive memberships and ownership/grant checks.
 - The preflight now rejects effective TRUNCATE, REFERENCES, and TRIGGER privileges on every public table. TRUNCATE is not subject to RLS; CI verifies direct grants and a TRUNCATE grant to PUBLIC are detected.
 - CI #260 passed all three jobs on the transaction-bound scheduler proof change (287 backend, 17 frontend).
-- CI #261 passed all three jobs on current head `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CI #261 passed all three jobs on historical code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
 - The npm audit continues to report 3 low-severity deepmerge findings. Passing the moderate threshold is not a zero-vulnerability result.
 
 ### Verification
@@ -161,37 +175,35 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 
 ### Current review and release state
 
-PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The owner-authored inline thread requesting the runtime-role preflight has been resolved after the code/test implementation and CI verification. This is not an independent approval: all recorded review submissions remain owner-authored, no independent security reviewer has approved the migration, and PR #27 remains draft.
+PR #27 remains open, draft, unmerged, and undeployed. Recorded reviews include repository-owner comments and a CodeRabbit COMMENTED review with actionable findings; no independent APPROVE review is recorded. Independent security approval remains outstanding. The runtime-role preflight finding is implemented and covered by CI, but the complete migration and deployment model still requires an independent assessment.
 
-Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
+Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentation-only PR #28 merge; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
 
 
-## Verification refresh — 2026-11-09
+## Engineering update — 2026-11-11
 
-### Latest repository and CI evidence
+### Main branch and CI
 
-- Main remains at `11ff8cc5f0b427117576e43edc4918907e72f750`. Its latest recorded CI run #231 completed successfully: 285 backend tests, 17 frontend tests, and production Docker image build passed.
-- PR #27 current head is `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`. CI #264 completed successfully across all three jobs: 287 backend tests passed (3 warnings), 17 frontend tests passed, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
-- PR #28 head before this documentation refresh is `e17b21468c1ef924c92dd7088e9ca1fb959b8044`. CI #265 completed successfully across all three jobs: 285 backend tests passed (3 warnings), 17 frontend tests passed across 3 files, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
-- The npm audit logs continue to report 3 low-severity `deepmerge` findings. The current lockfile resolves `deepmerge@4.3.1`; GitHub Advisory GHSA-gcqx-w48m-w2h4 lists 4.2.0 through 4.3.1 as affected and currently lists no patched version. Do not describe the audit as clean or apply a forced major upgrade without compatibility testing. Advisory: https://github.com/advisories/GHSA-gcqx-w48m-w2h4
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; CI #267 on that commit passed all three jobs: 285 backend tests (3 warnings), 17 frontend tests, frontend lint/build, and production Docker image build.
 
-### Review and repository governance
+### PR #27 security-review remediation
 
-- PR #27's two owner-authored inline review threads are now resolved. The runtime-role preflight request was addressed in migration 0010 and covered by PostgreSQL regression tests. This does not constitute independent security approval: recorded PR reviews are owner-authored comments only, and no independent reviewer has approved the migration.
-- PR #27 remains open, draft, unmerged, and undeployed.
-- GitHub reports the `main` branch as `protected: false`. Required CI/review branch protection is therefore not verified as enforced; configure it before treating main as a protected release branch.
+- Added transaction binding to the tenant HMAC. The app signs `mia:shop:v1:<txid>:<normalized-domain>`; the migration verifier recomputes the same payload using the current transaction ID.
+- Added a restricted-runtime-role regression that captures a tenant proof and attempts to replay it in a different transaction; the replay must not read even the original shop's rows.
+- Wrapped RLS policy function calls in scalar subqueries so stable HMAC/key-lookup predicates are evaluated once per query rather than repeatedly per scanned row.
+- Updated `SECURITY.md` and this handoff to accurately describe transaction binding and the remaining low-severity dependency findings. CodeRabbit's two documentation threads were resolved after the fixes; the major tenant-proof thread remains open pending fresh CI and review.
+- The code/test change is on commit `ef7574533d6da51deb570ae7b4ec5ad761959ded`; the later handoff update is documentation-only. No fresh CI run is attached to these latest PR #27 commits yet. CI #264 passed on the earlier head and does not verify this remediation.
+- PR #27 remains draft, unmerged, and undeployed, with no independent APPROVE review. Its branch is **1 commit behind main** and GitHub currently reports `mergeable=false`; branch synchronization/conflict reconciliation is still required before merge.
 
-### Shopify acceptance items still requiring direct validation
+### PR #29 — Shopify publication-scope default correction
 
-- `shopify.app.toml` registers `https://mia.drivenest.info/auth/callback`, but the backend auth router exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`; the frontend route table has no `/auth/callback` route. The current embedded ID-token exchange path is implemented, but the configured redirect must be tested in a real development-store install/reinstall flow and corrected if Shopify invokes it.
-- Publication scopes `read_publications` and `write_publications` are declared in `shopify.app.toml`; release of the updated app configuration and merchant re-approval are not verified.
-- No production database revision, production runtime-role catalog state, production `RLS_CONTEXT_SECRET`, deployed application SHA, or live merchant acceptance was directly verified in this run. Do not apply migration 0010 or claim production readiness from CI alone.
+- Opened PR #29 to align the backend `SHOPIFY_SCOPES` default with `shopify.app.toml`, including `read_publications` and `write_publications`.
+- Added a regression test for both publication scopes.
+- CI #268 on head `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs: **286 backend tests passed (3 warnings), 17 frontend tests passed, and Docker production image build passed**.
+- PR #29 is open, ready for review, mergeable, and not merged. No production configuration or Shopify app release was changed.
 
-### Next actions
+### Feature-branch synchronization
 
-1. Obtain independent security review of migration 0010 and the deployment/rollback model.
-2. Read-only verify the production Alembic revision and runtime-role attributes, memberships, ownership, and effective privileges before planning migration.
-3. Enable required status checks and review protection on `main`.
-4. Run development-store install/reinstall, token exchange, publication-scope approval, product publishing, webhook, GDPR, and billing acceptance.
-5. Replace process-local FastAPI `BackgroundTasks` for campaign jobs with a durable worker/lease-recovery design before claiming restart-safe execution.
-6. Track the `deepmerge` advisory until upstream publishes a fix; assess the actual transitive usage and avoid unsafe forced upgrades.
+- PR #25 is 3 commits ahead / 2 behind main; its prior CI #232 is historical for the current base.
+- PR #26 is 1 commit ahead / 2 behind main; its prior CI #230 is historical for the current base.
+- Both branches need synchronization and fresh CI before merge.
