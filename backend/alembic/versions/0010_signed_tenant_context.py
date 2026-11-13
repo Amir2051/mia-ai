@@ -328,7 +328,8 @@ def _revoke_non_owner_table_privileges(bind) -> None:
         sa.text("""
             SELECT r.rolname
               FROM pg_catalog.pg_roles AS r
-             WHERE r.rolsuper IS FALSE
+             WHERE r.rolcanlogin IS TRUE
+               AND r.rolsuper IS FALSE
                AND r.oid <> :owner_oid
                AND (
                    pg_catalog.has_table_privilege(r.oid, :table_oid, 'SELECT')
@@ -339,6 +340,12 @@ def _revoke_non_owner_table_privileges(bind) -> None:
                    OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'REFERENCES')
                    OR pg_catalog.has_table_privilege(r.oid, :table_oid, 'TRIGGER')
                    OR pg_catalog.pg_has_role(r.oid, :owner_oid, 'MEMBER')
+                   OR EXISTS (
+                       SELECT 1
+                         FROM pg_catalog.pg_roles AS capability_role
+                        WHERE capability_role.rolname IN ('pg_read_all_data', 'pg_write_all_data')
+                          AND pg_catalog.pg_has_role(r.oid, capability_role.oid, 'MEMBER')
+                   )
                )
              ORDER BY r.rolname
         """),
