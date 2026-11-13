@@ -181,3 +181,66 @@ def test_migration_revokes_named_default_acl_grants_before_secret_insert():
     finally:
         engine.dispose()
 
+
+@pytest.mark.parametrize("capability_role", ["pg_read_all_data", "pg_write_all_data"])
+def test_migration_rejects_login_membership_in_postgres_data_roles(capability_role):
+    """A NOINHERIT login must not retain SET ROLE access to PostgreSQL data-wide roles."""
+    import importlib.util
+    import os
+
+    from sqlalchemy import create_engine
+
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL for the PostgreSQL capability-role regression")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    sync_url = admin_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    engine = create_engine(sync_url, hide_parameters=True)
+    migration_path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0010_signed_tenant_context.py"
+    spec = importlib.util.spec_from_file_location("mia_signed_tenant_context_capability_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    sentinel = "MIA_RLS_CONTEXT_SECRET_CAPABILITY_TEST_SENTINEL"
+    reader_role_name = f"mia_capability_reader_{uuid.uuid4().hex[:12]}"
+    try:
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                preparer = connection.dialect.identifier_preparer
+                reader_identifier = preparer.quote(reader_role_name)
+                runtime_role = preparer.quote("mia_runtime_test")
+                capability_identifier = preparer.quote(capability_role)
+
+                connection.execute(text(f"CREATE ROLE {reader_identifier} LOGIN NOINHERIT"))
+                connection.execute(text(
+                    f"GRANT {capability_identifier} TO {reader_identifier}"
+                ))
+                assert connection.scalar(
+                    text("SELECT pg_catalog.pg_has_role(:reader, :capability, 'MEMBER')"),
+                    {"reader": reader_role_name, "capability": capability_role},
+                ) is True
+
+                connection.execute(text(
+                    "ALTER TABLE mia_private.tenant_context_keys "
+                    "RENAME TO tenant_context_keys_before_capability_test"
+                ))
+                with pytest.raises(
+                    RuntimeError,
+                    match="non-owner roles retain effective privileges or membership",
+                ) as error:
+                    migration._create_context_key_table(connection, runtime_role, sentinel)
+
+                assert sentinel not in str(error.value)
+                assert connection.scalar(text(
+                    "SELECT count(*) FROM mia_private.tenant_context_keys"
+                )) == 0
+            finally:
+                # Restore the original table and remove the temporary role grant.
+                transaction.rollback()
+    finally:
+        engine.dispose()
+
