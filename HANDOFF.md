@@ -207,3 +207,42 @@ Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentatio
 - PR #25 is 3 commits ahead / 2 behind main; its prior CI #232 is historical for the current base.
 - PR #26 is 1 commit ahead / 2 behind main; its prior CI #230 is historical for the current base.
 - Both branches need synchronization and fresh CI before merge.
+
+
+## Engineering update — 2026-11-14 (latest verified snapshot)
+
+This section supersedes the older November 11 branch-synchronization and CI notes above where they differ. It records PR-branch evidence only; it does not describe a merge or production deployment.
+
+### Repository and branch state
+- Current `main` remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its latest merged Alembic revision in the repository is `0009_privacy_audit_purge`.
+- PR #27 branch head before this documentation refresh: `9fc232233a18c3ace0caf727b1b3ec2546784e25`.
+- GitHub reports PR #27 open, draft, unmerged, and mergeable. The compare endpoint reports 62 commits ahead and 0 behind main; the ahead count includes the branch's preserved commit history and is not a claim of 62 new feature changes.
+- PR #27 has no independent APPROVE review recorded. The latest November 13 ACL-hardening request for re-review has not yet received a new independent review response.
+- No production database, secret, Shopify configuration, or application deployment was changed.
+
+### Verifier-key ACL and secret-disclosure hardening
+- Migration 0010 refuses to reuse any pre-existing `mia_private.tenant_context_keys` relation. It creates a fresh table without `IF NOT EXISTS` and uses a plain insert, preventing unknown pre-existing constraints or triggers from receiving the signing secret.
+- Before inserting the secret, the migration revokes all non-owner table ACL grants on the new verifier table, including PUBLIC and named grantees introduced by default privileges. It then checks effective access for login roles and membership in PostgreSQL's `pg_read_all_data` and `pg_write_all_data` capability roles, failing closed if access remains.
+- PostgreSQL regression coverage includes: a hostile pre-existing same-name relation; a named default-ACL SELECT grant where the role retains schema USAGE; and LOGIN/NOINHERIT roles granted each PostgreSQL data-wide capability role.
+- CI #281 initially failed because the first version of the check incorrectly treated the built-in NOLOGIN capability roles themselves as login principals. That query was corrected.
+- CI #282 passed on `88b2c88dc9cdfb820ff7e663d03953f6e1f580ef`: 290 backend tests, 17 frontend tests, and Docker production build passed.
+- CI #283 passed on code/test head `9fc232233a18c3ace0caf727b1b3ec2546784e25`: 292 backend tests (3 warnings), 17 frontend tests, and Docker production build passed. The backend job ran against PostgreSQL 16, executed the PostgreSQL-specific regression tests, and completed the migration 0010 downgrade/re-upgrade verification.
+- The frontend CI logs still report three low-severity `deepmerge` findings. The configured moderate-severity audit commands pass; the full dependency audit is not clean.
+- SQLAlchemy migration-engine `hide_parameters=True` is also covered by a sentinel exception regression. This protects SQLAlchemy exception rendering, not PostgreSQL server, managed-provider, proxy, or external log configuration.
+
+### Current active pull requests
+- PR #25: head `85eef38c40ca0990ccfa5c3188b17565ba41ee07`; 4 commits ahead / 0 behind main; CI #271 passed (288 backend, 17 frontend, Docker). It still uses process-local FastAPI `BackgroundTasks`; restart-safe durable execution, retries, and stale-job recovery are not implemented.
+- PR #26: head `04edf103e0de175734949d1ed3819743c8aa1a63`; 3 commits ahead / 0 behind main; CI #273 passed (285 backend, 17 frontend, Docker). Its automated test verifies the unconfigured-Meta fallback only; live Meta credentials and publishing remain unverified.
+- PR #29: head `4bd375c1fabbcb28471f0a044f0344288dd009c2`; 8 commits ahead / 0 behind main; CI #279 passed (287 backend, 17 frontend, Docker). It corrects the scope health-check requirement set but does not grant merchant permissions or release a Shopify app version.
+- All four PRs (#25, #26, #27, #29) remain open and unmerged.
+
+### Release and production gates still open
+- Independent security review of migration 0010, SECURITY DEFINER ownership/search_path, secret lifecycle, and rollback strategy.
+- Direct production catalog verification of runtime-role attributes, memberships, ownership, schema/table ACLs, and PostgreSQL/provider logging settings.
+- Secure provisioning of the same `RLS_CONTEXT_SECRET` to the protected application and migration environments, only after approval.
+- Direct verification of production Alembic revision, running application SHA, and health.
+- Development-store acceptance for embedded auth/token refresh, products/CSV, publishing, orders, webhooks/GDPR, billing, Meta, and OpenRouter.
+- Confirmed Shopify CLI release and merchant reauthorization for publication scopes.
+- Main branch protection and required CI/review checks. A fresh rulesets read on 2026-11-14 returned an empty list; the branch-protection detail endpoint returned 403 to the connected integration. The last recorded direct branch check in the earlier handoff reported main as unprotected, so recheck through repository-owner/admin access before release.
+
+Do not apply migration 0010 or describe Mia as production-approved based on these PR CI results.
