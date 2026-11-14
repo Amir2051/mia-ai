@@ -246,3 +246,11 @@ This section supersedes the older November 11 branch-synchronization and CI note
 - Main branch protection and required CI/review checks. A fresh rulesets read on 2026-11-14 returned an empty list; the branch-protection detail endpoint returned 403 to the connected integration. The last recorded direct branch check in the earlier handoff reported main as unprotected, so recheck through repository-owner/admin access before release.
 
 Do not apply migration 0010 or describe Mia as production-approved based on these PR CI results.
+
+
+### Additional SECURITY DEFINER ownership review gate — 2026-11-14
+
+- Migration 0010 creates several `SECURITY DEFINER` functions but does not issue `ALTER FUNCTION ... OWNER TO ...`. PostgreSQL therefore assigns ownership to the role executing the Alembic migration.
+- The CI workflow uses a separate migration connection (`MIGRATION_DATABASE_URL`) and a PostgreSQL 16 service. The passing CI run proves function behavior under that fixture; it does not prove the migration connection's function-owner role is non-superuser, non-BYPASSRLS, or least-privileged in production.
+- Before approval, inspect the actual production migration role and the owners/attributes of every SECURITY DEFINER function created by migration 0010. Decide whether the functions should instead be owned by a dedicated NOLOGIN, NOSUPERUSER, NOBYPASSRLS role with only the specific schema/table privileges required. If that design is adopted, add PostgreSQL regressions proving the owner cannot bypass RLS or access unrelated tenant data.
+- This is a newly recorded design/review gate, not a claim that a production exploit was observed. Current CI passing does not close it.
