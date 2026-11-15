@@ -254,3 +254,29 @@ Do not apply migration 0010 or describe Mia as production-approved based on thes
 - The CI workflow uses a separate migration connection (`MIGRATION_DATABASE_URL`) and a PostgreSQL 16 service. The passing CI run proves function behavior under that fixture; it does not prove the migration connection's function-owner role is non-superuser, non-BYPASSRLS, or least-privileged in production.
 - Before approval, inspect the actual production migration role and the owners/attributes of every SECURITY DEFINER function created by migration 0010. Decide whether the functions should instead be owned by a dedicated NOLOGIN, NOSUPERUSER, NOBYPASSRLS role with only the specific schema/table privileges required. If that design is adopted, add PostgreSQL regressions proving the owner cannot bypass RLS or access unrelated tenant data.
 - This is a newly recorded design/review gate, not a claim that a production exploit was observed. Current CI passing does not close it.
+
+
+## Engineering update — 2026-11-15
+
+This is a documentation-only verification update on the PR #27 branch. It does not change application code, merge the PR, or authorize production deployment.
+
+### Current PR and CI evidence
+
+- PR #27 head before this documentation commit: `3f163d6642eda0393413e3f67aa83c7caed134ef`.
+- CI #285 on that exact head completed on 2026-11-14 with all three jobs successful:
+  - Backend: **292 passed, 3 warnings**.
+  - PostgreSQL migration downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context`: **passed**.
+  - Frontend: **17 passed across 3 test files**; lint and build passed.
+  - Both configured npm audit gates passed at the moderate threshold, but the logs still report **3 low-severity deepmerge findings**.
+  - Production Docker image build: **passed**.
+- The CI job log confirms `MIGRATION_DATABASE_URL` connects as `mia`, matching the PostgreSQL service's `POSTGRES_USER`. The workflow does not demote that migration role before Alembic runs. This is not a test of a separately constrained SECURITY DEFINER owner.
+- Migration 0010 creates its SECURITY DEFINER functions as the Alembic connection role. The `mia_current_shop_id()` function explicitly documents that its owner is the `shops` table owner and intentionally bypasses that table's non-FORCE RLS policy.
+- Therefore, the CI pass proves the signed-context behavior under the current privileged migration/table-owner fixture; it does **not** prove least-privilege function ownership or RLS enforcement under a dedicated non-owner definer role.
+
+### November 15 security follow-up
+
+- Added a focused PR #27 discussion comment (issue comment **6895949481**) recording the CI migration-role evidence and the `mia_current_shop_id()` owner-bypass dependency.
+- Treat function-owner privilege design as a merge blocker. Before approval, require a design that avoids superuser/BYPASSRLS or unrestricted table-owner execution, grants only the required objects, and includes PostgreSQL tests asserting `pg_proc.proowner`, role attributes, and cross-tenant read/delete denial when the functions execute as their actual owner.
+- A dedicated `NOLOGIN NOSUPERUSER NOBYPASSRLS` owner is a candidate, not an implemented or validated fix. Ownership transfer alone is insufficient; verify that RLS policy evaluation and the GDPR audit-purge function continue to behave correctly.
+- PR #27 remains draft, open, unmerged, and undeployed. No independent APPROVED review is recorded. The production migration revision, running application SHA, runtime/migration role catalog, PostgreSQL/provider logging, and `RLS_CONTEXT_SECRET` provisioning remain unverified.
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application-code merge or production change was made in this update.
