@@ -280,3 +280,43 @@ This is a documentation-only verification update on the PR #27 branch. It does n
 - A dedicated `NOLOGIN NOSUPERUSER NOBYPASSRLS` owner is a candidate, not an implemented or validated fix. Ownership transfer alone is insufficient; verify that RLS policy evaluation and the GDPR audit-purge function continue to behave correctly.
 - PR #27 remains draft, open, unmerged, and undeployed. No independent APPROVED review is recorded. The production migration revision, running application SHA, runtime/migration role catalog, PostgreSQL/provider logging, and `RLS_CONTEXT_SECRET` provisioning remain unverified.
 - Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application-code merge or production change was made in this update.
+
+
+## Engineering update — 2026-11-17: least-privilege SECURITY DEFINER owner
+
+This update records application-code and PostgreSQL regression changes on PR #27. It is not a production deployment, independent approval, or authorization to apply migration 0010.
+
+### Implementation changes
+
+- Added a required pre-provisioned PostgreSQL role named `mia_rls_definer`. The migration fails closed unless it is `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`, has no role memberships, is not assumable by other non-superuser roles, owns no relations/schemas, and has no database/schema CREATE privileges.
+- The migration role must be a superuser or a member of `mia_rls_definer` so PostgreSQL can transfer SECURITY DEFINER ownership. Any non-superuser membership is restricted to the migration role; the application runtime role must not be a member.
+- Migration 0010 grants the definer role only the table access used by the signed-context functions: SELECT on `mia_private.tenant_context_keys`, SELECT on `shops`, and SELECT/DELETE on `audit_logs`. It also grants schema USAGE and EXECUTE on pgcrypto's HMAC function. A post-grant preflight checks effective table privileges across non-system schemas and fails if the role has any unexpected table privilege.
+- `mia_current_shop_domain()`, `mia_is_internal_scheduler()`, and `mia_purge_audit_logs_for_privacy(...)` are transferred to `mia_rls_definer`. The migration temporarily grants schema CREATE only to perform ownership transfer, then revokes it and verifies it is no longer effective.
+- `mia_current_shop_id()` is now explicitly SECURITY INVOKER. Its query of `shops` therefore runs under the caller's privileges and the signed-domain RLS policy, rather than depending on a table-owner SECURITY DEFINER bypass.
+- Added PostgreSQL integration coverage that asserts the owner role attributes, function owners and SECURITY DEFINER flags, exact table privileges, absence of runtime membership, and no table/schema ownership. The test then SET ROLEs to the actual definer role and proves it sees only Shop A and cannot delete Shop B's audit row. A separate runtime-role call verifies the GDPR purge function deletes Shop A's row while preserving Shop B's row.
+- Added a preflight regression proving a LOGIN/BYPASSRLS owner role is rejected.
+- CI now provisions the dedicated NOLOGIN role before running migration 0010.
+
+### Verification — CI #290
+
+- Exact tested commit: `9415ff2587fef804405d7567329da955e847f637`.
+- All three jobs passed: backend, frontend, and production Docker build.
+- Backend: **294 passed, 3 warnings**. This includes the two new SECURITY DEFINER ownership/RLS tests.
+- PostgreSQL migration downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context`: **passed**.
+- Frontend: **17 passed**; lint and production build passed.
+- Both configured npm audit commands reported **0 vulnerabilities** in this run. This is the result for this exact CI environment/run; continue checking dependency advisories on subsequent releases.
+- Docker production image build: **passed**.
+
+[CI #290](https://github.com/Amir2051/mia-ai/actions/runs/44098807200)
+
+### Current PR and release status
+
+- PR #27 remains **draft, open, unmerged, and undeployed**. GitHub reports it mergeable and zero commits behind main.
+- Four commits were added after the previous documentation head; the code changes are confined to `.github/workflows/ci.yml`, migration 0010, and `test_postgres_signed_tenant_context.py`.
+- Main remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application-code changes were merged into main.
+- No production database, application environment, secret, Shopify app release, or deployment was modified.
+- No independent APPROVED security review has been recorded. A fresh review of the current head is still required.
+- Before production, provision `mia_rls_definer` in the target database, confirm the migration connection can transfer ownership, and independently inspect `pg_roles`, `pg_auth_members`, `pg_proc.proowner/prosecdef`, schema/table ACLs, and the effective privileges of the production runtime role.
+- The same strong `RLS_CONTEXT_SECRET` must be provisioned to the protected app and migration environments only after review and release approval. PostgreSQL/provider/proxy parameter logging must also be verified directly.
+- The downgrade still restores the older caller-settable GUC policies and the prior GDPR purge function. It remains a security-sensitive rollback, not a routine rollback path.
+
