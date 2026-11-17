@@ -77,3 +77,36 @@ This document distinguishes controls present on `main` from proposed controls in
 - Production migrations are run before the application starts.
 - The production health endpoint is monitored separately from authenticated application APIs.
 - Image-generation integrations are intentionally outside this security hardening change.
+
+
+## SECURITY DEFINER owner for signed tenant context (PR #27)
+
+Migration `0010_signed_tenant_context` requires a pre-provisioned role named `mia_rls_definer`. The migration does not create this role. Provision it in the target database before applying the migration:
+
+```sql
+CREATE ROLE mia_rls_definer
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS;
+```
+
+The migration connection must be a superuser or a member of `mia_rls_definer` so PostgreSQL permits function ownership transfer. If the migration connection is not a superuser, grant membership to that migration role only. No application/runtime role or other non-superuser role may be able to `SET ROLE mia_rls_definer`.
+
+The migration fails closed unless the owner role:
+- Has the required NOLOGIN/NOSUPERUSER/NOBYPASSRLS and other restricted role attributes.
+- Has no memberships in other roles and is not assumable by other non-superuser roles (except the migration connection needed for ownership transfer).
+- Owns no relations or schemas and has no database or schema CREATE privileges.
+- Has only the effective table privileges required by the signed-context functions.
+
+The migration grants the role SELECT on `mia_private.tenant_context_keys`, SELECT on `public.shops`, and SELECT/DELETE on `public.audit_logs`. It grants schema USAGE and EXECUTE on pgcrypto's HMAC function. A post-grant catalog check evaluates effective privileges across non-system schemas and rejects any additional table privileges.
+
+The following functions are owned by `mia_rls_definer` and execute with its restricted privileges:
+- `public.mia_current_shop_domain()`
+- `public.mia_is_internal_scheduler()`
+- `public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)`
+
+The migration grants CREATE on `public` only temporarily while transferring ownership, then revokes it and verifies the definer role no longer has effective CREATE. `public.mia_current_shop_id()` is explicitly SECURITY INVOKER: it queries `shops` under the caller's role and the signed-domain RLS policy, avoiding a table-owner bypass.
+
+PostgreSQL CI on PR #27 verifies the function owners and SECURITY DEFINER flags, role attributes, exact table privileges, absence of runtime membership, and cross-tenant read/delete denial when the actual function-owner role is active. CI #290 on 2026-11-17 passed **294 backend tests, 17 frontend tests, the PostgreSQL downgrade/re-upgrade check, and the production Docker build**.
+
+These results are branch CI evidence only. Before production, independently verify the actual production role catalog, role memberships, function owners, runtime privileges, schema/table ACLs, and logging configuration. Provision `RLS_CONTEXT_SECRET` in the app and migration environments only after approval. The downgrade restores the legacy caller-settable GUC policies and must be treated as a security-sensitive rollback.
+
