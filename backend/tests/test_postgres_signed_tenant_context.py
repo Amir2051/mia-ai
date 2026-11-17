@@ -556,3 +556,256 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+
+def test_security_definer_owner_is_least_privilege_and_rls_scoped():
+    """Prove SECURITY DEFINER functions run as a restricted role subject to tenant RLS."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    if not admin_url or not runtime_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
+        pytest.skip("Dedicated PostgreSQL RLS URLs are not configured")
+
+    from app.models.schemas import AuditLog, Shop
+    from app.security.rls import set_shop_context
+
+    async def scenario():
+        admin_engine = create_async_engine(admin_url, pool_pre_ping=True)
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        admin_factory = sessionmaker(
+            bind=admin_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        runtime_factory = sessionmaker(
+            bind=runtime_engine, class_=AsyncSession, expire_on_commit=False
+        )
+        suffix = uuid.uuid4().hex[:12]
+        shop_a_domain = f"definer-a-{suffix}.myshopify.com"
+        shop_b_domain = f"definer-b-{suffix}.myshopify.com"
+        try:
+            async with admin_factory() as admin:
+                async with admin.begin():
+                    role = (await admin.execute(text("""
+                        SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                               rolinherit, rolreplication, rolbypassrls
+                          FROM pg_catalog.pg_roles
+                         WHERE rolname = 'mia_rls_definer'
+                    """))).mappings().one()
+                    assert role["rolcanlogin"] is False
+                    assert role["rolsuper"] is False
+                    assert role["rolcreatedb"] is False
+                    assert role["rolcreaterole"] is False
+                    assert role["rolinherit"] is False
+                    assert role["rolreplication"] is False
+                    assert role["rolbypassrls"] is False
+
+                    functions = (await admin.execute(text("""
+                        SELECT p.proname, owner.rolname AS owner_name, p.prosecdef
+                          FROM pg_catalog.pg_proc AS p
+                          JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+                          JOIN pg_catalog.pg_roles AS owner ON owner.oid = p.proowner
+                         WHERE n.nspname = 'public'
+                           AND p.proname IN (
+                               'mia_current_shop_domain',
+                               'mia_current_shop_id',
+                               'mia_is_internal_scheduler',
+                               'mia_purge_audit_logs_for_privacy'
+                           )
+                    """))).mappings().all()
+                    by_name = {row["proname"]: row for row in functions}
+                    assert set(by_name) == {
+                        "mia_current_shop_domain",
+                        "mia_current_shop_id",
+                        "mia_is_internal_scheduler",
+                        "mia_purge_audit_logs_for_privacy",
+                    }
+                    for function_name in (
+                        "mia_current_shop_domain",
+                        "mia_is_internal_scheduler",
+                        "mia_purge_audit_logs_for_privacy",
+                    ):
+                        assert by_name[function_name]["owner_name"] == "mia_rls_definer"
+                        assert by_name[function_name]["prosecdef"] is True
+                    assert by_name["mia_current_shop_id"]["prosecdef"] is False
+
+                    privileges = (await admin.execute(text("""
+                        SELECT
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'SELECT') AS shops_select,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'UPDATE') AS shops_update,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'SELECT') AS audit_select,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'DELETE') AS audit_delete,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'INSERT') AS audit_insert,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'UPDATE') AS audit_update,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'SELECT') AS key_select,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'INSERT') AS key_insert,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'UPDATE') AS key_update,
+                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'DELETE') AS key_delete,
+                            pg_catalog.has_schema_privilege('mia_rls_definer', 'public', 'CREATE') AS public_create,
+                            pg_catalog.has_database_privilege('mia_rls_definer', pg_catalog.current_database(), 'CREATE') AS database_create,
+                            pg_catalog.pg_has_role('mia_runtime_test', 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer
+                    """))).mappings().one()
+                    assert privileges["shops_select"] is True
+                    assert privileges["shops_update"] is False
+                    assert privileges["audit_select"] is True
+                    assert privileges["audit_delete"] is True
+                    assert privileges["audit_insert"] is False
+                    assert privileges["audit_update"] is False
+                    assert privileges["key_select"] is True
+                    assert privileges["key_insert"] is False
+                    assert privileges["key_update"] is False
+                    assert privileges["key_delete"] is False
+                    assert privileges["public_create"] is False
+                    assert privileges["database_create"] is False
+                    assert privileges["runtime_can_assume_definer"] is False
+
+                    member_count = await admin.scalar(text("""
+                        SELECT count(*)
+                          FROM pg_catalog.pg_roles AS r
+                         WHERE r.oid <> (
+                             SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'mia_rls_definer'
+                         )
+                           AND r.rolsuper IS FALSE
+                           AND pg_catalog.pg_has_role(r.oid, 'mia_rls_definer', 'MEMBER')
+                    """))
+                    assert member_count == 0
+
+                    owned_relations = await admin.scalar(text("""
+                        SELECT count(*)
+                          FROM pg_catalog.pg_class AS c
+                         WHERE c.relowner = (
+                             SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'mia_rls_definer'
+                         )
+                           AND c.relkind IN ('r', 'p', 'S')
+                    """))
+                    owned_schemas = await admin.scalar(text("""
+                        SELECT count(*)
+                          FROM pg_catalog.pg_namespace AS n
+                         WHERE n.nspowner = (
+                             SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'mia_rls_definer'
+                         )
+                    """))
+                    assert owned_relations == 0
+                    assert owned_schemas == 0
+
+                    shop_a = Shop(
+                        shop_domain=shop_a_domain,
+                        access_token_encrypted="definer-token-a",
+                        is_active=True,
+                    )
+                    shop_b = Shop(
+                        shop_domain=shop_b_domain,
+                        access_token_encrypted="definer-token-b",
+                        is_active=True,
+                    )
+                    admin.add_all([shop_a, shop_b])
+                    await admin.flush()
+                    shop_a_id, shop_b_id = shop_a.id, shop_b.id
+                    audit_a = AuditLog(
+                        shop_id=shop_a_id,
+                        action="definer.test.a",
+                        entity_type="customer",
+                        entity_id=f"a-{suffix}",
+                        details_json='{"marker":"shop-a"}',
+                    )
+                    audit_b = AuditLog(
+                        shop_id=shop_b_id,
+                        action="definer.test.b",
+                        entity_type="customer",
+                        entity_id=f"b-{suffix}",
+                        details_json='{"marker":"shop-b"}',
+                    )
+                    admin.add_all([audit_a, audit_b])
+                    await admin.flush()
+                    audit_a_id, audit_b_id = audit_a.id, audit_b.id
+
+            # Simulate the actual function owner, not the superuser migration role.
+            async with admin_factory() as definer_session:
+                async with definer_session.begin():
+                    await definer_session.execute(text("SET LOCAL ROLE mia_rls_definer"))
+                    assert await definer_session.scalar(text("SELECT current_user")) == "mia_rls_definer"
+                    await set_shop_context(definer_session, shop_a_domain, shop_a_id)
+                    visible_shops = (await definer_session.execute(select(Shop))).scalars().all()
+                    visible_audits = (await definer_session.execute(select(AuditLog))).scalars().all()
+                    assert {item.id for item in visible_shops} == {shop_a_id}
+                    assert {item.id for item in visible_audits} == {audit_a_id}
+
+                    # The definer role has DELETE, but RLS must still hide Shop B's row.
+                    blocked_delete = await definer_session.execute(
+                        text("DELETE FROM public.audit_logs WHERE id = :audit_id"),
+                        {"audit_id": audit_b_id},
+                    )
+                    assert blocked_delete.rowcount == 0
+
+            # The runtime role can invoke the GDPR function, but its restricted
+            # function owner may delete only the signed tenant's audit records.
+            async with runtime_factory() as runtime:
+                async with runtime.begin():
+                    await set_shop_context(runtime, shop_a_domain, shop_a_id)
+                    deleted = await runtime.scalar(
+                        text("""
+                            SELECT public.mia_purge_audit_logs_for_privacy(
+                                :shop_id, NULL, NULL, TRUE
+                            )
+                        """),
+                        {"shop_id": shop_a_id},
+                    )
+                    assert deleted == 1
+
+            async with admin_factory() as admin:
+                async with admin.begin():
+                    remaining_a = await admin.scalar(
+                        select(AuditLog.id).where(AuditLog.id == audit_a_id)
+                    )
+                    remaining_b = await admin.scalar(
+                        select(AuditLog.id).where(AuditLog.id == audit_b_id)
+                    )
+                    assert remaining_a is None
+                    assert remaining_b == audit_b_id
+        finally:
+            await runtime_engine.dispose()
+            await admin_engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_signed_definer_role_preflight_rejects_login_bypass_role():
+    """Fail closed if the provisioned SECURITY DEFINER owner can log in or bypass RLS."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "0010_signed_tenant_context.py"
+    )
+    spec = spec_from_file_location("mia_signed_tenant_context_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        bad_role = f"mia_bad_definer_{uuid.uuid4().hex[:10]}"
+        try:
+            async with engine.begin() as admin:
+                await admin.execute(text(
+                    f'CREATE ROLE "{bad_role}" LOGIN PASSWORD \'ci-only\' '
+                    "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS"
+                ))
+                with pytest.raises(RuntimeError, match="LOGIN|BYPASSRLS"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_role(connection, bad_role)
+                    )
+                await admin.execute(text(f'DROP ROLE "{bad_role}"'))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
