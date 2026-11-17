@@ -27,6 +27,9 @@ TENANT_TABLES = (
 )
 
 
+DEFINER_ROLE = "mia_rls_definer"
+
+
 def _runtime_role(bind) -> str:
     runtime_url = os.environ.get("DATABASE_URL", "")
     migration_url = os.environ.get("MIGRATION_DATABASE_URL", "")
@@ -274,6 +277,190 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
                 )
 
 
+def _verify_definer_role(bind, role_name: str) -> None:
+    """Require a dedicated, non-login role that cannot bypass RLS or be assumed by the app."""
+    role = bind.execute(
+        sa.text("""
+            SELECT oid, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                   rolinherit, rolreplication, rolbypassrls
+              FROM pg_catalog.pg_roles
+             WHERE rolname = :role_name
+        """),
+        {"role_name": role_name},
+    ).mappings().one_or_none()
+    if role is None:
+        raise RuntimeError(
+            f"required SECURITY DEFINER owner role {role_name!r} is missing; "
+            "provision it as NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
+            "NOREPLICATION NOBYPASSRLS before migration"
+        )
+
+    unsafe_attributes = [
+        name for name, enabled in (
+            ("LOGIN", role["rolcanlogin"]),
+            ("SUPERUSER", role["rolsuper"]),
+            ("CREATEDB", role["rolcreatedb"]),
+            ("CREATEROLE", role["rolcreaterole"]),
+            ("INHERIT", role["rolinherit"]),
+            ("REPLICATION", role["rolreplication"]),
+            ("BYPASSRLS", role["rolbypassrls"]),
+        )
+        if enabled
+    ]
+    if unsafe_attributes:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must be NOLOGIN, NOSUPERUSER, "
+            "NOCREATEDB, NOCREATEROLE, NOINHERIT, NOREPLICATION, and NOBYPASSRLS; "
+            f"unsafe attributes: {', '.join(unsafe_attributes)}"
+        )
+
+    migration_role = bind.execute(sa.text("""
+        SELECT oid, rolsuper
+          FROM pg_catalog.pg_roles
+         WHERE rolname = current_user
+    """)).mappings().one()
+    can_transfer_ownership = bool(migration_role["rolsuper"]) or bind.execute(
+        sa.text("""
+            SELECT pg_catalog.pg_has_role(
+                CAST(:migration_oid AS oid),
+                CAST(:definer_oid AS oid),
+                'MEMBER'
+            )
+        """),
+        {"migration_oid": migration_role["oid"], "definer_oid": role["oid"]},
+    ).scalar_one()
+    if not can_transfer_ownership:
+        raise RuntimeError(
+            f"migration role must be a superuser or a member of {role_name!r} "
+            "to assign SECURITY DEFINER function ownership"
+        )
+
+    parent_memberships = bind.execute(
+        sa.text("""
+            WITH RECURSIVE parent_roles(role_oid) AS (
+                SELECT m.roleid
+                  FROM pg_catalog.pg_auth_members AS m
+                 WHERE m.member = :role_oid
+                UNION
+                SELECT m.roleid
+                  FROM pg_catalog.pg_auth_members AS m
+                  JOIN parent_roles AS p ON m.member = p.role_oid
+            )
+            SELECT count(*) FROM parent_roles
+        """),
+        {"role_oid": role["oid"]},
+    ).scalar_one()
+    if parent_memberships:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not be a member of any other role"
+        )
+
+    unexpected_members = bind.execute(
+        sa.text("""
+            SELECT r.rolname
+              FROM pg_catalog.pg_roles AS r
+             WHERE r.oid NOT IN (:definer_oid, :migration_oid)
+               AND r.rolsuper IS FALSE
+               AND pg_catalog.pg_has_role(r.oid, CAST(:definer_oid AS oid), 'MEMBER')
+             ORDER BY r.rolname
+        """),
+        {"definer_oid": role["oid"], "migration_oid": migration_role["oid"]},
+    ).scalars().all()
+    if unexpected_members:
+        raise RuntimeError(
+            f"non-superuser roles must not be able to SET ROLE to {role_name!r}: "
+            + ", ".join(unexpected_members)
+        )
+
+    owned_objects = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.format('%I.%I', n.nspname, c.relname) AS object_name
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE c.relowner = :role_oid
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+            UNION ALL
+            SELECT n.nspname
+              FROM pg_catalog.pg_namespace AS n
+             WHERE n.nspowner = :role_oid
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+        """),
+        {"role_oid": role["oid"]},
+    ).scalars().all()
+    if owned_objects:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not own tables, sequences, "
+            "or schemas: " + ", ".join(owned_objects)
+        )
+
+    can_create_database_objects = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.has_database_privilege(
+                CAST(:role_oid AS oid), pg_catalog.current_database(), 'CREATE'
+            )
+        """),
+        {"role_oid": role["oid"]},
+    ).scalar_one()
+    if can_create_database_objects:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not have CREATE on the database"
+        )
+
+    public_schema_oid = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'")
+    ).scalar_one_or_none()
+    if public_schema_oid is not None and bind.execute(
+        sa.text("""
+            SELECT pg_catalog.has_schema_privilege(
+                CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE'
+            )
+        """),
+        {"role_oid": role["oid"], "schema_oid": public_schema_oid},
+    ).scalar_one():
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not have CREATE on public"
+        )
+
+    private_schema_oid = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'mia_private'")
+    ).scalar_one_or_none()
+    if private_schema_oid is not None and bind.execute(
+        sa.text("""
+            SELECT pg_catalog.has_schema_privilege(
+                       CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'USAGE'
+                   )
+                OR pg_catalog.has_schema_privilege(
+                       CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE'
+                   )
+        """),
+        {"role_oid": role["oid"], "schema_oid": private_schema_oid},
+    ).scalar_one():
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not have pre-existing "
+            "access to mia_private"
+        )
+
+
+def _assign_security_definer_owner(bind, role_name: str, function_signature: str) -> None:
+    """Temporarily grant schema CREATE so a trusted migration can transfer function ownership."""
+    role_identifier = bind.dialect.identifier_preparer.quote(role_name)
+    bind.execute(sa.text(f"GRANT CREATE ON SCHEMA public TO {role_identifier}"))
+    bind.execute(sa.text(
+        f"ALTER FUNCTION public.{function_signature} OWNER TO {role_identifier}"
+    ))
+    bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA public FROM {role_identifier}"))
+    can_create = bind.execute(
+        sa.text("SELECT pg_catalog.has_schema_privilege(:role_name, 'public', 'CREATE')"),
+        {"role_name": role_name},
+    ).scalar_one()
+    if can_create:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} retained CREATE on public after ownership transfer"
+        )
+
+
 def _revoke_non_owner_table_privileges(bind) -> None:
     """Remove default-ACL grants and fail closed on effective non-owner access.
 
@@ -400,6 +587,7 @@ def upgrade() -> None:
     runtime_role_name = _runtime_role(bind)
     _verify_runtime_role(bind, runtime_role_name)
     runtime_role = bind.dialect.identifier_preparer.quote(runtime_role_name)
+    definer_role = bind.dialect.identifier_preparer.quote(DEFINER_ROLE)
 
     # pgcrypto may already live in Supabase's extensions schema. Resolve its
     # actual schema rather than assuming public or extensions.
@@ -416,8 +604,16 @@ def upgrade() -> None:
 
     op.execute("CREATE SCHEMA IF NOT EXISTS mia_private AUTHORIZATION CURRENT_USER")
     op.execute("REVOKE ALL ON SCHEMA mia_private FROM PUBLIC")
+    _verify_definer_role(bind, DEFINER_ROLE)
     # A pre-existing verifier relation is rejected before the secret is bound to SQL.
     _create_context_key_table(bind, runtime_role, secret)
+    op.execute(f"GRANT USAGE ON SCHEMA mia_private TO {definer_role}")
+    op.execute(f"GRANT SELECT ON TABLE mia_private.tenant_context_keys TO {definer_role}")
+    op.execute(f"GRANT USAGE ON SCHEMA public TO {definer_role}")
+    op.execute(f"GRANT SELECT ON TABLE public.shops TO {definer_role}")
+    op.execute(f"GRANT SELECT, DELETE ON TABLE public.audit_logs TO {definer_role}")
+    op.execute(f"GRANT USAGE ON SCHEMA {hmac_schema} TO {definer_role}")
+    op.execute(f"GRANT EXECUTE ON FUNCTION {hmac_schema}.hmac(bytea, bytea, text) TO {definer_role}")
 
     op.execute(f"""
         CREATE OR REPLACE FUNCTION public.mia_current_shop_domain()
@@ -471,7 +667,7 @@ def upgrade() -> None:
         RETURNS bigint
         LANGUAGE plpgsql
         STABLE
-        SECURITY DEFINER
+        SECURITY INVOKER
         SET search_path = pg_catalog
         AS $function$
         DECLARE
@@ -483,8 +679,8 @@ def upgrade() -> None:
                 RETURN NULL;
             END IF;
 
-            -- The function owner is the shops table owner and intentionally
-            -- bypasses its non-FORCE RLS policy for this indexed lookup.
+            -- Run as the caller so the shops RLS policy remains active. That
+            -- policy verifies the signed domain without calling this function.
             SELECT s.id
               INTO v_shop_id
               FROM public.shops AS s
@@ -539,6 +735,9 @@ def upgrade() -> None:
         $function$;
     """)
 
+    _assign_security_definer_owner(bind, DEFINER_ROLE, "mia_current_shop_domain()")
+    _assign_security_definer_owner(bind, DEFINER_ROLE, "mia_is_internal_scheduler()")
+
     for function_name in (
         "mia_current_shop_domain()",
         "mia_current_shop_id()",
@@ -546,6 +745,7 @@ def upgrade() -> None:
     ):
         op.execute(f"REVOKE ALL ON FUNCTION public.{function_name} FROM PUBLIC")
         op.execute(f"GRANT EXECUTE ON FUNCTION public.{function_name} TO {runtime_role}")
+    op.execute(f"GRANT EXECUTE ON FUNCTION public.mia_current_shop_id() TO {definer_role}")
 
     # Replace caller-settable GUC policies with signed-context predicates.
     op.execute("ALTER TABLE public.shops ENABLE ROW LEVEL SECURITY")
@@ -688,6 +888,11 @@ def upgrade() -> None:
         END;
         $function$;
     """)
+    _assign_security_definer_owner(
+        bind,
+        DEFINER_ROLE,
+        "mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)",
+    )
     op.execute("REVOKE ALL ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) FROM PUBLIC")
     op.execute(f"GRANT EXECUTE ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) TO {runtime_role}")
 
@@ -786,3 +991,4 @@ def downgrade() -> None:
     # existed before this revision or contain unrelated objects; never CASCADE
     # drop the entire schema during rollback.
     op.execute("DROP TABLE IF EXISTS mia_private.tenant_context_keys")
+    op.execute("REVOKE ALL ON SCHEMA mia_private FROM mia_rls_definer")
