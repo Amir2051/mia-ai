@@ -461,6 +461,63 @@ def _assign_security_definer_owner(bind, role_name: str, function_signature: str
         )
 
 
+def _verify_definer_table_privileges(bind, role_name: str) -> None:
+    """Require only the exact table privileges used by the signed-context functions."""
+    role = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :role_name"),
+        {"role_name": role_name},
+    ).mappings().one()
+    rows = bind.execute(
+        sa.text("""
+            SELECT n.nspname, c.relname,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'SELECT') AS can_select,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'INSERT') AS can_insert,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'UPDATE') AS can_update,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'DELETE') AS can_delete,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'TRUNCATE') AS can_truncate,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
+                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'TRIGGER') AS can_trigger
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+             WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+             ORDER BY n.nspname, c.relname
+        """),
+        {"role_oid": role["oid"]},
+    ).mappings().all()
+
+    expected = {
+        ("public", "shops"): {"SELECT"},
+        ("public", "audit_logs"): {"SELECT", "DELETE"},
+        ("mia_private", "tenant_context_keys"): {"SELECT"},
+    }
+    columns = {
+        "SELECT": "can_select",
+        "INSERT": "can_insert",
+        "UPDATE": "can_update",
+        "DELETE": "can_delete",
+        "TRUNCATE": "can_truncate",
+        "REFERENCES": "can_reference",
+        "TRIGGER": "can_trigger",
+    }
+    unexpected = []
+    for row in rows:
+        key = (row["nspname"], row["relname"])
+        actual = {privilege for privilege, column in columns.items() if row[column]}
+        allowed = expected.get(key, set())
+        if actual != allowed:
+            unexpected.append(
+                f"{row['nspname']}.{row['relname']}="
+                f"{','.join(sorted(actual)) or 'none'} (expected {','.join(sorted(allowed)) or 'none'})"
+            )
+    if unexpected:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} has unexpected effective table privileges: "
+            + "; ".join(unexpected)
+        )
+
+
 def _revoke_non_owner_table_privileges(bind) -> None:
     """Remove default-ACL grants and fail closed on effective non-owner access.
 
@@ -614,6 +671,7 @@ def upgrade() -> None:
     op.execute(f"GRANT SELECT, DELETE ON TABLE public.audit_logs TO {definer_role}")
     op.execute(f"GRANT USAGE ON SCHEMA {hmac_schema} TO {definer_role}")
     op.execute(f"GRANT EXECUTE ON FUNCTION {hmac_schema}.hmac(bytea, bytea, text) TO {definer_role}")
+    _verify_definer_table_privileges(bind, DEFINER_ROLE)
 
     op.execute(f"""
         CREATE OR REPLACE FUNCTION public.mia_current_shop_domain()
