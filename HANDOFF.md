@@ -322,28 +322,28 @@ This update records application-code and PostgreSQL regression changes on PR #27
 
 ## Engineering update — 2026-11-18: definer privilege closure and dependency audit exception
 
-This update records PR-branch engineering evidence only. It does not merge PR #27, change \`main\`, provision production roles/secrets, apply migration 0010, or deploy the application.
+This update records PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010, or deploy the application.
 
 ### PostgreSQL least-privilege follow-up
 
-- Strengthened \`_verify_definer_role\` to reject effective \`CREATE\` on **every non-system schema**, not only \`public\` and \`mia_private\`.
-- Strengthened \`_verify_definer_table_privileges\` to use \`has_any_column_privilege\` for \`SELECT\`, \`INSERT\`, \`UPDATE\`, and \`REFERENCES\`. PostgreSQL's \`has_table_privilege\` alone does not detect a grant made only on a column.
-- Added \`test_definer_role_preflight_rejects_unexpected_schema_and_column_grants\`, which proves the migration preflight rejects both a \`CREATE\` grant on a non-public schema and a column-only \`SELECT\` grant on an unapproved table.
+- Strengthened `_verify_definer_role` to reject effective `CREATE` on **every non-system schema**, not only `public` and `mia_private`.
+- Strengthened `_verify_definer_table_privileges` to use `has_any_column_privilege` for `SELECT`, `INSERT`, `UPDATE`, and `REFERENCES`. PostgreSQL's `has_table_privilege` alone does not detect a grant made only on a column.
+- Added `test_definer_role_preflight_rejects_unexpected_schema_and_column_grants`, which proves the migration preflight rejects both a `CREATE` grant on a non-public schema and a column-only `SELECT` grant on an unapproved table.
 - The backend suite increased from 294 to **295 passing tests**. The new test passed in CI #294 and CI #300.
 
 ### Dependency audit change discovered on 2026-11-18
 
-- CI #294 exposed a newly surfaced high-severity GitHub advisory, GHSA-fc5q-39xc-vjpf / CVE-2026-112366, affecting \`picomatch\` through version 4.0.7. The full audit showed **11 high-severity dependency-tree entries**; they resolve through the Vite/Vitest/TypeScript-ESLint development toolchain. The production-only audit reported **0 vulnerabilities**.
-- The final Docker runtime stage copies only \`frontend/dist\` into the Python image; it does not copy the Node.js dependency tree. This limits the finding to build/development tooling in the current image design, not the shipped runtime dependency set.
+- CI #294 exposed a newly surfaced high-severity GitHub advisory, GHSA-fc5q-39xc-vjpf / CVE-2026-112366, affecting `picomatch` through version 4.0.7. The full audit showed **11 high-severity dependency-tree entries**; they resolve through the Vite/Vitest/TypeScript-ESLint development toolchain. The production-only audit reported **0 vulnerabilities**.
+- The final Docker runtime stage copies only `frontend/dist` into the Python image; it does not copy the Node.js dependency tree. This limits the finding to build/development tooling in the current image design, not the shipped runtime dependency set.
 - The GitHub advisory lists no patched version. The upstream picomatch maintainer disputes the report and recommends not accepting untrusted glob patterns; the attempted upstream fix PR #235 was closed without merging. This remains a documented development-tooling risk, not a clean full audit.
-- Added \`frontend/scripts/check-audit-exceptions.mjs\` and a narrow CI policy. The production-only audit remains a hard gate. The full-tree checker accepts only this exact GHSA, requires any directly affected packages to be exclusively in \`devDependencies\`, requires every locked picomatch copy to remain version 4.0.7 with \`dev: true\`, rejects incomplete audit JSON, and fails on any other advisory. Remove this exception when the upstream fix or risk assessment changes.
-- CI #294 initially failed on the full-tree audit. CI #298 then exposed an overly strict first version of the checker that treated direct \`devDependencies\` as production dependencies; that checker was corrected.
+- Added `frontend/scripts/check-audit-exceptions.mjs` and a narrow CI policy. The production-only audit remains a hard gate. The full-tree checker accepts only this exact GHSA, requires any directly affected packages to be exclusively in `devDependencies`, requires every locked picomatch copy to remain version 4.0.7 with `dev: true`, rejects incomplete audit JSON, and fails on any other advisory. Remove this exception when the upstream fix or risk assessment changes.
+- CI #294 initially failed on the full-tree audit. CI #298 then exposed an overly strict first version of the checker that treated direct `devDependencies` as production dependencies; that checker was corrected.
 
 ### Latest verified CI
 
-- CI #300 on code/workflow head \`96dd762e92af8b7bee1bca667d92f3d07dafa967\` completed on 2026-11-18 with all three jobs successful:
+- CI #300 on code/workflow head `96dd762e92af8b7bee1bca667d92f3d07dafa967` completed on 2026-11-18 with all three jobs successful:
   - Backend: **295 passed, 3 warnings**.
-  - PostgreSQL migration 0010 downgrade to \`0009_privacy_audit_purge\` and re-upgrade: **passed**.
+  - PostgreSQL migration 0010 downgrade to `0009_privacy_audit_purge` and re-upgrade: **passed**.
   - Frontend: **17 passed**; lint and production build passed.
   - Production-only npm audit: **0 vulnerabilities**.
   - Full-tree audit exception checker: **passed**, accepting the 11 entries that trace only to the documented dev-only picomatch advisory.
@@ -354,21 +354,21 @@ This update records PR-branch engineering evidence only. It does not merge PR #2
 
 ### Current repository and release state
 
-- \`main\` remains \`59660d53d7c6b3ceeae7a584499e5ad392733fb8\`; the latest merged Alembic revision on \`main\` is still \`0009_privacy_audit_purge\`.
-- PR #27 remains draft, open, unmerged, and undeployed. CI #300 tested the code/workflow head above. No independent \`APPROVE\` review is recorded; the latest recorded CodeRabbit review is from 2026-11-12. A fresh CodeRabbit review was requested in the PR conversation on 2026-11-18; no response is verified yet.
+- `main` remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; the latest merged Alembic revision on `main` is still `0009_privacy_audit_purge`.
+- PR #27 remains draft, open, unmerged, and undeployed. CI #300 tested the code/workflow head above. No independent `APPROVE` review is recorded; the latest recorded CodeRabbit review is from 2026-11-12. A fresh CodeRabbit review was requested in the PR conversation on 2026-11-18, but the bot replied `Action not completed` because the PR head changed; no new review is recorded.
 - PR #29 remains open and unmerged with its publication-scope health-check correction. PR #25 and PR #26 remain open and unmerged; their prior CI results do not prove durable campaign execution or live Meta publishing.
-- Direct GitHub branch metadata still reports \`main.protected=false\`; the repository rulesets endpoint returned an empty list on 2026-11-18. Required CI/review enforcement is not active.
-- Production running SHA, production Alembic revision, \`mia_rls_definer\` provisioning, \`RLS_CONTEXT_SECRET\` provisioning, PostgreSQL/provider logging configuration, and current production health remain unverified. The external health/homepage check could not retrieve \`mia.drivenest.info\`; that is inconclusive, not proof of an outage.
+- Direct GitHub branch metadata still reports `main.protected=false`; the repository rulesets endpoint returned an empty list on 2026-11-18. Required CI/review enforcement is not active.
+- Production running SHA, production Alembic revision, `mia_rls_definer` provisioning, `RLS_CONTEXT_SECRET` provisioning, PostgreSQL/provider logging configuration, and current production health remain unverified. The external health/homepage check could not retrieve `mia.drivenest.info`; that is inconclusive, not proof of an outage.
 - No PR was merged, no production database or secret was modified, no Shopify app release was made, and no production deployment occurred.
 
 ### Remaining release gates
 
 1. Obtain an independent security review of migration 0010, the restricted function-owner role, RLS policy behavior, key lifecycle, and downgrade strategy.
 2. Verify production role attributes, memberships, function owners, schema/table/column ACLs, and PostgreSQL/provider/proxy logging directly.
-3. Provision \`mia_rls_definer\` and the same strong \`RLS_CONTEXT_SECRET\` in the approved target environments only after review.
+3. Provision `mia_rls_definer` and the same strong `RLS_CONTEXT_SECRET` in the approved target environments only after review.
 4. Review and merge PR #29, release the updated Shopify publication scopes, and verify merchant reauthorization.
 5. Complete real Shopify development-store acceptance for embedded authentication/token refresh, CSV/product operations, publishing, orders, webhooks/GDPR, billing, Meta, and OpenRouter.
-6. Protect \`main\` with required CI and independent approval before any production release.
+6. Protect `main` with required CI and independent approval before any production release.
 
 Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
 
