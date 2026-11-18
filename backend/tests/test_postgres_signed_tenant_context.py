@@ -809,3 +809,69 @@ def test_signed_definer_role_preflight_rejects_login_bypass_role():
             await engine.dispose()
 
     asyncio.run(scenario())
+
+def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
+    """Reject non-system schema CREATE and column-only grants outside the allowlist."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "0010_signed_tenant_context.py"
+    )
+    spec = spec_from_file_location("mia_signed_tenant_context_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        suffix = uuid.uuid4().hex[:10]
+        schema_name = f"mia_definer_schema_probe_{suffix}"
+        table_name = f"mia_definer_column_probe_{suffix}"
+        try:
+            async with engine.begin() as admin:
+                # A CREATE grant outside public must fail the same preflight.
+                schema_savepoint = await admin.begin_nested()
+                await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+                await admin.execute(text(
+                    f'GRANT CREATE ON SCHEMA "{schema_name}" TO mia_rls_definer'
+                ))
+                with pytest.raises(RuntimeError, match="CREATE on schemas"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_role(
+                            connection, "mia_rls_definer"
+                        )
+                    )
+                await schema_savepoint.rollback()
+
+                # Table-level privilege checks alone miss column-only grants.
+                # The owner may read only the explicitly allowlisted tables.
+                column_savepoint = await admin.begin_nested()
+                await admin.execute(text(
+                    f'CREATE TABLE public."{table_name}" (id bigint, sensitive_value text)'
+                ))
+                await admin.execute(text(
+                    f'GRANT SELECT (sensitive_value) ON TABLE public."{table_name}" '
+                    'TO mia_rls_definer'
+                ))
+                with pytest.raises(RuntimeError, match="table/column privileges"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_table_privileges(
+                            connection, "mia_rls_definer"
+                        )
+                    )
+                await column_savepoint.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
