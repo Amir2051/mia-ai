@@ -16,6 +16,14 @@ try {
   fail(`could not parse npm audit JSON (${error.message})`);
 }
 
+if (
+  report.error ||
+  !Number.isInteger(report.auditReportVersion) ||
+  !report.metadata?.vulnerabilities
+) {
+  fail("npm audit did not return a complete audit report; refusing to treat a registry/network error as clean");
+}
+
 const vulnerabilities = report.vulnerabilities ?? {};
 const relevant = Object.entries(vulnerabilities).filter(
   ([, vulnerability]) => (severityRank[vulnerability.severity] ?? 0) >= severityRank.moderate,
