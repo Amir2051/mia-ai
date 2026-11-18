@@ -192,7 +192,6 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npm audit --omit=dev --audit-level=moderate
       # Production dependencies remain a hard gate. The full-tree audit uses
       # a narrow allowlist for one unpatched, dev-only picomatch advisory; the
       # checker fails closed on any other advisory or if picomatch changes.
