@@ -408,19 +408,26 @@ def _verify_definer_role(bind, role_name: str) -> None:
             f"SECURITY DEFINER owner role {role_name!r} must not have CREATE on the database"
         )
 
-    public_schema_oid = bind.execute(
-        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'")
-    ).scalar_one_or_none()
-    if public_schema_oid is not None and bind.execute(
+    # The definer must not be able to create objects in any application or
+    # extension schema. Checking only public would miss a pre-existing CREATE
+    # grant on another non-system schema.
+    unexpected_create_schemas = bind.execute(
         sa.text("""
-            SELECT pg_catalog.has_schema_privilege(
-                CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE'
-            )
+            SELECT n.nspname
+              FROM pg_catalog.pg_namespace AS n
+             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.has_schema_privilege(
+                   CAST(:role_oid AS oid), n.oid, 'CREATE'
+               )
+             ORDER BY n.nspname
         """),
-        {"role_oid": role["oid"], "schema_oid": public_schema_oid},
-    ).scalar_one():
+        {"role_oid": role["oid"]},
+    ).scalars().all()
+    if unexpected_create_schemas:
         raise RuntimeError(
-            f"SECURITY DEFINER owner role {role_name!r} must not have CREATE on public"
+            f"SECURITY DEFINER owner role {role_name!r} must not have CREATE on schemas: "
+            + ", ".join(unexpected_create_schemas)
         )
 
     private_schema_oid = bind.execute(
@@ -470,12 +477,12 @@ def _verify_definer_table_privileges(bind, role_name: str) -> None:
     rows = bind.execute(
         sa.text("""
             SELECT n.nspname, c.relname,
-                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'SELECT') AS can_select,
-                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'INSERT') AS can_insert,
-                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'UPDATE') AS can_update,
+                   pg_catalog.has_any_column_privilege(CAST(:role_oid AS oid), c.oid, 'SELECT') AS can_select,
+                   pg_catalog.has_any_column_privilege(CAST(:role_oid AS oid), c.oid, 'INSERT') AS can_insert,
+                   pg_catalog.has_any_column_privilege(CAST(:role_oid AS oid), c.oid, 'UPDATE') AS can_update,
                    pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'DELETE') AS can_delete,
                    pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'TRUNCATE') AS can_truncate,
-                   pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
+                   pg_catalog.has_any_column_privilege(CAST(:role_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
                    pg_catalog.has_table_privilege(CAST(:role_oid AS oid), c.oid, 'TRIGGER') AS can_trigger
               FROM pg_catalog.pg_class AS c
               JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
@@ -513,7 +520,7 @@ def _verify_definer_table_privileges(bind, role_name: str) -> None:
             )
     if unexpected:
         raise RuntimeError(
-            f"SECURITY DEFINER owner role {role_name!r} has unexpected effective table privileges: "
+            f"SECURITY DEFINER owner role {role_name!r} has unexpected effective table/column privileges: "
             + "; ".join(unexpected)
         )
 
