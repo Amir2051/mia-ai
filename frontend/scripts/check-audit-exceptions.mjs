@@ -24,6 +24,13 @@ if (
   fail("npm audit did not return a complete audit report; refusing to treat a registry/network error as clean");
 }
 
+const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const productionDependencies = new Set([
+  ...Object.keys(packageJson.dependencies ?? {}),
+  ...Object.keys(packageJson.optionalDependencies ?? {}),
+  ...Object.keys(packageJson.peerDependencies ?? {}),
+]);
+const developmentDependencies = new Set(Object.keys(packageJson.devDependencies ?? {}));
 const vulnerabilities = report.vulnerabilities ?? {};
 const relevant = Object.entries(vulnerabilities).filter(
   ([, vulnerability]) => (severityRank[vulnerability.severity] ?? 0) >= severityRank.moderate,
@@ -54,8 +61,11 @@ function collectAdvisories(packageName, visited = new Set()) {
 
 const unexpected = [];
 for (const [packageName, vulnerability] of relevant) {
-  if (vulnerability.isDirect) {
-    unexpected.push(`${packageName} is a direct dependency`);
+  if (
+    vulnerability.isDirect &&
+    (productionDependencies.has(packageName) || !developmentDependencies.has(packageName))
+  ) {
+    unexpected.push(`${packageName} is not an exclusively development-only direct dependency`);
     continue;
   }
   const advisories = collectAdvisories(packageName);
@@ -89,5 +99,5 @@ if (unexpected.length > 0) {
 }
 
 console.warn(
-  `Accepted temporary dev-only exception ${allowedAdvisory}: ${relevant.length} transitive audit entries resolve only to picomatch 4.0.7. The separate production-only npm audit must pass before this step.`,
+  `Accepted temporary dev-only exception ${allowedAdvisory}: ${relevant.length} audit entries resolve only to development dependencies and picomatch 4.0.7. The separate production-only npm audit must pass before this step.`,
 );
