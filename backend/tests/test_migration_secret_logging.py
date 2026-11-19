@@ -22,8 +22,8 @@ def test_alembic_migration_engine_hides_bound_parameters_on_error(monkeypatch):
         set_main_option=lambda *_args, **_kwargs: None,
         get_section=lambda *_args, **_kwargs: {},
     )
-    monkeypatch.setattr(alembic_context, "config", fake_config)
-    monkeypatch.setattr(alembic_context, "is_offline_mode", lambda: True)
+    monkeypatch.setattr(alembic_context, "config", fake_config, raising=False)
+    monkeypatch.setattr(alembic_context, "is_offline_mode", lambda: True, raising=False)
 
     spec = spec_from_file_location("mia_test_alembic_env", env_path)
     assert spec is not None and spec.loader is not None
