@@ -20,6 +20,7 @@ def test_alembic_migration_engine_hides_bound_parameters_on_error(monkeypatch):
         config_file_name=None,
         config_ini_section="alembic",
         set_main_option=lambda *_args, **_kwargs: None,
+        get_main_option=lambda *_args, **_kwargs: None,
         get_section=lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(alembic_context, "config", fake_config, raising=False)
