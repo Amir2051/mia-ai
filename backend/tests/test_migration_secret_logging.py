@@ -8,9 +8,48 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 
-def test_alembic_migration_engine_hides_bound_parameters_on_error():
+def test_alembic_migration_engine_hides_bound_parameters_on_error(monkeypatch):
+    from contextlib import nullcontext
+    from importlib.util import module_from_spec, spec_from_file_location
+    from types import SimpleNamespace
+
+    from alembic import context as alembic_context
+
     env_path = Path(__file__).resolve().parents[1] / "alembic" / "env.py"
-    assert "hide_parameters=True" in env_path.read_text(encoding="utf-8")
+    fake_config = SimpleNamespace(
+        config_file_name=None,
+        config_ini_section="alembic",
+        set_main_option=lambda *_args, **_kwargs: None,
+        get_section=lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(alembic_context, "config", fake_config)
+    monkeypatch.setattr(alembic_context, "is_offline_mode", lambda: True)
+
+    spec = spec_from_file_location("mia_test_alembic_env", env_path)
+    assert spec is not None and spec.loader is not None
+    migration_env = module_from_spec(spec)
+    spec.loader.exec_module(migration_env)
+
+    captured = {}
+
+    class FakeConnectable:
+        def connect(self):
+            return nullcontext(object())
+
+    def capture_engine_options(*_args, **kwargs):
+        captured.update(kwargs)
+        return FakeConnectable()
+
+    fake_context = SimpleNamespace(
+        configure=lambda **_kwargs: None,
+        begin_transaction=lambda: nullcontext(),
+        run_migrations=lambda: None,
+    )
+    monkeypatch.setattr(migration_env, "engine_from_config", capture_engine_options)
+    monkeypatch.setattr(migration_env, "context", fake_context)
+
+    migration_env.run_migrations_online()
+    assert captured.get("hide_parameters") is True
 
     sentinel = "MIA_RLS_CONTEXT_SECRET_TEST_SENTINEL"
     engine = create_engine("sqlite://", hide_parameters=True)
