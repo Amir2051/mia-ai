@@ -162,9 +162,10 @@ def test_gdpr_webhooks_reject_invalid_hmac(client):
 
 def test_shop_redact_deletes_all_shop_owned_records(client):
     import asyncio
+    import os
     from datetime import datetime
     from sqlalchemy import select
-    from app.models.database import AsyncSessionLocal
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from app.models.schemas import (
         AppSetting,
         AuditLog,
@@ -179,76 +180,98 @@ def test_shop_redact_deletes_all_shop_owned_records(client):
         WebhookEvent,
     )
 
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
     async def seed():
-        async with AsyncSessionLocal() as db:
-            shop = Shop(shop_domain="erase-me.myshopify.com", is_active=True)
-            db.add(shop)
-            await db.flush()
-            shop_id = shop.id
-            db.add_all([
-                ShopSession(shop_id=shop_id, session_token="session-erase", is_valid=True),
-                ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
-                SyncJob(shop_id=shop_id, entity="products", status="queued"),
-                AppSetting(shop_id=shop_id, key="test", value_json="{}"),
-                WebhookEvent(shop_id=shop_id, topic="products/update", event_id="seed-event", payload_json="{}"),
-                AuditLog(shop_id=shop_id, action="shopify.products.update", entity_type="product", entity_id="1", details_json="{}"),
-                SocialAccount(
-                    shop_id=shop_id,
-                    provider="meta",
-                    account_type="facebook_page",
-                    external_account_id="page-erase",
-                    account_name="Erase Me Page",
-                    access_token_encrypted="encrypted-test-token",
-                ),
-                ScheduledReport(
-                    shop_id=shop_id,
-                    name="Erase scheduled report",
-                    frequency="daily",
-                    schedule_time="09:00",
-                    timezone="UTC",
-                    next_run_at=datetime(2030, 1, 1),
-                ),
-                MiaMemory(
-                    shop_id=shop_id,
-                    conversation_json='[{"message":"erase merchant conversation"}]',
-                    knowledge_json='[{"note":"erase merchant note"}]',
-                ),
-                PublishingAction(
-                    shop_id=shop_id,
-                    action_type="product.publish",
-                    idempotency_key="erase-publishing-action",
-                    request_hash="a" * 64,
-                    payload_json='{"product_id":"123","note":"erase merchant payload"}',
-                ),
-            ])
-            await db.commit()
-            return shop_id
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                shop = Shop(shop_domain="erase-me.myshopify.com", is_active=True)
+                db.add(shop)
+                await db.flush()
+                shop_id = shop.id
+                db.add_all([
+                    ShopSession(shop_id=shop_id, session_token="session-erase", is_valid=True),
+                    ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
+                    SyncJob(shop_id=shop_id, entity="products", status="queued"),
+                    AppSetting(shop_id=shop_id, key="test", value_json="{}"),
+                    WebhookEvent(shop_id=shop_id, topic="products/update", event_id="seed-event", payload_json="{}"),
+                    AuditLog(shop_id=shop_id, action="shopify.products.update", entity_type="product", entity_id="1", details_json="{}"),
+                    SocialAccount(
+                        shop_id=shop_id,
+                        provider="meta",
+                        account_type="facebook_page",
+                        external_account_id="page-erase",
+                        account_name="Erase Me Page",
+                        access_token_encrypted="encrypted-test-token",
+                    ),
+                    ScheduledReport(
+                        shop_id=shop_id,
+                        name="Erase scheduled report",
+                        frequency="daily",
+                        schedule_time="09:00",
+                        timezone="UTC",
+                        next_run_at=datetime(2030, 1, 1),
+                    ),
+                    MiaMemory(
+                        shop_id=shop_id,
+                        conversation_json='[{"message":"erase merchant conversation"}]',
+                        knowledge_json='[{"note":"erase merchant note"}]',
+                    ),
+                    PublishingAction(
+                        shop_id=shop_id,
+                        action_type="product.publish",
+                        idempotency_key="erase-publishing-action",
+                        request_hash="a" * 64,
+                        payload_json='{"product_id":"123","note":"erase merchant payload"}',
+                    ),
+                ])
+                await db.commit()
+                return shop_id
+        finally:
+            await engine.dispose()
 
     async def counts(shop_id):
-        async with AsyncSessionLocal() as db:
-            values = {}
-            for model in (
-                Shop,
-                ShopSession,
-                ProductImport,
-                SyncJob,
-                AppSetting,
-                WebhookEvent,
-                AuditLog,
-                SocialAccount,
-                ScheduledReport,
-                MiaMemory,
-                PublishingAction,
-            ):
-                result = await db.execute(select(model).where(model.shop_id == shop_id) if model is not Shop else select(model).where(model.id == shop_id))
-                values[model.__name__] = len(result.scalars().all())
-            return values
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine) as db:
+                values = {}
+                for model in (
+                    Shop,
+                    ShopSession,
+                    ProductImport,
+                    SyncJob,
+                    AppSetting,
+                    WebhookEvent,
+                    AuditLog,
+                    SocialAccount,
+                    ScheduledReport,
+                    MiaMemory,
+                    PublishingAction,
+                ):
+                    result = await db.execute(
+                        select(model).where(model.shop_id == shop_id)
+                        if model is not Shop
+                        else select(model).where(model.id == shop_id)
+                    )
+                    values[model.__name__] = len(result.scalars().all())
+                return values
+        finally:
+            await engine.dispose()
 
     shop_id = asyncio.run(seed())
     router_settings.shopify_api_secret = "test-secret"
     body = b'{"shop_id":123,"shop_domain":"erase-me.myshopify.com"}'
-    response = client.post("/api/webhooks", headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body), content=body)
-    assert response.status_code == 200
+    response = client.post(
+        "/api/webhooks",
+        headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body),
+        content=body,
+    )
+    assert response.status_code == 200, response.text
     remaining = asyncio.run(counts(shop_id))
     leftovers = {name: count for name, count in remaining.items() if count}
     assert not leftovers, leftovers
