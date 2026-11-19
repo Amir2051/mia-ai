@@ -543,7 +543,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                 # Direct CREATE grants on public/database are not part of the runtime contract.
                 savepoint = await admin.begin_nested()
                 await admin.execute(text(f'GRANT CREATE ON SCHEMA public TO "{safe_role}"'))
-                with pytest.raises(RuntimeError, match="CREATE privilege on the public schema"):
+                with pytest.raises(RuntimeError, match="CREATE on non-system schemas"):
                     await admin.run_sync(
                         lambda connection: migration._verify_runtime_role(connection, safe_role)
                     )
