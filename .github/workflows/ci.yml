@@ -68,6 +68,34 @@ jobs:
           ALTER SCHEMA public OWNER TO mia_migration_test;
           GRANT USAGE ON SCHEMA public TO mia_runtime_test;
           SQL
+      - name: Assert migration login is non-superuser and SET-only
+        env:
+          PGPASSWORD: mia-migration-ci-only
+        run: |
+          psql -h 127.0.0.1 -U mia_migration_test -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          DO $
+          DECLARE
+            role_record record;
+          BEGIN
+            SELECT rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolbypassrls
+              INTO role_record
+              FROM pg_catalog.pg_roles
+             WHERE rolname = current_user;
+            IF current_user <> 'mia_migration_test'
+               OR role_record.rolsuper
+               OR role_record.rolcreatedb
+               OR role_record.rolcreaterole
+               OR role_record.rolinherit
+               OR role_record.rolbypassrls THEN
+              RAISE EXCEPTION 'migration login is not the expected restricted role';
+            END IF;
+            IF NOT pg_catalog.pg_has_role(current_user, 'mia_rls_definer', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'mia_rls_definer', 'USAGE') THEN
+              RAISE EXCEPTION 'migration login must have SET but not inherited USAGE for the definer role';
+            END IF;
+          END
+          $;
+          SQL
       - name: Run database migrations using the restricted migration role
         run: alembic -c alembic.ini upgrade head
       - name: Grant minimum table permissions to restricted test role
