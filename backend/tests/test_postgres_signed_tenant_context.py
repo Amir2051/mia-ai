@@ -875,3 +875,134 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
 
     asyncio.run(scenario())
 
+
+
+def _load_signed_context_migration_for_preflight_tests():
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "0010_signed_tenant_context.py"
+    )
+    spec = spec_from_file_location("mia_signed_tenant_context_preflight_test", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def test_runtime_role_requires_matching_database_targets(monkeypatch):
+    migration = _load_signed_context_migration_for_preflight_tests()
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app",
+    )
+    monkeypatch.setenv(
+        "MIGRATION_DATABASE_URL",
+        "postgresql+asyncpg://migrator:migration-password@database.example:5432/mia_other",
+    )
+
+    with pytest.raises(RuntimeError, match="must target the same database"):
+        migration._runtime_role(None)
+
+    # A pooler hostname and a direct migration hostname may differ while both
+    # URLs still target the same PostgreSQL database.
+    monkeypatch.setenv(
+        "MIGRATION_DATABASE_URL",
+        "postgresql+asyncpg://migrator:migration-password@database.example:5432/mia_app",
+    )
+    assert migration._runtime_role(None) == "runtime"
+
+
+def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        suffix = uuid.uuid4().hex[:10]
+        schema_name = f"mia_runtime_function_probe_{suffix}"
+        function_name = f"runtime_owned_definer_{suffix}"
+        try:
+            async with engine.begin() as admin:
+                savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+                    await admin.execute(text(
+                        f'GRANT USAGE, CREATE ON SCHEMA "{schema_name}" TO mia_runtime_test'
+                    ))
+                    await admin.execute(text(
+                        f'CREATE FUNCTION "{schema_name}"."{function_name}"() '
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$"
+                    ))
+                    await admin.execute(text(
+                        f'ALTER FUNCTION "{schema_name}"."{function_name}"() OWNER TO mia_runtime_test'
+                    ))
+                    await admin.execute(text(
+                        f'REVOKE CREATE ON SCHEMA "{schema_name}" FROM mia_runtime_test'
+                    ))
+                    with pytest.raises(RuntimeError, match="must not own SECURITY DEFINER functions"):
+                        await admin.run_sync(
+                            lambda connection: migration._verify_runtime_role(
+                                connection, "mia_runtime_test"
+                            )
+                        )
+                finally:
+                    if savepoint.is_active:
+                        await savepoint.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_definer_role_preflight_rejects_unexpected_function_ownership():
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        function_name = f"mia_unexpected_definer_{uuid.uuid4().hex[:10]}"
+        try:
+            async with engine.begin() as admin:
+                savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text(
+                        "GRANT CREATE ON SCHEMA public TO mia_rls_definer"
+                    ))
+                    await admin.execute(text(
+                        f'CREATE FUNCTION public."{function_name}"() '
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$"
+                    ))
+                    await admin.execute(text(
+                        f'ALTER FUNCTION public."{function_name}"() OWNER TO mia_rls_definer'
+                    ))
+                    await admin.execute(text(
+                        "REVOKE CREATE ON SCHEMA public FROM mia_rls_definer"
+                    ))
+                    with pytest.raises(RuntimeError, match="must not own unexpected functions"):
+                        await admin.run_sync(
+                            lambda connection: migration._verify_definer_role(
+                                connection, "mia_rls_definer"
+                            )
+                        )
+                finally:
+                    if savepoint.is_active:
+                        await savepoint.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
