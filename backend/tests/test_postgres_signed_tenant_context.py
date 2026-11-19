@@ -34,6 +34,7 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
         suffix = uuid.uuid4().hex[:12]
         shop_a_domain = f"signed-context-a-{suffix}.myshopify.com"
         shop_b_domain = f"signed-context-b-{suffix}.myshopify.com"
+        shop_a_id = shop_b_id = None
         try:
             async with admin_factory() as admin:
                 shop_a = Shop(
@@ -328,8 +329,21 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                 assert protected_audit is not None
                 assert protected_audit.details_json == '{"marker":"shop-b-must-survive"}'
         finally:
-            await runtime_engine.dispose()
-            await admin_engine.dispose()
+            try:
+                if shop_a_id is not None and shop_b_id is not None:
+                    async with admin_factory() as cleanup:
+                        await cleanup.execute(
+                            text("DELETE FROM public.audit_logs WHERE shop_id IN (:shop_a_id, :shop_b_id)"),
+                            {"shop_a_id": shop_a_id, "shop_b_id": shop_b_id},
+                        )
+                        await cleanup.execute(
+                            text("DELETE FROM public.shops WHERE id IN (:shop_a_id, :shop_b_id)"),
+                            {"shop_a_id": shop_a_id, "shop_b_id": shop_b_id},
+                        )
+                        await cleanup.commit()
+            finally:
+                await runtime_engine.dispose()
+                await admin_engine.dispose()
 
     asyncio.run(scenario())
 
@@ -583,6 +597,7 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
         suffix = uuid.uuid4().hex[:12]
         shop_a_domain = f"definer-a-{suffix}.myshopify.com"
         shop_b_domain = f"definer-b-{suffix}.myshopify.com"
+        shop_a_id = shop_b_id = audit_a_id = audit_b_id = None
         try:
             async with admin_factory() as admin:
                 async with admin.begin():
@@ -763,8 +778,21 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                     assert remaining_a is None
                     assert remaining_b == audit_b_id
         finally:
-            await runtime_engine.dispose()
-            await admin_engine.dispose()
+            try:
+                if shop_a_id is not None and shop_b_id is not None:
+                    async with admin_factory() as cleanup:
+                        await cleanup.execute(
+                            text("DELETE FROM public.audit_logs WHERE id IN (:audit_a_id, :audit_b_id)"),
+                            {"audit_a_id": audit_a_id, "audit_b_id": audit_b_id},
+                        )
+                        await cleanup.execute(
+                            text("DELETE FROM public.shops WHERE id IN (:shop_a_id, :shop_b_id)"),
+                            {"shop_a_id": shop_a_id, "shop_b_id": shop_b_id},
+                        )
+                        await cleanup.commit()
+            finally:
+                await runtime_engine.dispose()
+                await admin_engine.dispose()
 
     asyncio.run(scenario())
 
