@@ -19,9 +19,47 @@ try {
 if (
   report.error ||
   !Number.isInteger(report.auditReportVersion) ||
-  !report.metadata?.vulnerabilities
+  !report.metadata?.vulnerabilities ||
+  typeof report.metadata.vulnerabilities !== "object" ||
+  Array.isArray(report.metadata.vulnerabilities) ||
+  !report.vulnerabilities ||
+  typeof report.vulnerabilities !== "object" ||
+  Array.isArray(report.vulnerabilities)
 ) {
   fail("npm audit did not return a complete audit report; refusing to treat a registry/network error as clean");
+}
+
+const vulnerabilities = report.vulnerabilities;
+const reportedCounts = report.metadata.vulnerabilities;
+const computedCounts = {
+  info: 0,
+  low: 0,
+  moderate: 0,
+  high: 0,
+  critical: 0,
+  total: 0,
+};
+for (const [packageName, vulnerability] of Object.entries(vulnerabilities)) {
+  if (
+    !vulnerability ||
+    typeof vulnerability !== "object" ||
+    !Object.hasOwn(severityRank, vulnerability.severity)
+  ) {
+    fail(`npm audit returned an invalid vulnerability entry for ${packageName}`);
+  }
+  computedCounts[vulnerability.severity] += 1;
+  computedCounts.total += 1;
+}
+for (const severity of Object.keys(computedCounts)) {
+  if (
+    !Number.isInteger(reportedCounts[severity]) ||
+    reportedCounts[severity] !== computedCounts[severity]
+  ) {
+    fail(
+      `npm audit report is inconsistent for ${severity}: metadata reports ${reportedCounts[severity]}, ` +
+      `but the vulnerabilities object contains ${computedCounts[severity]}`,
+    );
+  }
 }
 
 const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -31,7 +69,6 @@ const productionDependencies = new Set([
   ...Object.keys(packageJson.peerDependencies ?? {}),
 ]);
 const developmentDependencies = new Set(Object.keys(packageJson.devDependencies ?? {}));
-const vulnerabilities = report.vulnerabilities ?? {};
 const relevant = Object.entries(vulnerabilities).filter(
   ([, vulnerability]) => (severityRank[vulnerability.severity] ?? 0) >= severityRank.moderate,
 );
