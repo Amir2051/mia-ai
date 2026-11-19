@@ -118,3 +118,12 @@ These results are branch CI evidence only. Before production, independently veri
 ## Latest PR-branch verification — 2026-11-19
 
 CI #305 on code/test head `5df9b2b6e0eb7cd2a90d113a21b94d546baa780e` passed all three jobs: **298 backend tests passed (3 warnings), 17 frontend tests passed, lint/build passed, PostgreSQL migration downgrade/re-upgrade passed, production-only npm audit reported zero vulnerabilities, the documented dev-only picomatch exception checker passed, and the production Docker image built successfully**. This is PR-branch CI evidence only; PR #27 remains draft and unmerged, and production roles, secrets, logging, database revision, and deployment remain unverified.
+
+
+## Latest PR-branch verification — 2026-11-19
+
+CI #331 on code commit `05233f192a86bdae9eb223ed7e625d2019b269a7` passed all three GitHub Actions jobs: **305 backend tests passed (3 warnings), 17 frontend tests passed, frontend lint/build passed, the production-only npm audit reported zero vulnerabilities, the full-tree checker accepted only the documented 11 dev-only picomatch advisory entries, and the production Docker image built successfully**. Importantly, migration 0010 upgrade, downgrade to 0009, and re-upgrade all ran under the restricted non-superuser migration login with PostgreSQL 16 SET-only membership.
+
+The downgrade preflight now allows only the expected `USAGE` on `mia_private` after installation; it continues to reject schema CREATE and checks the definer role's exact table/column privileges before rollback. The pre-upgrade check still rejects pre-existing private-schema access. This closes the CI #330 rollback-preflight failure in the PR branch.
+
+This remains PR-branch evidence only. PR #27 is still draft and unmerged; independent human security approval and direct production catalog/logging/secret verification remain mandatory. The full npm dependency tree still carries the documented temporary development-only picomatch advisory exception; do not describe the full audit as clean.
