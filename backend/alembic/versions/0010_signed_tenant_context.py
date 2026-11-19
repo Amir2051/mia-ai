@@ -309,16 +309,24 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             + ", ".join(owned_security_definers)
         )
 
-    public_schema_oid = bind.execute(
-        sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'")
-    ).scalar_one_or_none()
-    if public_schema_oid is not None:
-        can_create_in_public = bind.execute(
-            sa.text("SELECT pg_catalog.has_schema_privilege(CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE')"),
-            {"role_oid": role["oid"], "schema_oid": public_schema_oid},
-        ).scalar_one()
-        if can_create_in_public:
-            raise RuntimeError("DATABASE_URL runtime role must not have CREATE privilege on the public schema")
+    unexpected_create_schemas = bind.execute(
+        sa.text("""
+            SELECT n.nspname
+              FROM pg_catalog.pg_namespace AS n
+             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.has_schema_privilege(
+                   CAST(:role_oid AS oid), n.oid, 'CREATE'
+               )
+             ORDER BY n.nspname
+        """),
+        {"role_oid": role["oid"]},
+    ).scalars().all()
+    if unexpected_create_schemas:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not have CREATE on non-system schemas: "
+            + ", ".join(unexpected_create_schemas)
+        )
 
     can_create_database_objects = bind.execute(
         sa.text("""
