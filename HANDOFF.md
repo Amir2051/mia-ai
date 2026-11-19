@@ -424,3 +424,33 @@ This is PR-branch engineering evidence only. It does not merge PR #27, change `m
 6. Protect `main` with required CI and independent review before any production release.
 
 Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+## Engineering update — 2026-11-19: restricted migration rollback verification
+
+This update records PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010 in production, release Shopify configuration, or deploy the application.
+
+- CI #330 on head `c6823dfe90ff50f6c97c6bcb631b6b937b730055` exposed a real rollback-preflight issue: after migration 0010, `mia_rls_definer` intentionally has USAGE on `mia_private`, so the pre-upgrade-only "no pre-existing private access" check incorrectly rejected a valid downgrade.
+- Fixed `_verify_definer_role()` with an explicit `allow_private_schema_usage=True` option used only during downgrade. The default remains false for the pre-upgrade check. Downgrade still rejects CREATE on every non-system schema and now calls `_verify_definer_table_privileges()` to enforce the exact table/column privilege allowlist before changing policies or functions.
+- CI #331 on code commit `05233f192a86bdae9eb223ed7e625d2019b269a7` completed all three jobs successfully on 2026-11-19:
+  - Backend: **305 passed, 3 warnings**.
+  - The migration upgrade ran under the restricted non-superuser migration login with PostgreSQL 16 SET-only membership; the downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context` also passed under that same non-superuser connection.
+  - Frontend: **17 passed**; lint and production build passed.
+  - Production-only npm audit: **0 vulnerabilities**.
+  - Full-tree audit exception checker passed, accepting only the documented 11 development-tooling entries tied to GHSA-fc5q-39xc-vjpf / picomatch 4.0.7. The full dependency tree is not vulnerability-free; the exception remains temporary.
+  - Production Docker image build passed.
+- The current branch's 11 CodeRabbit inline threads from the 2026-11-19 review were rechecked against the source and CI evidence and marked resolved where the fixes were already present and verified. This is not an independent security approval or a human APPROVE review.
+- PR #27 remains draft, open, mergeable, unmerged, and undeployed. No independent APPROVED review is recorded. A fresh CodeRabbit review of the current head is requested separately.
+- `main` remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its repository migration head remains `0009_privacy_audit_purge`. PR #29 remains open and unmerged; PR #25 and PR #26 also remain open and unmerged.
+- Repository rulesets read returned an empty list. The branch-protection detail endpoint returned HTTP 403 to the connected integration, so current classic branch-protection settings require confirmation by a repository administrator. A prior direct check on 2026-11-18 reported `main.protected=false`.
+- No production database, application environment, signing secret, Shopify configuration, or deployment was modified.
+
+### Remaining release gates
+
+1. Obtain an independent human security review of migration 0010, the restricted function owner, transaction-bound signatures, function ACLs, RLS policy behavior, key lifecycle, and security-sensitive downgrade behavior.
+2. Verify production database identity, applied Alembic revision, runtime/definer/migration role attributes and memberships, function owners, schema/table/column/sequence ACLs, and PostgreSQL/provider/proxy logging.
+3. Provision `mia_rls_definer` and `RLS_CONTEXT_SECRET` only after approval and against the verified production database.
+4. Protect `main` with required CI and independent approval.
+5. Review/merge PR #29, release the updated Shopify scopes, and complete real development-store installation, product, CSV, publication, webhook, GDPR, billing, AI, and Meta acceptance tests.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
