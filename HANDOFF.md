@@ -372,3 +372,55 @@ This update records PR-branch engineering evidence only. It does not merge PR #2
 
 Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
 
+
+
+## Engineering update — 2026-11-19: database-target and function-ownership preflights
+
+This is PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010, release Shopify configuration, or deploy the application.
+
+### Additional PostgreSQL preflight hardening
+
+- `_runtime_role()` now parses both `DATABASE_URL` and `MIGRATION_DATABASE_URL`, requires both to name a database, and fails closed if their database names differ. Hostnames may differ intentionally to support an application pooler endpoint and a direct migration endpoint.
+- `_verify_runtime_role()` now checks for runtime-role-owned SECURITY DEFINER functions across every non-system schema, not only `public`.
+- `_verify_definer_role()` now rejects unexpected pre-existing functions owned by `mia_rls_definer`; only the three functions deliberately assigned by migration 0010 are allowlisted.
+- Added PostgreSQL/configuration regressions for mismatched database names, a runtime-owned SECURITY DEFINER function in a non-public schema, and an unexpected function owned by the definer role.
+
+### Verification
+
+- CI #304 on migration commit `2d856c8cd2ea82d1b6e7aa74d203d956fa8931e0` passed all three jobs. Backend: **295 passed, 3 warnings**; frontend: **17 passed**; production Docker build passed.
+- CI #305 on latest code/test head `5df9b2b6e0eb7cd2a90d113a21b94d546baa780e` completed successfully on 2026-11-19:
+  - Backend: **298 passed, 3 warnings**.
+  - PostgreSQL migration 0010 downgrade/re-upgrade: **passed**.
+  - Frontend: **17 passed**; lint and production build passed.
+  - Production-only npm audit: **0 vulnerabilities**.
+  - Full-tree audit exception checker: **passed**, accepting only the documented 11 development-tooling entries tracing to GHSA-fc5q-39xc-vjpf / picomatch 4.0.7.
+  - Production Docker image build: **passed**.
+- CI #305 verifies the latest PR branch code and workflow in GitHub Actions. It does not prove the production database has matching roles/ACLs, nor does it constitute an independent security approval.
+
+[CI #304](https://github.com/Amir2051/mia-ai/actions/runs/44537541800) · [CI #305](https://github.com/Amir2051/mia-ai/actions/runs/44537650153)
+
+### Main-branch reconciliation
+
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its latest successful main-branch CI is #267 from 2026-11-10 (285 backend tests, 17 frontend tests, Docker build). This predates the 2026-11-18 picomatch advisory refresh.
+- Main contains the GDPR customer-redaction wildcard correction: customer PII matching uses escaped substring matching rather than treating email characters such as underscores as SQL LIKE wildcards. Regression coverage verifies a near-match address is retained.
+- Main's lockfile includes patched `follow-redirects 1.16.2` and `minimatch 11.0.1`; it still contains development-only `picomatch 4.0.7` copies. The narrow audit exception is on PR #27, not main.
+- Direct branch metadata reports `main.protected=false`; the repository rulesets endpoint returns an empty list. Required CI/review enforcement is not active.
+
+### Current review and release state
+
+- PR #27 remains open, draft, mergeable, unmerged, and undeployed. Latest code/test head: `5df9b2b6e0eb7cd2a90d113a21b94d546baa780e`.
+- No independent `APPROVE` review is recorded. The latest completed CodeRabbit review remains 2026-11-12; the November 18 re-review request did not complete because the PR head changed. A fresh review is requested against the current head separately.
+- PR #29 remains open/unmerged with CI #279 passing; PR #25 remains open/unmerged with CI #271 passing; PR #26 remains open/unmerged with CI #273 passing.
+- Production running SHA, production Alembic revision, runtime/definer role catalog, production signing-secret provisioning, PostgreSQL/provider/proxy logging configuration, current production health, and live Shopify merchant acceptance remain unverified.
+- No PR was merged, no production database or secret was modified, no Shopify app release was made, and no production deployment occurred.
+
+### Next release gates
+
+1. Obtain independent security review of migration 0010, including the definer function allowlist, transaction-bound signatures, RLS policies, signing-key lifecycle, and downgrade strategy.
+2. Verify production database identity, Alembic revision, runtime/definer roles, memberships, function owners, schema/table/column/sequence ACLs, and database/provider/proxy logging directly.
+3. Provision `mia_rls_definer` and `RLS_CONTEXT_SECRET` only after review and against the verified target database.
+4. Review and merge PR #29, release the updated Shopify publication scopes, and verify merchant reauthorization.
+5. Complete real Shopify development-store acceptance for authentication, products/CSV, publishing, webhooks/GDPR, billing, Meta, and OpenRouter.
+6. Protect `main` with required CI and independent review before any production release.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
