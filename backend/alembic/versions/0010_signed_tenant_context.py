@@ -4,10 +4,13 @@ Revision ID: 0010_signed_tenant_context
 Revises: 0009_privacy_audit_purge
 """
 import os
+import secrets
+from contextlib import contextmanager
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 
 revision = "0010_signed_tenant_context"
 down_revision = "0009_privacy_audit_purge"
@@ -30,6 +33,96 @@ TENANT_TABLES = (
 DEFINER_ROLE = "mia_rls_definer"
 
 
+def _verify_same_database_cluster(bind, runtime_url: str) -> None:
+    """Prove both URLs reach the same PostgreSQL database without relying on hostnames.
+
+    A random session-level advisory lock is visible to a second connection only
+    when it reaches the same PostgreSQL cluster and database. This works when
+    one URL uses a pooler and the other uses a direct endpoint, and needs no
+    elevated catalog privileges from the restricted runtime role.
+    """
+    runtime_parsed = make_url(runtime_url)
+    if not runtime_parsed.drivername.startswith("postgresql"):
+        raise RuntimeError("DATABASE_URL must use PostgreSQL for signed tenant-context migration")
+
+    runtime_sync_url = runtime_parsed.set(drivername="postgresql+psycopg")
+    lock_params = None
+    for _ in range(5):
+        candidate = {
+            "key1": secrets.randbelow(2**31 - 1),
+            "key2": secrets.randbelow(2**31 - 1),
+        }
+        if bind.execute(
+            sa.text("SELECT pg_catalog.pg_try_advisory_lock(:key1, :key2)"),
+            candidate,
+        ).scalar_one():
+            lock_params = candidate
+            break
+    if lock_params is None:
+        raise RuntimeError("could not acquire a temporary PostgreSQL identity lock")
+
+    runtime_engine = None
+    try:
+        runtime_engine = sa.create_engine(
+            runtime_sync_url,
+            poolclass=NullPool,
+            hide_parameters=True,
+        )
+        with runtime_engine.connect() as runtime:
+            actual_database = runtime.execute(
+                sa.text("SELECT pg_catalog.current_database()")
+            ).scalar_one()
+            if actual_database != runtime_parsed.database:
+                raise RuntimeError("DATABASE_URL connected to an unexpected PostgreSQL database")
+
+            runtime_acquired = runtime.execute(
+                sa.text("SELECT pg_catalog.pg_try_advisory_lock(:key1, :key2)"),
+                lock_params,
+            ).scalar_one()
+            if runtime_acquired:
+                runtime.execute(
+                    sa.text("SELECT pg_catalog.pg_advisory_unlock(:key1, :key2)"),
+                    lock_params,
+                )
+                raise RuntimeError(
+                    "DATABASE_URL and MIGRATION_DATABASE_URL resolve to different PostgreSQL clusters/databases"
+                )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "could not verify that DATABASE_URL and MIGRATION_DATABASE_URL reach the same PostgreSQL cluster/database"
+        ) from exc
+    finally:
+        if runtime_engine is not None:
+            runtime_engine.dispose()
+        bind.execute(
+            sa.text("SELECT pg_catalog.pg_advisory_unlock(:key1, :key2)"),
+            lock_params,
+        )
+
+
+def _verify_shop_domain_uniqueness(bind) -> None:
+    """Require one row per normalized Shopify domain before enabling domain-based RLS."""
+    duplicates = bind.execute(sa.text("""
+        SELECT pg_catalog.lower(shop_domain) AS normalized_domain, count(*) AS row_count
+          FROM public.shops
+         GROUP BY pg_catalog.lower(shop_domain)
+        HAVING count(*) > 1
+         ORDER BY normalized_domain
+         LIMIT 10
+    """)).mappings().all()
+    if duplicates:
+        details = ", ".join(
+            f"{row['normalized_domain']} ({row['row_count']} rows)"
+            for row in duplicates
+        )
+        raise RuntimeError(
+            "public.shops contains duplicate case-insensitive shop domains; "
+            "resolve these rows before signed tenant RLS migration: " + details
+        )
+
+
 def _runtime_role(bind) -> str:
     runtime_url = os.environ.get("DATABASE_URL", "")
     migration_url = os.environ.get("MIGRATION_DATABASE_URL", "")
@@ -47,6 +140,7 @@ def _runtime_role(bind) -> str:
         raise RuntimeError("Both database URLs must include usernames")
     if runtime_user == migration_user:
         raise RuntimeError("DATABASE_URL must use a dedicated runtime role distinct from MIGRATION_DATABASE_URL")
+    _verify_same_database_cluster(bind, runtime_url)
     return runtime_user
 
 
@@ -133,7 +227,7 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
         sa.text("""
             SELECT pg_catalog.format('%I.%I', n.nspname, c.relname) AS table_name,
                    pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'TRUNCATE') AS can_truncate,
-                   pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
+                   pg_catalog.has_any_column_privilege(CAST(:runtime_oid AS oid), c.oid, 'REFERENCES') AS can_reference,
                    pg_catalog.has_table_privilege(CAST(:runtime_oid AS oid), c.oid, 'TRIGGER') AS can_trigger
               FROM pg_catalog.pg_class AS c
               JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
@@ -326,20 +420,37 @@ def _verify_definer_role(bind, role_name: str) -> None:
           FROM pg_catalog.pg_roles
          WHERE rolname = current_user
     """)).mappings().one()
+    server_version_num = int(bind.execute(sa.text("SHOW server_version_num")).scalar_one())
+    membership_privilege = "SET" if server_version_num >= 160000 else "MEMBER"
     can_transfer_ownership = bool(migration_role["rolsuper"]) or bind.execute(
         sa.text("""
             SELECT pg_catalog.pg_has_role(
                 CAST(:migration_oid AS oid),
                 CAST(:definer_oid AS oid),
-                'MEMBER'
+                :membership_privilege
             )
         """),
-        {"migration_oid": migration_role["oid"], "definer_oid": role["oid"]},
+        {
+            "migration_oid": migration_role["oid"],
+            "definer_oid": role["oid"],
+            "membership_privilege": membership_privilege,
+        },
     ).scalar_one()
     if not can_transfer_ownership:
         raise RuntimeError(
-            f"migration role must be a superuser or a member of {role_name!r} "
-            "to assign SECURITY DEFINER function ownership"
+            f"migration role must be a superuser or have {membership_privilege} permission "
+            f"to assume {role_name!r} and manage SECURITY DEFINER functions"
+        )
+
+    can_grant_public_create = bind.execute(sa.text("""
+        SELECT pg_catalog.has_schema_privilege(
+            current_user, 'public', 'CREATE WITH GRANT OPTION'
+        )
+    """)).scalar_one()
+    if not can_grant_public_create:
+        raise RuntimeError(
+            "migration role must own public or have CREATE WITH GRANT OPTION on the public schema "
+            "to transfer SECURITY DEFINER function ownership safely"
         )
 
     parent_memberships = bind.execute(
@@ -491,22 +602,122 @@ def _verify_definer_role(bind, role_name: str) -> None:
         )
 
 
-def _assign_security_definer_owner(bind, role_name: str, function_signature: str) -> None:
-    """Temporarily grant schema CREATE so a trusted migration can transfer function ownership."""
+def _assign_security_definer_owner(
+    bind,
+    role_name: str,
+    function_signature: str,
+    *,
+    keep_create: bool = False,
+) -> None:
+    """Transfer function ownership and temporarily grant schema CREATE when replacement is required."""
     role_identifier = bind.dialect.identifier_preparer.quote(role_name)
+    owner_name = bind.execute(
+        sa.text("""
+            SELECT owner.rolname
+              FROM pg_catalog.pg_proc AS function
+              JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+             WHERE function.oid = pg_catalog.to_regprocedure(:signature)::oid
+        """),
+        {"signature": f"public.{function_signature}"},
+    ).scalar_one_or_none()
+    if owner_name is None:
+        raise RuntimeError(f"function public.{function_signature} does not exist for ownership transfer")
+
+    if owner_name == role_name:
+        if keep_create:
+            bind.execute(sa.text(f"GRANT CREATE ON SCHEMA public TO {role_identifier}"))
+        return
+
     bind.execute(sa.text(f"GRANT CREATE ON SCHEMA public TO {role_identifier}"))
     bind.execute(sa.text(
         f"ALTER FUNCTION public.{function_signature} OWNER TO {role_identifier}"
     ))
-    bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA public FROM {role_identifier}"))
-    can_create = bind.execute(
-        sa.text("SELECT pg_catalog.has_schema_privilege(:role_name, 'public', 'CREATE')"),
-        {"role_name": role_name},
-    ).scalar_one()
-    if can_create:
-        raise RuntimeError(
-            f"SECURITY DEFINER owner role {role_name!r} retained CREATE on public after ownership transfer"
-        )
+    if not keep_create:
+        bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA public FROM {role_identifier}"))
+        can_create = bind.execute(
+            sa.text("SELECT pg_catalog.has_schema_privilege(:role_name, 'public', 'CREATE')"),
+            {"role_name": role_name},
+        ).scalar_one()
+        if can_create:
+            raise RuntimeError(
+                f"SECURITY DEFINER owner role {role_name!r} retained CREATE on public after ownership transfer"
+            )
+
+
+@contextmanager
+def _as_role(bind, role_name: str):
+    """Temporarily SET LOCAL ROLE, restoring the original current_user on success."""
+    original_role = bind.execute(sa.text("SELECT current_user")).scalar_one()
+    if original_role == role_name:
+        yield
+        return
+
+    preparer = bind.dialect.identifier_preparer
+    bind.execute(sa.text(f"SET LOCAL ROLE {preparer.quote(role_name)}"))
+    try:
+        yield
+    except BaseException:
+        # The surrounding migration transaction will roll back the role change.
+        raise
+    else:
+        bind.execute(sa.text(f"SET LOCAL ROLE {preparer.quote(original_role)}"))
+
+
+def _reconcile_function_execute_acl(
+    bind,
+    function_signature: str,
+    allowed_roles: list[str],
+    *,
+    owner_role: str | None = None,
+) -> None:
+    """Remove every non-owner EXECUTE grant, then grant only the explicit callers."""
+    def reconcile() -> None:
+        function_oid = bind.execute(
+            sa.text("SELECT pg_catalog.to_regprocedure(:signature)::oid"),
+            {"signature": f"public.{function_signature}"},
+        ).scalar_one_or_none()
+        if function_oid is None:
+            raise RuntimeError(f"function public.{function_signature} does not exist for ACL reconciliation")
+
+        grantees = bind.execute(
+            sa.text("""
+                SELECT DISTINCT grantee_role.rolname
+                  FROM pg_catalog.pg_proc AS function
+                  CROSS JOIN LATERAL pg_catalog.aclexplode(
+                      COALESCE(
+                          function.proacl,
+                          pg_catalog.acldefault('f', function.proowner)
+                      )
+                  ) AS acl
+                  JOIN pg_catalog.pg_roles AS grantee_role
+                    ON grantee_role.oid = acl.grantee
+                 WHERE function.oid = :function_oid
+                   AND acl.grantee <> function.proowner
+                 ORDER BY grantee_role.rolname
+            """),
+            {"function_oid": function_oid},
+        ).scalars().all()
+
+        preparer = bind.dialect.identifier_preparer
+        for grantee in grantees:
+            bind.execute(sa.text(
+                f"REVOKE ALL PRIVILEGES ON FUNCTION public.{function_signature} "
+                f"FROM {preparer.quote(grantee)}"
+            ))
+        bind.execute(sa.text(
+            f"REVOKE ALL PRIVILEGES ON FUNCTION public.{function_signature} FROM PUBLIC"
+        ))
+        for allowed_role in allowed_roles:
+            bind.execute(sa.text(
+                f"GRANT EXECUTE ON FUNCTION public.{function_signature} "
+                f"TO {preparer.quote(allowed_role)}"
+            ))
+
+    if owner_role is None:
+        reconcile()
+    else:
+        with _as_role(bind, owner_role):
+            reconcile()
 
 
 def _verify_definer_table_privileges(bind, role_name: str) -> None:
@@ -691,6 +902,11 @@ def upgrade() -> None:
     bind = op.get_bind()
     runtime_role_name = _runtime_role(bind)
     _verify_runtime_role(bind, runtime_role_name)
+    _verify_shop_domain_uniqueness(bind)
+    op.execute(
+        "CREATE UNIQUE INDEX uq_shops_shop_domain_lower "
+        "ON public.shops (pg_catalog.lower(shop_domain))"
+    )
     runtime_role = bind.dialect.identifier_preparer.quote(runtime_role_name)
     definer_role = bind.dialect.identifier_preparer.quote(DEFINER_ROLE)
 
@@ -844,14 +1060,23 @@ def upgrade() -> None:
     _assign_security_definer_owner(bind, DEFINER_ROLE, "mia_current_shop_domain()")
     _assign_security_definer_owner(bind, DEFINER_ROLE, "mia_is_internal_scheduler()")
 
-    for function_name in (
+    _reconcile_function_execute_acl(
+        bind,
         "mia_current_shop_domain()",
+        [runtime_role_name],
+        owner_role=DEFINER_ROLE,
+    )
+    _reconcile_function_execute_acl(
+        bind,
         "mia_current_shop_id()",
+        [runtime_role_name, DEFINER_ROLE],
+    )
+    _reconcile_function_execute_acl(
+        bind,
         "mia_is_internal_scheduler()",
-    ):
-        op.execute(f"REVOKE ALL ON FUNCTION public.{function_name} FROM PUBLIC")
-        op.execute(f"GRANT EXECUTE ON FUNCTION public.{function_name} TO {runtime_role}")
-    op.execute(f"GRANT EXECUTE ON FUNCTION public.mia_current_shop_id() TO {definer_role}")
+        [runtime_role_name],
+        owner_role=DEFINER_ROLE,
+    )
 
     # Replace caller-settable GUC policies with signed-context predicates.
     op.execute("ALTER TABLE public.shops ENABLE ROW LEVEL SECURITY")
@@ -938,74 +1163,93 @@ def upgrade() -> None:
         EXECUTE FUNCTION public.mia_guard_scheduled_report_scheduler_update()
     """)
 
-    # Re-bind the GDPR SECURITY DEFINER function to the verified tenant
-    # context. It must not trust app.shop_id or app.shop_domain on their own.
-    op.execute("""
-        CREATE OR REPLACE FUNCTION public.mia_purge_audit_logs_for_privacy(
-            p_shop_id bigint,
-            p_customer_id text,
-            p_customer_email text,
-            p_all_shop boolean
-        )
-        RETURNS integer
-        LANGUAGE plpgsql
-        SECURITY DEFINER
-        SET search_path = pg_catalog
-        AS $function$
-        DECLARE
-            v_shop_domain text;
-            v_deleted integer;
-        BEGIN
-            IF p_shop_id IS NULL
-               OR public.mia_current_shop_id() IS DISTINCT FROM p_shop_id THEN
-                RAISE EXCEPTION 'privacy audit purge requires verified shop context'
-                    USING ERRCODE = '42501';
-            END IF;
-
-            SELECT pg_catalog.lower(s.shop_domain)
-              INTO v_shop_domain
-              FROM public.shops AS s
-             WHERE s.id = p_shop_id;
-
-            IF v_shop_domain IS NULL
-               OR public.mia_current_shop_domain() IS DISTINCT FROM v_shop_domain THEN
-                RAISE EXCEPTION 'privacy audit purge requires matching signed shop domain'
-                    USING ERRCODE = '42501';
-            END IF;
-
-            IF p_all_shop THEN
-                DELETE FROM public.audit_logs WHERE shop_id = p_shop_id;
-            ELSE
-                DELETE FROM public.audit_logs AS a
-                 WHERE a.shop_id = p_shop_id
-                   AND (
-                       (NULLIF(p_customer_id, '') IS NOT NULL
-                        AND (pg_catalog.strpos(pg_catalog.lower(COALESCE(a.details_json, '')), pg_catalog.lower(p_customer_id)) > 0
-                             OR pg_catalog.lower(a.entity_id) = pg_catalog.lower(p_customer_id)))
-                       OR
-                       (NULLIF(p_customer_email, '') IS NOT NULL
-                        AND (pg_catalog.strpos(pg_catalog.lower(COALESCE(a.details_json, '')), pg_catalog.lower(p_customer_email)) > 0
-                             OR pg_catalog.lower(a.entity_id) = pg_catalog.lower(p_customer_email)))
-                   );
-            END IF;
-
-            GET DIAGNOSTICS v_deleted = ROW_COUNT;
-            RETURN v_deleted;
-        END;
-        $function$;
-    """)
+    # Re-bind the existing 0009 GDPR function before replacing it. The
+    # restricted owner receives CREATE only for this transaction's replacement.
+    purge_signature = "mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)"
     _assign_security_definer_owner(
         bind,
         DEFINER_ROLE,
-        "mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)",
+        purge_signature,
+        keep_create=True,
     )
-    op.execute("REVOKE ALL ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) FROM PUBLIC")
-    op.execute(f"GRANT EXECUTE ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) TO {runtime_role}")
+    with _as_role(bind, DEFINER_ROLE):
+        bind.execute(sa.text("""
+            CREATE OR REPLACE FUNCTION public.mia_purge_audit_logs_for_privacy(
+                p_shop_id bigint,
+                p_customer_id text,
+                p_customer_email text,
+                p_all_shop boolean
+            )
+            RETURNS integer
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path = pg_catalog
+            AS $function$
+            DECLARE
+                v_shop_domain text;
+                v_deleted integer;
+            BEGIN
+                IF p_shop_id IS NULL
+                   OR public.mia_current_shop_id() IS DISTINCT FROM p_shop_id THEN
+                    RAISE EXCEPTION 'privacy audit purge requires verified shop context'
+                        USING ERRCODE = '42501';
+                END IF;
+
+                SELECT pg_catalog.lower(s.shop_domain)
+                  INTO v_shop_domain
+                  FROM public.shops AS s
+                 WHERE s.id = p_shop_id;
+
+                IF v_shop_domain IS NULL
+                   OR public.mia_current_shop_domain() IS DISTINCT FROM v_shop_domain THEN
+                    RAISE EXCEPTION 'privacy audit purge requires matching signed shop domain'
+                        USING ERRCODE = '42501';
+                END IF;
+
+                IF p_all_shop THEN
+                    DELETE FROM public.audit_logs WHERE shop_id = p_shop_id;
+                ELSE
+                    DELETE FROM public.audit_logs AS a
+                     WHERE a.shop_id = p_shop_id
+                       AND (
+                           (NULLIF(p_customer_id, '') IS NOT NULL
+                            AND (pg_catalog.strpos(pg_catalog.lower(COALESCE(a.details_json, '')), pg_catalog.lower(p_customer_id)) > 0
+                                 OR pg_catalog.lower(a.entity_id) = pg_catalog.lower(p_customer_id)))
+                           OR
+                           (NULLIF(p_customer_email, '') IS NOT NULL
+                            AND (pg_catalog.strpos(pg_catalog.lower(COALESCE(a.details_json, '')), pg_catalog.lower(p_customer_email)) > 0
+                                 OR pg_catalog.lower(a.entity_id) = pg_catalog.lower(p_customer_email)))
+                       );
+                END IF;
+
+                GET DIAGNOSTICS v_deleted = ROW_COUNT;
+                RETURN v_deleted;
+            END;
+            $function$;
+        """))
+
+    bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA public FROM {definer_role}"))
+    if bind.execute(
+        sa.text("SELECT pg_catalog.has_schema_privilege(:role_name, 'public', 'CREATE')"),
+        {"role_name": DEFINER_ROLE},
+    ).scalar_one():
+        raise RuntimeError("SECURITY DEFINER owner role retained CREATE on public after GDPR function replacement")
+
+    _reconcile_function_execute_acl(
+        bind,
+        purge_signature,
+        [runtime_role_name],
+        owner_role=DEFINER_ROLE,
+    )
 
 
 def downgrade() -> None:
     # Explicit downgrade restores the previous GUC-only policies. Use only as
     # part of a reviewed rollback because it reintroduces the documented gap.
+    bind = op.get_bind()
+    runtime_role_name = _runtime_role(bind)
+    definer_role = bind.dialect.identifier_preparer.quote(DEFINER_ROLE)
+    _verify_definer_role(bind, DEFINER_ROLE)
     op.execute("DROP TRIGGER IF EXISTS mia_guard_scheduler_report_update ON public.scheduled_reports")
     op.execute("DROP FUNCTION IF EXISTS public.mia_guard_scheduled_report_scheduler_update()")
     op.execute("DROP POLICY IF EXISTS mia_shop_isolation ON public.shops")
@@ -1042,59 +1286,71 @@ def downgrade() -> None:
         WITH CHECK (current_setting('app.internal_scheduler', true) = 'true')
     """)
 
-    op.execute("""
-        CREATE OR REPLACE FUNCTION public.mia_purge_audit_logs_for_privacy(
-            p_shop_id bigint,
-            p_customer_id text,
-            p_customer_email text,
-            p_all_shop boolean
-        )
-        RETURNS integer
-        LANGUAGE plpgsql
-        SECURITY DEFINER
-        SET search_path = pg_catalog, public
-        AS $function$
-        DECLARE
-            v_shop_domain text;
-            v_deleted integer;
-        BEGIN
-            IF p_shop_id IS NULL
-               OR current_setting('app.shop_id', true) IS DISTINCT FROM p_shop_id::text THEN
-                RAISE EXCEPTION 'privacy audit purge requires matching shop context'
-                    USING ERRCODE = '42501';
-            END IF;
-            SELECT lower(s.shop_domain) INTO v_shop_domain
-              FROM public.shops AS s WHERE s.id = p_shop_id;
-            IF v_shop_domain IS NULL
-               OR lower(current_setting('app.shop_domain', true)) IS DISTINCT FROM v_shop_domain THEN
-                RAISE EXCEPTION 'privacy audit purge requires matching shop domain'
-                    USING ERRCODE = '42501';
-            END IF;
-            IF p_all_shop THEN
-                DELETE FROM public.audit_logs WHERE shop_id = p_shop_id;
-            ELSE
-                DELETE FROM public.audit_logs AS a
-                 WHERE a.shop_id = p_shop_id
-                   AND (
-                       (NULLIF(p_customer_id, '') IS NOT NULL
-                        AND (strpos(lower(coalesce(a.details_json, '')), lower(p_customer_id)) > 0
-                             OR lower(a.entity_id) = lower(p_customer_id)))
-                       OR
-                       (NULLIF(p_customer_email, '') IS NOT NULL
-                        AND (strpos(lower(coalesce(a.details_json, '')), lower(p_customer_email)) > 0
-                             OR lower(a.entity_id) = lower(p_customer_email)))
-                   );
-            END IF;
-            GET DIAGNOSTICS v_deleted = ROW_COUNT;
-            RETURN v_deleted;
-        END;
-        $function$;
-    """)
+    bind.execute(sa.text(f"GRANT CREATE ON SCHEMA public TO {definer_role}"))
+    with _as_role(bind, DEFINER_ROLE):
+        bind.execute(sa.text("""
+            CREATE OR REPLACE FUNCTION public.mia_purge_audit_logs_for_privacy(
+                p_shop_id bigint,
+                p_customer_id text,
+                p_customer_email text,
+                p_all_shop boolean
+            )
+            RETURNS integer
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path = pg_catalog, public
+            AS $function$
+            DECLARE
+                v_shop_domain text;
+                v_deleted integer;
+            BEGIN
+                IF p_shop_id IS NULL
+                   OR current_setting('app.shop_id', true) IS DISTINCT FROM p_shop_id::text THEN
+                    RAISE EXCEPTION 'privacy audit purge requires matching shop context'
+                        USING ERRCODE = '42501';
+                END IF;
+                SELECT lower(s.shop_domain) INTO v_shop_domain
+                  FROM public.shops AS s WHERE s.id = p_shop_id;
+                IF v_shop_domain IS NULL
+                   OR lower(current_setting('app.shop_domain', true)) IS DISTINCT FROM v_shop_domain THEN
+                    RAISE EXCEPTION 'privacy audit purge requires matching shop domain'
+                        USING ERRCODE = '42501';
+                END IF;
+                IF p_all_shop THEN
+                    DELETE FROM public.audit_logs WHERE shop_id = p_shop_id;
+                ELSE
+                    DELETE FROM public.audit_logs AS a
+                     WHERE a.shop_id = p_shop_id
+                       AND (
+                           (NULLIF(p_customer_id, '') IS NOT NULL
+                            AND (strpos(lower(coalesce(a.details_json, '')), lower(p_customer_id)) > 0
+                                 OR lower(a.entity_id) = lower(p_customer_id)))
+                           OR
+                           (NULLIF(p_customer_email, '') IS NOT NULL
+                            AND (strpos(lower(coalesce(a.details_json, '')), lower(p_customer_email)) > 0
+                                 OR lower(a.entity_id) = lower(p_customer_email)))
+                       );
+                END IF;
+                GET DIAGNOSTICS v_deleted = ROW_COUNT;
+                RETURN v_deleted;
+            END;
+            $function$;
+        """))
+
+    bind.execute(sa.text(f"REVOKE CREATE ON SCHEMA public FROM {definer_role}"))
+    _reconcile_function_execute_acl(
+        bind,
+        "mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)",
+        [runtime_role_name],
+        owner_role=DEFINER_ROLE,
+    )
     op.execute("DROP FUNCTION IF EXISTS public.mia_current_shop_id()")
-    op.execute("DROP FUNCTION IF EXISTS public.mia_current_shop_domain()")
-    op.execute("DROP FUNCTION IF EXISTS public.mia_is_internal_scheduler()")
+    with _as_role(bind, DEFINER_ROLE):
+        bind.execute(sa.text("DROP FUNCTION IF EXISTS public.mia_current_shop_domain()"))
+        bind.execute(sa.text("DROP FUNCTION IF EXISTS public.mia_is_internal_scheduler()"))
     # Remove only the key table created by this migration. mia_private may have
     # existed before this revision or contain unrelated objects; never CASCADE
     # drop the entire schema during rollback.
     op.execute("DROP TABLE IF EXISTS mia_private.tenant_context_keys")
     op.execute("REVOKE ALL ON SCHEMA mia_private FROM mia_rls_definer")
+    op.execute("DROP INDEX IF EXISTS public.uq_shops_shop_domain_lower")
