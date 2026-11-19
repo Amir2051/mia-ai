@@ -671,7 +671,8 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                             pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'DELETE') AS key_delete,
                             pg_catalog.has_schema_privilege('mia_rls_definer', 'public', 'CREATE') AS public_create,
                             pg_catalog.has_database_privilege('mia_rls_definer', pg_catalog.current_database(), 'CREATE') AS database_create,
-                            pg_catalog.pg_has_role('mia_runtime_test', 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer
+                            pg_catalog.pg_has_role('mia_runtime_test', 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer,
+                            pg_catalog.pg_has_role('mia_migration_test', 'mia_rls_definer', 'SET') AS migration_can_assume_definer
                     """))).mappings().one()
                     assert privileges["shops_select"] is True
                     assert privileges["shops_update"] is False
@@ -686,17 +687,18 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                     assert privileges["public_create"] is False
                     assert privileges["database_create"] is False
                     assert privileges["runtime_can_assume_definer"] is False
+                    assert privileges["migration_can_assume_definer"] is True
 
-                    member_count = await admin.scalar(text("""
-                        SELECT count(*)
+                    members = (await admin.execute(text("""
+                        SELECT r.rolname
                           FROM pg_catalog.pg_roles AS r
                          WHERE r.oid <> (
                              SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'mia_rls_definer'
                          )
                            AND r.rolsuper IS FALSE
                            AND pg_catalog.pg_has_role(r.oid, 'mia_rls_definer', 'MEMBER')
-                    """))
-                    assert member_count == 0
+                    """))).scalars().all()
+                    assert set(members) == {"mia_migration_test"}
 
                     owned_relations = await admin.scalar(text("""
                         SELECT count(*)
@@ -886,6 +888,7 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
                 await admin.execute(text(
                     f'GRANT CREATE ON SCHEMA "{schema_name}" TO mia_rls_definer'
                 ))
+                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
                 with pytest.raises(RuntimeError, match="CREATE on schemas"):
                     await admin.run_sync(
                         lambda connection: migration._verify_definer_role(
@@ -1036,6 +1039,7 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
                     await admin.execute(text(
                         "REVOKE CREATE ON SCHEMA public FROM mia_rls_definer"
                     ))
+                    await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
                     with pytest.raises(RuntimeError, match="must not own unexpected functions"):
                         await admin.run_sync(
                             lambda connection: migration._verify_definer_role(
