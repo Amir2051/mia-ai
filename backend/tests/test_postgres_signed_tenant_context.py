@@ -425,6 +425,19 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                     )
                 await column_reference_savepoint.rollback()
 
+                # Runtime must not be able to create objects in any non-system schema.
+                schema_savepoint = await admin.begin_nested()
+                schema_name = f"runtime_create_{uuid.uuid4().hex[:10]}"
+                await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+                await admin.execute(text(
+                    f'GRANT CREATE ON SCHEMA "{schema_name}" TO "{safe_role}"'
+                ))
+                with pytest.raises(RuntimeError, match="CREATE on non-system schemas"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await schema_savepoint.rollback()
+
                 # Effective privilege checks must also see grants made to PUBLIC.
                 savepoint = await admin.begin_nested()
                 await admin.execute(text("GRANT TRUNCATE ON TABLE public.shops TO PUBLIC"))
