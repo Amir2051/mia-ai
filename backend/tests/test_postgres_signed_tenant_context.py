@@ -235,13 +235,22 @@ def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
                                 .where(ScheduledReport.id == schedule_b_id)
                                 .values(enabled=False)
                             )
-                    with pytest.raises(DBAPIError):
-                        async with runtime.begin_nested():
-                            await runtime.execute(
-                                update(ScheduledReport)
-                                .where(ScheduledReport.id == schedule_b_id)
-                                .values(last_result_json='{"tampered":true}')
-                            )
+                    # The row-level scheduler policy is paired with a BEFORE UPDATE
+                    # trigger so schedule-definition fields remain merchant-owned.
+                    for protected_values in (
+                        {"report_type": "inventory_summary"},
+                        {"frequency": "weekly"},
+                        {"timezone": "America/Los_Angeles"},
+                        {"schedule_time": "10:30"},
+                        {"last_result_json": '{"tampered":true}'},
+                    ):
+                        with pytest.raises(DBAPIError):
+                            async with runtime.begin_nested():
+                                await runtime.execute(
+                                    update(ScheduledReport)
+                                    .where(ScheduledReport.id == schedule_b_id)
+                                    .values(**protected_values)
+                                )
 
                     claim_time = datetime.now(timezone.utc).replace(tzinfo=None)
                     next_run = claim_time + timedelta(days=1)
