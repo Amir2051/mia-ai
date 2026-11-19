@@ -35,8 +35,14 @@ def _runtime_role(bind) -> str:
     migration_url = os.environ.get("MIGRATION_DATABASE_URL", "")
     if not runtime_url or not migration_url:
         raise RuntimeError("DATABASE_URL and MIGRATION_DATABASE_URL are required for signed RLS context")
-    runtime_user = make_url(runtime_url).username
-    migration_user = make_url(migration_url).username
+    runtime_parsed = make_url(runtime_url)
+    migration_parsed = make_url(migration_url)
+    runtime_user = runtime_parsed.username
+    migration_user = migration_parsed.username
+    if not runtime_parsed.database or not migration_parsed.database:
+        raise RuntimeError("Both database URLs must specify the target database")
+    if runtime_parsed.database != migration_parsed.database:
+        raise RuntimeError("DATABASE_URL and MIGRATION_DATABASE_URL must target the same database")
     if not runtime_user or not migration_user:
         raise RuntimeError("Both database URLs must include usernames")
     if runtime_user == migration_user:
@@ -196,7 +202,8 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             SELECT p.proname
               FROM pg_catalog.pg_proc AS p
               JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-             WHERE n.nspname = 'public'
+             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
                AND p.proowner = :runtime_oid
                AND p.prosecdef IS TRUE
         """),
@@ -393,6 +400,40 @@ def _verify_definer_role(bind, role_name: str) -> None:
         raise RuntimeError(
             f"SECURITY DEFINER owner role {role_name!r} must not own tables, sequences, "
             "or schemas: " + ", ".join(owned_objects)
+        )
+
+    # A pre-existing function owned by this NOLOGIN role could expose its
+    # elevated table grants through an unexpected SECURITY DEFINER entry point.
+    # Permit only the three functions this migration deliberately assigns.
+    owned_functions = bind.execute(sa.text("""
+        SELECT pg_catalog.format(
+                   '%I.%I(%s)',
+                   n.nspname,
+                   p.proname,
+                   pg_catalog.pg_get_function_identity_arguments(p.oid)
+               )
+          FROM pg_catalog.pg_proc AS p
+          JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+         WHERE p.proowner = :role_oid
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND p.oid NOT IN (
+               SELECT fn::oid
+                 FROM unnest(ARRAY[
+                     pg_catalog.to_regprocedure('public.mia_current_shop_domain()'),
+                     pg_catalog.to_regprocedure('public.mia_is_internal_scheduler()'),
+                     pg_catalog.to_regprocedure(
+                         'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)'
+                     )
+                 ]) AS fn
+                WHERE fn IS NOT NULL
+           )
+         ORDER BY n.nspname, p.proname
+    """), {"role_oid": role["oid"]}).scalars().all()
+    if owned_functions:
+        raise RuntimeError(
+            f"SECURITY DEFINER owner role {role_name!r} must not own unexpected functions: "
+            + ", ".join(owned_functions)
         )
 
     can_create_database_objects = bind.execute(
