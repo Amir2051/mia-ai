@@ -681,7 +681,12 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                             pg_catalog.has_schema_privilege('mia_rls_definer', 'public', 'CREATE') AS public_create,
                             pg_catalog.has_database_privilege('mia_rls_definer', pg_catalog.current_database(), 'CREATE') AS database_create,
                             pg_catalog.pg_has_role('mia_runtime_test', 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer,
-                            pg_catalog.pg_has_role('mia_migration_test', 'mia_rls_definer', 'SET') AS migration_can_assume_definer
+                            pg_catalog.pg_has_role('mia_migration_test', 'mia_rls_definer', 'SET') AS migration_can_assume_definer,
+                            pg_catalog.has_function_privilege(
+                                'mia_unexpected_executor',
+                                'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)',
+                                'EXECUTE'
+                            ) AS unexpected_executor_can_purge
                     """))).mappings().one()
                     assert privileges["shops_select"] is True
                     assert privileges["shops_update"] is False
@@ -697,6 +702,7 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                     assert privileges["database_create"] is False
                     assert privileges["runtime_can_assume_definer"] is False
                     assert privileges["migration_can_assume_definer"] is True
+                    assert privileges["unexpected_executor_can_purge"] is False
 
                     members = (await admin.execute(text("""
                         SELECT r.rolname
