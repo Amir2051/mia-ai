@@ -160,12 +160,13 @@ def test_gdpr_webhooks_reject_invalid_hmac(client):
         assert response.status_code == 401
 
 
-def test_shop_redact_deletes_all_shop_owned_records(client):
+def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
     import asyncio
     import os
     from datetime import datetime
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
     from app.models.schemas import (
         AppSetting,
         AuditLog,
@@ -181,10 +182,11 @@ def test_shop_redact_deletes_all_shop_owned_records(client):
     )
 
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
-    if not admin_url:
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    if not admin_url or not runtime_url:
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
-        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
+        pytest.skip("Dedicated PostgreSQL admin and runtime URLs are not configured")
 
     async def seed():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
@@ -264,17 +266,41 @@ def test_shop_redact_deletes_all_shop_owned_records(client):
             await engine.dispose()
 
     shop_id = asyncio.run(seed())
+
+    # The shared client fixture defaults to an isolated SQLite database. Route
+    # this request through the same restricted PostgreSQL runtime role used by
+    # the RLS integration suite, while the admin connection above is used only
+    # to seed and inspect rows that RLS must hide from other tenants.
+    import app.models.database as db_mod
+
+    runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+    runtime_session_local = sessionmaker(
+        bind=runtime_engine,
+        class_=AsyncSession,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(db_mod, "engine", runtime_engine)
+    monkeypatch.setattr(db_mod, "AsyncSessionLocal", runtime_session_local)
+
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
     body = b'{"shop_id":123,"shop_domain":"erase-me.myshopify.com"}'
-    response = client.post(
-        "/api/webhooks",
-        headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body),
-        content=body,
-    )
-    assert response.status_code == 200, response.text
-    remaining = asyncio.run(counts(shop_id))
-    leftovers = {name: count for name, count in remaining.items() if count}
-    assert not leftovers, leftovers
+    try:
+        response = client.post(
+            "/api/webhooks",
+            headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body),
+            content=body,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json().get("processed") is True, response.json()
+        remaining = asyncio.run(counts(shop_id))
+        leftovers = {name: count for name, count in remaining.items() if count}
+        assert not leftovers, leftovers
+    finally:
+        router_settings.shopify_api_secret = original_secret
+        asyncio.run(runtime_engine.dispose())
 
 
 def test_customer_redact_removes_legacy_pii_records(client):
