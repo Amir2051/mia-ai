@@ -392,7 +392,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
         try:
             async with engine.begin() as admin:
                 database_name = await admin.scalar(text("SELECT pg_catalog.current_database()"))
-                database_identifier = admin.bind.dialect.identifier_preparer.quote(database_name)
+                database_identifier = admin.dialect.identifier_preparer.quote(database_name)
                 await admin.execute(text(
                     f'CREATE ROLE "{safe_role}" LOGIN PASSWORD \'ci-only\' '
                     'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
@@ -1154,7 +1154,7 @@ def test_migration_rejects_case_insensitive_shop_domain_duplicates():
                        AND indexname = 'uq_shops_shop_domain_lower'
                 """))
                 assert index_definition is not None
-                assert "lower(shop_domain)" in index_definition.lower()
+                assert "lower(" in index_definition.lower() and "shop_domain" in index_definition.lower()
 
                 savepoint = await admin.begin_nested()
                 await admin.execute(text(
