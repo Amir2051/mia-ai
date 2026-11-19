@@ -250,7 +250,8 @@ def test_shop_redact_deletes_all_shop_owned_records(client):
     response = client.post("/api/webhooks", headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body), content=body)
     assert response.status_code == 200
     remaining = asyncio.run(counts(shop_id))
-    assert all(value == 0 for value in remaining.values()), remaining
+    leftovers = {name: count for name, count in remaining.items() if count}
+    assert not leftovers, leftovers
 
 
 def test_customer_redact_removes_legacy_pii_records(client):
