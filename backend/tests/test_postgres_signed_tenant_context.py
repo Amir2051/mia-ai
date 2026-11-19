@@ -405,6 +405,17 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                         )
                     await savepoint.rollback()
 
+                # A column-only REFERENCES grant is also outside the runtime contract.
+                column_reference_savepoint = await admin.begin_nested()
+                await admin.execute(text(
+                    f'GRANT REFERENCES (shop_domain) ON TABLE public.shops TO "{safe_role}"'
+                ))
+                with pytest.raises(RuntimeError, match="REFERENCES"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_runtime_role(connection, safe_role)
+                    )
+                await column_reference_savepoint.rollback()
+
                 # Effective privilege checks must also see grants made to PUBLIC.
                 savepoint = await admin.begin_nested()
                 await admin.execute(text("GRANT TRUNCATE ON TABLE public.shops TO PUBLIC"))
@@ -939,7 +950,9 @@ def test_runtime_role_requires_matching_database_targets(monkeypatch):
         migration._runtime_role(None)
 
     # A pooler hostname and a direct migration hostname may differ while both
-    # URLs still target the same PostgreSQL database.
+    # URLs still target the same PostgreSQL database. The connection-level
+    # advisory-lock probe is exercised separately below.
+    monkeypatch.setattr(migration, "_verify_same_database_cluster", lambda *_args: None)
     monkeypatch.setenv(
         "MIGRATION_DATABASE_URL",
         "postgresql+asyncpg://migrator:migration-password@database.example:5432/mia_app",
@@ -1036,3 +1049,141 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
             await engine.dispose()
 
     asyncio.run(scenario())
+
+@pytest.mark.parametrize(("runtime_lock_acquired", "should_reject"), [(False, False), (True, True)])
+def test_database_cluster_probe_accepts_pooler_direct_pair_and_rejects_other_cluster(
+    monkeypatch,
+    runtime_lock_acquired,
+    should_reject,
+):
+    """A same-named database on another cluster must not pass the advisory-lock identity check."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+    class FakeBind:
+        def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "pg_try_advisory_lock" in sql:
+                return Result(True)
+            return Result(True)
+
+    class FakeRuntimeConnection:
+        def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "current_database" in sql:
+                return Result("mia_app")
+            if "pg_try_advisory_lock" in sql:
+                return Result(runtime_lock_acquired)
+            return Result(True)
+
+    fake_engine = SimpleNamespace(
+        connect=lambda: nullcontext(FakeRuntimeConnection()),
+        dispose=lambda: None,
+    )
+    monkeypatch.setattr(migration.sa, "create_engine", lambda *_args, **_kwargs: fake_engine)
+
+    runtime_url = "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app"
+    if should_reject:
+        with pytest.raises(RuntimeError, match="different PostgreSQL clusters"):
+            migration._verify_same_database_cluster(FakeBind(), runtime_url)
+    else:
+        migration._verify_same_database_cluster(FakeBind(), runtime_url)
+
+
+def test_migration_rejects_case_insensitive_shop_domain_duplicates():
+    """Signed domain RLS requires a database-enforced unique normalized shop domain."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        suffix = uuid.uuid4().hex[:10]
+        domain = f"normalized-domain-{suffix}.myshopify.com"
+        try:
+            async with engine.begin() as admin:
+                index_definition = await admin.scalar(text("""
+                    SELECT indexdef
+                      FROM pg_catalog.pg_indexes
+                     WHERE schemaname = 'public'
+                       AND indexname = 'uq_shops_shop_domain_lower'
+                """))
+                assert index_definition is not None
+                assert "lower(shop_domain)" in index_definition.lower()
+
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(
+                    "DROP INDEX public.uq_shops_shop_domain_lower"
+                ))
+                await admin.execute(text("""
+                    INSERT INTO public.shops (shop_domain, installed_at, is_active)
+                    VALUES
+                        (:domain, CURRENT_TIMESTAMP, TRUE),
+                        (:mixed_domain, CURRENT_TIMESTAMP, TRUE)
+                """), {
+                    "domain": domain,
+                    "mixed_domain": domain.upper(),
+                })
+                with pytest.raises(RuntimeError, match="duplicate case-insensitive shop domains"):
+                    await admin.run_sync(migration._verify_shop_domain_uniqueness)
+                await savepoint.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_definer_owner_requires_set_role_membership_for_non_superuser_migration():
+    """PostgreSQL 16+ migration logins need SET, not merely MEMBER, to manage the owner role."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        migration_role = f"mia_migration_no_set_{uuid.uuid4().hex[:10]}"
+        try:
+            async with engine.begin() as admin:
+                version = int(await admin.scalar(text("SHOW server_version_num")))
+                if version < 160000:
+                    pytest.skip("PostgreSQL SET membership options require PostgreSQL 16 or newer")
+
+                await admin.execute(text(
+                    f'CREATE ROLE "{migration_role}" LOGIN PASSWORD \'ci-only\' '
+                    'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+                ))
+                await admin.execute(text(
+                    f'GRANT mia_rls_definer TO "{migration_role}" WITH SET FALSE, INHERIT FALSE'
+                ))
+                savepoint = await admin.begin_nested()
+                await admin.execute(text(f'SET LOCAL ROLE "{migration_role}"'))
+                with pytest.raises(RuntimeError, match="SET permission"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_role(
+                            connection, "mia_rls_definer"
+                        )
+                    )
+                await savepoint.rollback()
+                await admin.execute(text(f'DROP ROLE "{migration_role}"'))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
