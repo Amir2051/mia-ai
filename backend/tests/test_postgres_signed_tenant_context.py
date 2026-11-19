@@ -382,6 +382,8 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
         elevated_role = f"mia_preflight_elevated_{suffix}"
         try:
             async with engine.begin() as admin:
+                database_name = await admin.scalar(text("SELECT pg_catalog.current_database()"))
+                database_identifier = admin.bind.dialect.identifier_preparer.quote(database_name)
                 await admin.execute(text(
                     f'CREATE ROLE "{safe_role}" LOGIN PASSWORD \'ci-only\' '
                     'NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
@@ -485,7 +487,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
 
                 # Ownership of the protected private schema must also fail.
                 savepoint = await admin.begin_nested()
-                await admin.execute(text(f'GRANT CREATE ON DATABASE mia_test TO "{safe_role}"'))
+                await admin.execute(text(f'GRANT CREATE ON DATABASE {database_identifier} TO "{safe_role}"'))
                 await admin.execute(text(f'ALTER SCHEMA mia_private OWNER TO "{safe_role}"'))
                 with pytest.raises(RuntimeError, match="protected schemas"):
                     await admin.run_sync(
@@ -515,7 +517,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
                 await savepoint.rollback()
 
                 savepoint = await admin.begin_nested()
-                await admin.execute(text(f'GRANT CREATE ON DATABASE mia_test TO "{safe_role}"'))
+                await admin.execute(text(f'GRANT CREATE ON DATABASE {database_identifier} TO "{safe_role}"'))
                 with pytest.raises(RuntimeError, match="CREATE privilege on the database"):
                     await admin.run_sync(
                         lambda connection: migration._verify_runtime_role(connection, safe_role)
