@@ -88,9 +88,19 @@ class Settings(BaseSettings):
         origins = [o.strip() for o in self.cors_origins.split(',') if o.strip()]
         return origins or ['http://localhost:5173', 'http://localhost:8000']
 
+    def validate_runtime_security(self) -> list[str]:
+        """Require signed-context material whenever the application uses PostgreSQL."""
+        issues: list[str] = []
+        if (
+            (self.database_url or '').strip().lower().startswith('postgresql')
+            and len(self.rls_context_secret.encode('utf-8')) < 32
+        ):
+            issues.append('RLS_CONTEXT_SECRET must contain at least 32 bytes for PostgreSQL')
+        return issues
+
     def validate_production(self) -> list[str]:
         issues: list[str] = []
-        if self.environment == 'production':
+        if self.is_production:
             if not self.secret_key or self.secret_key == 'CHANGE_THIS_TO_A_LONG_RANDOM_VALUE':
                 issues.append('SECRET_KEY not configured for production')
             if not self.shopify_api_key:
@@ -117,6 +127,10 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_security_issues = settings.validate_runtime_security()
+if _security_issues:
+    raise RuntimeError('Database security configuration missing: ' + '; '.join(_security_issues))
 
 if settings.is_production:
     _issues = settings.validate_production()
