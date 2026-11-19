@@ -73,7 +73,7 @@ jobs:
           PGPASSWORD: mia-migration-ci-only
         run: |
           psql -h 127.0.0.1 -U mia_migration_test -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
-          DO $
+          DO $body$
           DECLARE
             role_record record;
           BEGIN
@@ -94,9 +94,19 @@ jobs:
               RAISE EXCEPTION 'migration login must have SET but not inherited USAGE for the definer role';
             END IF;
           END
-          $;
+          $body$;
           SQL
-      - name: Run database migrations using the restricted migration role
+      - name: Run base migrations using the restricted migration role
+        run: alembic -c alembic.ini upgrade 0009_privacy_audit_purge
+      - name: Seed an unexpected legacy GDPR function grant
+        env:
+          PGPASSWORD: mia
+        run: |
+          psql -h 127.0.0.1 -U mia -d mia_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE mia_unexpected_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT EXECUTE ON FUNCTION public.mia_purge_audit_logs_for_privacy(bigint, text, text, boolean) TO mia_unexpected_executor;
+          SQL
+      - name: Run signed tenant migration using the restricted migration role
         run: alembic -c alembic.ini upgrade head
       - name: Grant minimum table permissions to restricted test role
         env:
@@ -133,6 +143,13 @@ jobs:
               'EXECUTE'
             ) THEN
               RAISE EXCEPTION 'migration did not grant the GDPR purge function to the runtime role';
+            END IF;
+            IF has_function_privilege(
+              'mia_unexpected_executor',
+              'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)',
+              'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'migration retained an unexpected named GDPR purge grant';
             END IF;
           END
           $$;
