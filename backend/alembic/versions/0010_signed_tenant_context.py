@@ -386,8 +386,19 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
                 )
 
 
-def _verify_definer_role(bind, role_name: str) -> None:
-    """Require a dedicated, non-login role that cannot bypass RLS or be assumed by the app."""
+def _verify_definer_role(
+    bind,
+    role_name: str,
+    *,
+    allow_private_schema_usage: bool = False,
+) -> None:
+    """Require a dedicated, non-login role that cannot bypass RLS or be assumed by the app.
+
+    Before upgrade, the definer must have no access to mia_private. After the
+    migration has granted the narrowly required USAGE privilege, downgrade
+    may allow that USAGE while still rejecting CREATE; the exact verifier-table
+    privileges are checked separately before rollback proceeds.
+    """
     role = bind.execute(
         sa.text("""
             SELECT oid, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
@@ -593,21 +604,26 @@ def _verify_definer_role(bind, role_name: str) -> None:
     private_schema_oid = bind.execute(
         sa.text("SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = 'mia_private'")
     ).scalar_one_or_none()
-    if private_schema_oid is not None and bind.execute(
-        sa.text("""
-            SELECT pg_catalog.has_schema_privilege(
-                       CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'USAGE'
-                   )
-                OR pg_catalog.has_schema_privilege(
-                       CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE'
-                   )
-        """),
-        {"role_oid": role["oid"], "schema_oid": private_schema_oid},
-    ).scalar_one():
-        raise RuntimeError(
-            f"SECURITY DEFINER owner role {role_name!r} must not have pre-existing "
-            "access to mia_private"
-        )
+    if private_schema_oid is not None:
+        private_schema_privileges = bind.execute(
+            sa.text("""
+                SELECT
+                    pg_catalog.has_schema_privilege(
+                        CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'USAGE'
+                    ) AS can_use,
+                    pg_catalog.has_schema_privilege(
+                        CAST(:role_oid AS oid), CAST(:schema_oid AS oid), 'CREATE'
+                    ) AS can_create
+            """),
+            {"role_oid": role["oid"], "schema_oid": private_schema_oid},
+        ).mappings().one()
+        if private_schema_privileges["can_create"] or (
+            private_schema_privileges["can_use"] and not allow_private_schema_usage
+        ):
+            raise RuntimeError(
+                f"SECURITY DEFINER owner role {role_name!r} must not have pre-existing "
+                "access to mia_private"
+            )
 
 
 def _assign_security_definer_owner(
@@ -1257,7 +1273,15 @@ def downgrade() -> None:
     bind = op.get_bind()
     runtime_role_name = _runtime_role(bind)
     definer_role = bind.dialect.identifier_preparer.quote(DEFINER_ROLE)
-    _verify_definer_role(bind, DEFINER_ROLE)
+    # The installed function owner intentionally has USAGE on mia_private and
+    # SELECT on its verifier table. Permit that existing runtime grant during
+    # rollback, but still require the exact table/column privilege allowlist.
+    _verify_definer_role(
+        bind,
+        DEFINER_ROLE,
+        allow_private_schema_usage=True,
+    )
+    _verify_definer_table_privileges(bind, DEFINER_ROLE)
     op.execute("DROP TRIGGER IF EXISTS mia_guard_scheduler_report_update ON public.scheduled_reports")
     op.execute("DROP FUNCTION IF EXISTS public.mia_guard_scheduled_report_scheduler_update()")
     op.execute("DROP POLICY IF EXISTS mia_shop_isolation ON public.shops")
