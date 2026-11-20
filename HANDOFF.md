@@ -463,8 +463,24 @@ This update supersedes the earlier PR #27 notes that treated GHSA-fc5q-39xc-vjpf
 - GitHub's primary advisory page now states that GHSA-fc5q-39xc-vjpf was **withdrawn on 2026-11-18 because it is not a security issue**: https://github.com/advisories/GHSA-fc5q-39xc-vjpf
 - CI #332 on PR #27 head `39b9eb47ed14c62f34354827749cdd0da7b006f3` completed all three jobs successfully on 2026-11-19. Backend: **305 passed, 3 warnings**; frontend: **17 passed**; lint/build passed; PostgreSQL migration 0010 downgrade/re-upgrade passed under the restricted migration role; production-only npm audit reported **0 vulnerabilities**; the full dependency-tree checker reported **no moderate, high, or critical findings**; Docker build passed.
 - CI #331, which ran earlier on 2026-11-19, still reported the withdrawn advisory in its audit data. CI #332 no longer reported any moderate/high/critical findings. This is consistent with the advisory withdrawal and registry-feed propagation; do not repeat the earlier 11-entry exception as the current state.
-- Simplified `.github/workflows/ci.yml` to use a direct `npm audit --audit-level=moderate` full-tree gate alongside the production-only audit. Removed the advisory-specific checker script. The simplified workflow change is a new PR-branch commit and has **not yet been CI-verified**; CI #332 tested the preceding workflow head. The moderate threshold does not prove the absence of low-severity findings.
+- Simplified `.github/workflows/ci.yml` to use a direct `npm audit --audit-level=moderate` full-tree gate alongside the production-only audit and removed the advisory-specific checker script. CI #334 on current PR head `4024412dbc0d59848f2d8c597f96b6cfd2710792` passed the simplified workflow: production-only and full-tree npm audits each reported **0 vulnerabilities**.
 - PR #27 remains draft, open, unmerged, and undeployed. All current inline review threads are resolved, but no independent human `APPROVE` review is recorded. Production role/ACL/logging/secret/database-revision checks remain unverified.
 - Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`, with migration head `0009_privacy_audit_purge`. Migration 0010 remains proposed only on PR #27.
 
 Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+### CI #334 verification — 2026-11-20
+
+- CI #334 completed all three jobs successfully on current PR #27 head `4024412dbc0d59848f2d8c597f96b6cfd2710792`: backend **305 passed, 3 warnings**; frontend **17 passed**; lint/build passed; production-only and full-tree `npm audit` each reported **0 vulnerabilities**; production Docker build passed.
+- PostgreSQL migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade passed using the restricted non-superuser migration login and the pre-provisioned function-owner role.
+- The direct full-tree npm audit gate is now CI-verified; the withdrawn picomatch advisory-specific exception checker has been removed.
+- [CI #334](https://github.com/Amir2051/mia-ai/actions/runs/44753832570)
+
+### GDPR shop-redaction regression — PR #30
+
+- PR #30 adds PostgreSQL-backed coverage that shop redaction removes `SocialAccount`, `ScheduledReport`, `MiaMemory`, and `PublishingAction` records through the existing ORM/database cascade path, in addition to the explicitly deleted shop-owned tables.
+- Hardened the test with per-run UUID shop domains and unique session/event/social-account/idempotency values so a failed prior run cannot collide with the next fixture seed.
+- CI #333 on commit `8fb13694e1264312d5b8bf9b068a23ecf1976d08` passed all three jobs: backend **285 passed, 3 warnings**; frontend **17 passed**; both npm audits reported **0 vulnerabilities**; production Docker build passed.
+- PR #30 remains draft and unmerged. This is PostgreSQL regression coverage, not live Shopify GDPR webhook acceptance.
+- [CI #333](https://github.com/Amir2051/mia-ai/actions/runs/44753043576)
