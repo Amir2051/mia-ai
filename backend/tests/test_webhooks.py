@@ -163,6 +163,7 @@ def test_gdpr_webhooks_reject_invalid_hmac(client):
 def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
     import asyncio
     import os
+    import uuid
     from datetime import datetime
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -188,26 +189,29 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
             pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
         pytest.skip("Dedicated PostgreSQL admin and runtime URLs are not configured")
 
+    suffix = uuid.uuid4().hex
+    shop_domain = f"erase-me-{suffix}.myshopify.com"
+
     async def seed():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         try:
             async with AsyncSession(engine, expire_on_commit=False) as db:
-                shop = Shop(shop_domain="erase-me.myshopify.com", is_active=True)
+                shop = Shop(shop_domain=shop_domain, is_active=True)
                 db.add(shop)
                 await db.flush()
                 shop_id = shop.id
                 db.add_all([
-                    ShopSession(shop_id=shop_id, session_token="session-erase", is_valid=True),
+                    ShopSession(shop_id=shop_id, session_token=f"session-erase-{suffix}", is_valid=True),
                     ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
                     SyncJob(shop_id=shop_id, entity="products", status="queued"),
                     AppSetting(shop_id=shop_id, key="test", value_json="{}"),
-                    WebhookEvent(shop_id=shop_id, topic="products/update", event_id="seed-event", payload_json="{}"),
+                    WebhookEvent(shop_id=shop_id, topic="products/update", event_id=f"seed-event-{suffix}", payload_json="{}"),
                     AuditLog(shop_id=shop_id, action="shopify.products.update", entity_type="product", entity_id="1", details_json="{}"),
                     SocialAccount(
                         shop_id=shop_id,
                         provider="meta",
                         account_type="facebook_page",
-                        external_account_id="page-erase",
+                        external_account_id=f"page-erase-{suffix}",
                         account_name="Erase Me Page",
                         access_token_encrypted="encrypted-test-token",
                     ),
@@ -227,7 +231,7 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
                     PublishingAction(
                         shop_id=shop_id,
                         action_type="product.publish",
-                        idempotency_key="erase-publishing-action",
+                        idempotency_key=f"erase-publishing-action-{suffix}",
                         request_hash="a" * 64,
                         payload_json='{"product_id":"123","note":"erase merchant payload"}',
                     ),
@@ -286,11 +290,11 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
 
     original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = b'{"shop_id":123,"shop_domain":"erase-me.myshopify.com"}'
+    body = json.dumps({"shop_id": 123, "shop_domain": shop_domain}).encode()
     try:
         response = client.post(
             "/api/webhooks",
-            headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body),
+            headers=_signed_headers("shop/redact", shop_domain, f"erase-event-{suffix}", body),
             content=body,
         )
         assert response.status_code == 200, response.text
