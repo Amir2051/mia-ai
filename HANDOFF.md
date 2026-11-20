@@ -13,31 +13,45 @@ Mia AI is a production-oriented embedded Shopify Admin app using FastAPI, React/
 
 The last Shopify app configuration release recorded in this handoff is **mia-ai-9** on 2026-09-18; no later release has been verified. The production URL is `https://mia.drivenest.info`, but its current health and running commit are not revalidated here.
 
-## Current verified engineering evidence — 2026-11-08
+## Current verified engineering evidence — 2026-11-12
 
 ### Main branch
-- Main commit: `11ff8cc5f0b427117576e43edc4918907e72f750`.
-- Latest main CI run #231 (2026-11-02): **285 backend tests passed, 3 warnings; 17 frontend tests passed; lint/build and Docker production image build passed.**
+- Main commit: `59660d53d7c6b3ceeae7a584499e5ad392733fb8` (PR #28 documentation-only merge on 2026-11-10).
+- Main CI run #267 on that commit: **285 backend tests passed, 3 warnings; 17 frontend tests passed; frontend lint/build and Docker production image build passed.**
 - The latest merged Alembic revision in the repository is `0009_privacy_audit_purge`.
 - The main-branch audit gates pass at the configured moderate-severity threshold, but the audit still reports **3 low-severity `deepmerge` findings**. This is not a zero-vulnerability result.
 
 ### Proposed tenant-isolation hardening — PR #27
 - Branch: `security/signed-tenant-context-2026-11-03`.
-- Latest code/test head: `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`. Subsequent documentation-only PR #27 heads `48058e8141cec528c96eb2a5d60ec39e5c78bb8e` (CI #262 passed) and `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` (CI #264 passed) leave the code/test tree unchanged.
-- CI #264 on the subsequent SECURITY.md-only head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f` also passed all three jobs: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
-- CI #261 (2026-11-08) on the current head: **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #261 tested code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67` (historical snapshot): **all 3 jobs passed**. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build, configured moderate-threshold audit gates, PostgreSQL migration downgrade/re-upgrade, and production Docker image build passed.
+- CI #264 tested documentation head `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`: all 3 jobs passed, including 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CodeRabbit's 2026-11-10 review identified that the tenant HMAC, unlike the scheduler HMAC, was not transaction-bound. The branch now signs `mia:shop:v1:<txid>:<normalized-domain>` and the database verifier recomputes the same message with `txid_current()`. A restricted-role PostgreSQL regression captures a valid tenant signature and proves it cannot be replayed in a later transaction.
+- The PR branch was synchronized with current `main` using merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b`, whose second parent is `59660d53d7c6b3ceeae7a584499e5ad392733fb8`. GitHub now reports `mergeable=true` and zero commits behind `main` (the compare endpoint reports 52 commits ahead because the PR's existing commit history is preserved).
+- CI #269 on merge commit `f476bbc62a506bd7897e0fc71e27d9db681a7a0b` completed successfully on 2026-11-12: all 3 jobs passed. Backend: **287 passed, 3 warnings**; frontend: **17 passed**; lint/build and configured moderate-threshold audit gates passed; PostgreSQL migration 0010 downgrade/re-upgrade passed; production Docker image build passed. The audit still reports 3 low-severity `deepmerge` findings.
+- The tenant cross-transaction replay regression is included in the 287-test backend suite. This verifies the PR branch, not production deployment or production database configuration.
 - CI #258 on `81aae0f7307155bbf7f951be710f622657828121` and CI #260 on `e2548d49c31294a87d2e84f66a8e74362d0041b5` also passed all three jobs. CI #260 verified the transaction-bound scheduler-signature replay regression.
 - The runtime-role preflight rejects unsafe role attributes, direct/transitive role memberships, protected table/schema/private-object ownership, public SECURITY DEFINER ownership, CREATE on public/database, private-schema/key access, and effective TRUNCATE/REFERENCES/TRIGGER grants on public tables.
-- The scheduler HMAC is bound to the PostgreSQL transaction ID; a captured proof is rejected when replayed in a later transaction.
+- Both the tenant HMAC and scheduler HMAC are bound to the PostgreSQL transaction ID. The restricted-role tenant and scheduler replay regressions are included in the passing CI #269 backend suite.
 - The scheduler trigger uses a positive allowlist: only `next_run_at`, `last_run_at`, `last_status`, `last_error`, and `updated_at` may change under scheduler context. Newly added scheduled-report columns are protected by default.
 - Migration 0010 downgrade is tested to preserve unrelated objects in `mia_private`, restore the legacy policy set, remove signed helper objects, and re-upgrade successfully.
 - The audit still reports **3 low-severity `deepmerge` findings** through the Polaris dependency tree.
+- CodeRabbit's 2026-11-12 follow-up confirmed the original tenant-proof replay finding is addressed, but identified a separate secret-disclosure risk: the Alembic engine did not hide bound parameters for the migration that inserts `RLS_CONTEXT_SECRET`. The branch now enables SQLAlchemy `hide_parameters=True` and adds a forced-error regression that checks the sentinel secret is absent from the SQLAlchemy exception text; fresh CI is pending.
+- Before production migration 0010, directly verify PostgreSQL 16 bind-parameter logging settings: `log_parameter_max_length=0`, `log_parameter_max_length_on_error=0`, and `auto_explain.log_parameter_max_length=0` if auto_explain is loaded. Also verify provider/proxy/application logs do not capture bind values. These production logging settings are unknown and remain a deployment gate.
 - PR #27 remains draft, unmerged, and undeployed. No independent security approval has been recorded. These CI runs validate the PR branch only, not production deployment.
 
+### Shopify publication scopes — PR #29
+- PR #29 aligns the backend default `shopify_scopes` with `shopify.app.toml`, including `read_publications` and `write_publications`, and adds a regression test.
+- CI #268 on commit `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs on 2026-11-11: **286 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed.**
+- PR #29 remains open, ready for review, unmerged, and undeployed. The current `main` backend default still omits publication scopes until this fix is merged; production environment overrides and the Shopify app release remain unverified.
+
+### Release governance
+- The GitHub branch endpoint reports `main.protected=false` and `protection.enabled=false`; the repository rulesets endpoint returned an empty list. Required CI and independent review are therefore not enforced by repository branch protection.
+- The connected GitHub integration cannot read the administrative branch-protection detail endpoint, but the public branch metadata and rulesets response establish that no protection/ruleset is currently active.
+
 ### Other open feature PRs
-- PR #25 (async full-campaign jobs) remains open. Its last recorded CI #232 passed, but the branch is **3 commits ahead and 1 behind** current main. It uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
-- PR #26 (Meta test-token fallback) remains open. Its last recorded CI #230 passed, but the branch is **1 commit ahead and 1 behind** current main. Its PR description says no new tests were added.
-- Rebase/synchronize these PRs and rerun CI before treating their previous results as current merge evidence.
+- PR #25 (async full-campaign jobs) remains open and unmerged. It was synchronized with current `main` by merge commit `85eef38c40ca0990ccfa5c3188b17565ba41ee07`; the current comparison is **4 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. CI #271 on 2026-11-12 passed all three jobs: **288 backend tests passed, 3 warnings; 17 frontend tests passed; Docker build passed**. It still uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution durable across process restarts.
+- PR #26 (Meta test-token fallback) remains open and unmerged. It was synchronized with current `main` by merge commit `b9dbcab6df37f7f1c36a810a0a991b707fed1cc9`; the current comparison is **2 commits ahead, 0 behind**, and GitHub reports `mergeable=true`. Added `frontend/src/pages/Social.test.tsx` to verify that an unconfigured Meta OAuth flow closes the popup and uses the server test-token endpoint. CI #273 on 2026-11-12 passed all three jobs: **285 backend tests passed, 3 warnings; 18 frontend tests passed across 4 files; Docker build passed**. Live Meta credentials, provider acceptance, and production publishing remain unverified.
+- Both PRs now have current-main ancestry and fresh CI. PR #25 remains blocked on durable campaign execution; PR #26 is ready for review of the fallback implementation and test.
 
 ### Production evidence — historical, not revalidated
 - The last release recorded in this handoff is Shopify app version **`mia-ai-9` on 2026-09-18**.
@@ -148,7 +162,7 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 - Role attribute regression cases now cover NOLOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, and INHERIT, plus direct/transitive memberships and ownership/grant checks.
 - The preflight now rejects effective TRUNCATE, REFERENCES, and TRIGGER privileges on every public table. TRUNCATE is not subject to RLS; CI verifies direct grants and a TRUNCATE grant to PUBLIC are detected.
 - CI #260 passed all three jobs on the transaction-bound scheduler proof change (287 backend, 17 frontend).
-- CI #261 passed all three jobs on current head `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
+- CI #261 passed all three jobs on historical code/test commit `f9a7e9089c424a46801dcc7b6c7191c32e03dc67`: 287 backend tests, 17 frontend tests, lint/build, configured moderate-threshold audit gates, and Docker image build.
 - The npm audit continues to report 3 low-severity deepmerge findings. Passing the moderate threshold is not a zero-vulnerability result.
 
 ### Verification
@@ -161,37 +175,312 @@ The CI runtime fixture now uses NOINHERIT. A new PostgreSQL integration test exe
 
 ### Current review and release state
 
-PR #27 remains open, draft, unmerged, and undeployed. The only recorded PR reviews are comments by the repository owner; there is no independent security approval. The owner-authored inline thread requesting the runtime-role preflight has been resolved after the code/test implementation and CI verification. This is not an independent approval: all recorded review submissions remain owner-authored, no independent security reviewer has approved the migration, and PR #27 remains draft.
+PR #27 remains open, draft, unmerged, and undeployed. Recorded reviews include repository-owner comments and a CodeRabbit COMMENTED review with actionable findings; no independent APPROVE review is recorded. Independent security approval remains outstanding. The runtime-role preflight finding is implemented and covered by CI, but the complete migration and deployment model still requires an independent assessment.
 
-Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
+Main is at `59660d53d7c6b3ceeae7a584499e5ad392733fb8` following the documentation-only PR #28 merge; no production database or application changes were made. The actual production Alembic revision and running application SHA remain unverified. Do not apply migration 0010 until independent review and direct production-state/role verification are complete.
 
 
-## Verification refresh — 2026-11-09
+## Engineering update — 2026-11-11
 
-### Latest repository and CI evidence
+### Main branch and CI
 
-- Main remains at `11ff8cc5f0b427117576e43edc4918907e72f750`. Its latest recorded CI run #231 completed successfully: 285 backend tests, 17 frontend tests, and production Docker image build passed.
-- PR #27 current head is `858ffbac9dd546ed7f50e76a0229b7fe23f41c0f`. CI #264 completed successfully across all three jobs: 287 backend tests passed (3 warnings), 17 frontend tests passed, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
-- PR #28 head before this documentation refresh is `e17b21468c1ef924c92dd7088e9ca1fb959b8044`. CI #265 completed successfully across all three jobs: 285 backend tests passed (3 warnings), 17 frontend tests passed across 3 files, lint/build and configured moderate-threshold audit gates passed, and the production Docker image built.
-- The npm audit logs continue to report 3 low-severity `deepmerge` findings. The current lockfile resolves `deepmerge@4.3.1`; GitHub Advisory GHSA-gcqx-w48m-w2h4 lists 4.2.0 through 4.3.1 as affected and currently lists no patched version. Do not describe the audit as clean or apply a forced major upgrade without compatibility testing. Advisory: https://github.com/advisories/GHSA-gcqx-w48m-w2h4
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; CI #267 on that commit passed all three jobs: 285 backend tests (3 warnings), 17 frontend tests, frontend lint/build, and production Docker image build.
 
-### Review and repository governance
+### PR #27 security-review remediation
 
-- PR #27's two owner-authored inline review threads are now resolved. The runtime-role preflight request was addressed in migration 0010 and covered by PostgreSQL regression tests. This does not constitute independent security approval: recorded PR reviews are owner-authored comments only, and no independent reviewer has approved the migration.
-- PR #27 remains open, draft, unmerged, and undeployed.
-- GitHub reports the `main` branch as `protected: false`. Required CI/review branch protection is therefore not verified as enforced; configure it before treating main as a protected release branch.
+- Added transaction binding to the tenant HMAC. The app signs `mia:shop:v1:<txid>:<normalized-domain>`; the migration verifier recomputes the same payload using the current transaction ID.
+- Added a restricted-runtime-role regression that captures a tenant proof and attempts to replay it in a different transaction; the replay must not read even the original shop's rows.
+- Wrapped RLS policy function calls in scalar subqueries so stable HMAC/key-lookup predicates are evaluated once per query rather than repeatedly per scanned row.
+- Updated `SECURITY.md` and this handoff to accurately describe transaction binding and the remaining low-severity dependency findings. CodeRabbit's two documentation threads were resolved after the fixes; the major tenant-proof thread remains open pending fresh CI and review.
+- The code/test change is on commit `ef7574533d6da51deb570ae7b4ec5ad761959ded`; the later handoff update is documentation-only. No fresh CI run is attached to these latest PR #27 commits yet. CI #264 passed on the earlier head and does not verify this remediation.
+- PR #27 remains draft, unmerged, and undeployed, with no independent APPROVE review. Its branch is **1 commit behind main** and GitHub currently reports `mergeable=false`; branch synchronization/conflict reconciliation is still required before merge.
 
-### Shopify acceptance items still requiring direct validation
+### PR #29 — Shopify publication-scope default correction
 
-- `shopify.app.toml` registers `https://mia.drivenest.info/auth/callback`, but the backend auth router exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`; the frontend route table has no `/auth/callback` route. The current embedded ID-token exchange path is implemented, but the configured redirect must be tested in a real development-store install/reinstall flow and corrected if Shopify invokes it.
-- Publication scopes `read_publications` and `write_publications` are declared in `shopify.app.toml`; release of the updated app configuration and merchant re-approval are not verified.
-- No production database revision, production runtime-role catalog state, production `RLS_CONTEXT_SECRET`, deployed application SHA, or live merchant acceptance was directly verified in this run. Do not apply migration 0010 or claim production readiness from CI alone.
+- Opened PR #29 to align the backend `SHOPIFY_SCOPES` default with `shopify.app.toml`, including `read_publications` and `write_publications`.
+- Added a regression test for both publication scopes.
+- CI #268 on head `f0b8d5380de3dd95475d44e19026688c3416d66f` passed all three jobs: **286 backend tests passed (3 warnings), 17 frontend tests passed, and Docker production image build passed**.
+- PR #29 is open, ready for review, mergeable, and not merged. No production configuration or Shopify app release was changed.
 
-### Next actions
+### Feature-branch synchronization
 
-1. Obtain independent security review of migration 0010 and the deployment/rollback model.
-2. Read-only verify the production Alembic revision and runtime-role attributes, memberships, ownership, and effective privileges before planning migration.
-3. Enable required status checks and review protection on `main`.
-4. Run development-store install/reinstall, token exchange, publication-scope approval, product publishing, webhook, GDPR, and billing acceptance.
-5. Replace process-local FastAPI `BackgroundTasks` for campaign jobs with a durable worker/lease-recovery design before claiming restart-safe execution.
-6. Track the `deepmerge` advisory until upstream publishes a fix; assess the actual transitive usage and avoid unsafe forced upgrades.
+- PR #25 is 3 commits ahead / 2 behind main; its prior CI #232 is historical for the current base.
+- PR #26 is 1 commit ahead / 2 behind main; its prior CI #230 is historical for the current base.
+- Both branches need synchronization and fresh CI before merge.
+
+
+## Engineering update — 2026-11-14 (latest verified snapshot)
+
+This section supersedes the older November 11 branch-synchronization and CI notes above where they differ. It records PR-branch evidence only; it does not describe a merge or production deployment.
+
+### Repository and branch state
+- Current `main` remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its latest merged Alembic revision in the repository is `0009_privacy_audit_purge`.
+- PR #27 branch head before this documentation refresh: `9fc232233a18c3ace0caf727b1b3ec2546784e25`.
+- GitHub reports PR #27 open, draft, unmerged, and mergeable. The compare endpoint reports 62 commits ahead and 0 behind main; the ahead count includes the branch's preserved commit history and is not a claim of 62 new feature changes.
+- PR #27 has no independent APPROVE review recorded. The latest November 13 ACL-hardening request for re-review has not yet received a new independent review response.
+- No production database, secret, Shopify configuration, or application deployment was changed.
+
+### Verifier-key ACL and secret-disclosure hardening
+- Migration 0010 refuses to reuse any pre-existing `mia_private.tenant_context_keys` relation. It creates a fresh table without `IF NOT EXISTS` and uses a plain insert, preventing unknown pre-existing constraints or triggers from receiving the signing secret.
+- Before inserting the secret, the migration revokes all non-owner table ACL grants on the new verifier table, including PUBLIC and named grantees introduced by default privileges. It then checks effective access for login roles and membership in PostgreSQL's `pg_read_all_data` and `pg_write_all_data` capability roles, failing closed if access remains.
+- PostgreSQL regression coverage includes: a hostile pre-existing same-name relation; a named default-ACL SELECT grant where the role retains schema USAGE; and LOGIN/NOINHERIT roles granted each PostgreSQL data-wide capability role.
+- CI #281 initially failed because the first version of the check incorrectly treated the built-in NOLOGIN capability roles themselves as login principals. That query was corrected.
+- CI #282 passed on `88b2c88dc9cdfb820ff7e663d03953f6e1f580ef`: 290 backend tests, 17 frontend tests, and Docker production build passed.
+- CI #283 passed on code/test head `9fc232233a18c3ace0caf727b1b3ec2546784e25`: 292 backend tests (3 warnings), 17 frontend tests, and Docker production build passed. The backend job ran against PostgreSQL 16, executed the PostgreSQL-specific regression tests, and completed the migration 0010 downgrade/re-upgrade verification.
+- The frontend CI logs still report three low-severity `deepmerge` findings. The configured moderate-severity audit commands pass; the full dependency audit is not clean.
+- SQLAlchemy migration-engine `hide_parameters=True` is also covered by a sentinel exception regression. This protects SQLAlchemy exception rendering, not PostgreSQL server, managed-provider, proxy, or external log configuration.
+
+### Current active pull requests
+- PR #25: head `85eef38c40ca0990ccfa5c3188b17565ba41ee07`; 4 commits ahead / 0 behind main; CI #271 passed (288 backend, 17 frontend, Docker). It still uses process-local FastAPI `BackgroundTasks`; restart-safe durable execution, retries, and stale-job recovery are not implemented.
+- PR #26: head `04edf103e0de175734949d1ed3819743c8aa1a63`; 3 commits ahead / 0 behind main; CI #273 passed (285 backend, 17 frontend, Docker). Its automated test verifies the unconfigured-Meta fallback only; live Meta credentials and publishing remain unverified.
+- PR #29: head `4bd375c1fabbcb28471f0a044f0344288dd009c2`; 8 commits ahead / 0 behind main; CI #279 passed (287 backend, 17 frontend, Docker). It corrects the scope health-check requirement set but does not grant merchant permissions or release a Shopify app version.
+- All four PRs (#25, #26, #27, #29) remain open and unmerged.
+
+### Release and production gates still open
+- Independent security review of migration 0010, SECURITY DEFINER ownership/search_path, secret lifecycle, and rollback strategy.
+- Direct production catalog verification of runtime-role attributes, memberships, ownership, schema/table ACLs, and PostgreSQL/provider logging settings.
+- Secure provisioning of the same `RLS_CONTEXT_SECRET` to the protected application and migration environments, only after approval.
+- Direct verification of production Alembic revision, running application SHA, and health.
+- Development-store acceptance for embedded auth/token refresh, products/CSV, publishing, orders, webhooks/GDPR, billing, Meta, and OpenRouter.
+- Confirmed Shopify CLI release and merchant reauthorization for publication scopes.
+- Main branch protection and required CI/review checks. A fresh rulesets read on 2026-11-14 returned an empty list; the branch-protection detail endpoint returned 403 to the connected integration. The last recorded direct branch check in the earlier handoff reported main as unprotected, so recheck through repository-owner/admin access before release.
+
+Do not apply migration 0010 or describe Mia as production-approved based on these PR CI results.
+
+
+### Additional SECURITY DEFINER ownership review gate — 2026-11-14
+
+- Migration 0010 creates several `SECURITY DEFINER` functions but does not issue `ALTER FUNCTION ... OWNER TO ...`. PostgreSQL therefore assigns ownership to the role executing the Alembic migration.
+- The CI workflow uses a separate migration connection (`MIGRATION_DATABASE_URL`) and a PostgreSQL 16 service. The passing CI run proves function behavior under that fixture; it does not prove the migration connection's function-owner role is non-superuser, non-BYPASSRLS, or least-privileged in production.
+- Before approval, inspect the actual production migration role and the owners/attributes of every SECURITY DEFINER function created by migration 0010. Decide whether the functions should instead be owned by a dedicated NOLOGIN, NOSUPERUSER, NOBYPASSRLS role with only the specific schema/table privileges required. If that design is adopted, add PostgreSQL regressions proving the owner cannot bypass RLS or access unrelated tenant data.
+- This is a newly recorded design/review gate, not a claim that a production exploit was observed. Current CI passing does not close it.
+
+
+## Engineering update — 2026-11-15
+
+This is a documentation-only verification update on the PR #27 branch. It does not change application code, merge the PR, or authorize production deployment.
+
+### Current PR and CI evidence
+
+- PR #27 head before this documentation commit: `3f163d6642eda0393413e3f67aa83c7caed134ef`.
+- CI #285 on that exact head completed on 2026-11-14 with all three jobs successful:
+  - Backend: **292 passed, 3 warnings**.
+  - PostgreSQL migration downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context`: **passed**.
+  - Frontend: **17 passed across 3 test files**; lint and build passed.
+  - Both configured npm audit gates passed at the moderate threshold, but the logs still report **3 low-severity deepmerge findings**.
+  - Production Docker image build: **passed**.
+- The CI job log confirms `MIGRATION_DATABASE_URL` connects as `mia`, matching the PostgreSQL service's `POSTGRES_USER`. The workflow does not demote that migration role before Alembic runs. This is not a test of a separately constrained SECURITY DEFINER owner.
+- Migration 0010 creates its SECURITY DEFINER functions as the Alembic connection role. The `mia_current_shop_id()` function explicitly documents that its owner is the `shops` table owner and intentionally bypasses that table's non-FORCE RLS policy.
+- Therefore, the CI pass proves the signed-context behavior under the current privileged migration/table-owner fixture; it does **not** prove least-privilege function ownership or RLS enforcement under a dedicated non-owner definer role.
+
+### November 15 security follow-up
+
+- Added a focused PR #27 discussion comment (issue comment **6895949481**) recording the CI migration-role evidence and the `mia_current_shop_id()` owner-bypass dependency.
+- Treat function-owner privilege design as a merge blocker. Before approval, require a design that avoids superuser/BYPASSRLS or unrestricted table-owner execution, grants only the required objects, and includes PostgreSQL tests asserting `pg_proc.proowner`, role attributes, and cross-tenant read/delete denial when the functions execute as their actual owner.
+- A dedicated `NOLOGIN NOSUPERUSER NOBYPASSRLS` owner is a candidate, not an implemented or validated fix. Ownership transfer alone is insufficient; verify that RLS policy evaluation and the GDPR audit-purge function continue to behave correctly.
+- PR #27 remains draft, open, unmerged, and undeployed. No independent APPROVED review is recorded. The production migration revision, running application SHA, runtime/migration role catalog, PostgreSQL/provider logging, and `RLS_CONTEXT_SECRET` provisioning remain unverified.
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application-code merge or production change was made in this update.
+
+
+## Engineering update — 2026-11-17: least-privilege SECURITY DEFINER owner
+
+This update records application-code and PostgreSQL regression changes on PR #27. It is not a production deployment, independent approval, or authorization to apply migration 0010.
+
+### Implementation changes
+
+- Added a required pre-provisioned PostgreSQL role named `mia_rls_definer`. The migration fails closed unless it is `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`, has no role memberships, is not assumable by other non-superuser roles, owns no relations/schemas, and has no database/schema CREATE privileges.
+- The migration role must be a superuser or a member of `mia_rls_definer` so PostgreSQL can transfer SECURITY DEFINER ownership. Any non-superuser membership is restricted to the migration role; the application runtime role must not be a member.
+- Migration 0010 grants the definer role only the table access used by the signed-context functions: SELECT on `mia_private.tenant_context_keys`, SELECT on `shops`, and SELECT/DELETE on `audit_logs`. It also grants schema USAGE and EXECUTE on pgcrypto's HMAC function. A post-grant preflight checks effective table privileges across non-system schemas and fails if the role has any unexpected table privilege.
+- `mia_current_shop_domain()`, `mia_is_internal_scheduler()`, and `mia_purge_audit_logs_for_privacy(...)` are transferred to `mia_rls_definer`. The migration temporarily grants schema CREATE only to perform ownership transfer, then revokes it and verifies it is no longer effective.
+- `mia_current_shop_id()` is now explicitly SECURITY INVOKER. Its query of `shops` therefore runs under the caller's privileges and the signed-domain RLS policy, rather than depending on a table-owner SECURITY DEFINER bypass.
+- Added PostgreSQL integration coverage that asserts the owner role attributes, function owners and SECURITY DEFINER flags, exact table privileges, absence of runtime membership, and no table/schema ownership. The test then SET ROLEs to the actual definer role and proves it sees only Shop A and cannot delete Shop B's audit row. A separate runtime-role call verifies the GDPR purge function deletes Shop A's row while preserving Shop B's row.
+- Added a preflight regression proving a LOGIN/BYPASSRLS owner role is rejected.
+- CI now provisions the dedicated NOLOGIN role before running migration 0010.
+
+### Verification — CI #290
+
+- Exact tested commit: `9415ff2587fef804405d7567329da955e847f637`.
+- All three jobs passed: backend, frontend, and production Docker build.
+- Backend: **294 passed, 3 warnings**. This includes the two new SECURITY DEFINER ownership/RLS tests.
+- PostgreSQL migration downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context`: **passed**.
+- Frontend: **17 passed**; lint and production build passed.
+- Both configured npm audit commands reported **0 vulnerabilities** in this run. This is the result for this exact CI environment/run; continue checking dependency advisories on subsequent releases.
+- Docker production image build: **passed**.
+
+[CI #290](https://github.com/Amir2051/mia-ai/actions/runs/44098807200)
+
+### Current PR and release status
+
+- PR #27 remains **draft, open, unmerged, and undeployed**. GitHub reports it mergeable and zero commits behind main.
+- Four commits were added after the previous documentation head; the code changes are confined to `.github/workflows/ci.yml`, migration 0010, and `test_postgres_signed_tenant_context.py`.
+- Main remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application-code changes were merged into main.
+- No production database, application environment, secret, Shopify app release, or deployment was modified.
+- No independent APPROVED security review has been recorded. A fresh review of the current head is still required.
+- Before production, provision `mia_rls_definer` in the target database, confirm the migration connection can transfer ownership, and independently inspect `pg_roles`, `pg_auth_members`, `pg_proc.proowner/prosecdef`, schema/table ACLs, and the effective privileges of the production runtime role.
+- The same strong `RLS_CONTEXT_SECRET` must be provisioned to the protected app and migration environments only after review and release approval. PostgreSQL/provider/proxy parameter logging must also be verified directly.
+- The downgrade still restores the older caller-settable GUC policies and the prior GDPR purge function. It remains a security-sensitive rollback, not a routine rollback path.
+
+## Engineering update — 2026-11-18: definer privilege closure and dependency audit exception
+
+This update records PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010, or deploy the application.
+
+### PostgreSQL least-privilege follow-up
+
+- Strengthened `_verify_definer_role` to reject effective `CREATE` on **every non-system schema**, not only `public` and `mia_private`.
+- Strengthened `_verify_definer_table_privileges` to use `has_any_column_privilege` for `SELECT`, `INSERT`, `UPDATE`, and `REFERENCES`. PostgreSQL's `has_table_privilege` alone does not detect a grant made only on a column.
+- Added `test_definer_role_preflight_rejects_unexpected_schema_and_column_grants`, which proves the migration preflight rejects both a `CREATE` grant on a non-public schema and a column-only `SELECT` grant on an unapproved table.
+- The backend suite increased from 294 to **295 passing tests**. The new test passed in CI #294 and CI #300.
+
+### Dependency audit change discovered on 2026-11-18
+
+- CI #294 exposed a newly surfaced high-severity GitHub advisory, GHSA-fc5q-39xc-vjpf / CVE-2026-112366, affecting `picomatch` through version 4.0.7. The full audit showed **11 high-severity dependency-tree entries**; they resolve through the Vite/Vitest/TypeScript-ESLint development toolchain. The production-only audit reported **0 vulnerabilities**.
+- The final Docker runtime stage copies only `frontend/dist` into the Python image; it does not copy the Node.js dependency tree. This limits the finding to build/development tooling in the current image design, not the shipped runtime dependency set.
+- The GitHub advisory lists no patched version. The upstream picomatch maintainer disputes the report and recommends not accepting untrusted glob patterns; the attempted upstream fix PR #235 was closed without merging. This remains a documented development-tooling risk, not a clean full audit.
+- Added `frontend/scripts/check-audit-exceptions.mjs` and a narrow CI policy. The production-only audit remains a hard gate. The full-tree checker accepts only this exact GHSA, requires any directly affected packages to be exclusively in `devDependencies`, requires every locked picomatch copy to remain version 4.0.7 with `dev: true`, rejects incomplete audit JSON, and fails on any other advisory. Remove this exception when the upstream fix or risk assessment changes.
+- CI #294 initially failed on the full-tree audit. CI #298 then exposed an overly strict first version of the checker that treated direct `devDependencies` as production dependencies; that checker was corrected.
+
+### Latest verified CI
+
+- CI #300 on code/workflow head `96dd762e92af8b7bee1bca667d92f3d07dafa967` completed on 2026-11-18 with all three jobs successful:
+  - Backend: **295 passed, 3 warnings**.
+  - PostgreSQL migration 0010 downgrade to `0009_privacy_audit_purge` and re-upgrade: **passed**.
+  - Frontend: **17 passed**; lint and production build passed.
+  - Production-only npm audit: **0 vulnerabilities**.
+  - Full-tree audit exception checker: **passed**, accepting the 11 entries that trace only to the documented dev-only picomatch advisory.
+  - Production Docker image build: **passed**.
+- CI #300 is branch evidence, not production deployment evidence. A subsequent documentation-only refresh may have a later CI run; use the exact tested commit when citing this result.
+
+[CI #300](https://github.com/Amir2051/mia-ai/actions/runs/44317342275)
+
+### Current repository and release state
+
+- `main` remains `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; the latest merged Alembic revision on `main` is still `0009_privacy_audit_purge`.
+- PR #27 remains draft, open, unmerged, and undeployed. CI #300 tested the code/workflow head above. No independent `APPROVE` review is recorded; the latest recorded CodeRabbit review is from 2026-11-12. A fresh CodeRabbit review was requested in the PR conversation on 2026-11-18, but the bot replied `Action not completed` because the PR head changed; no new review is recorded.
+- PR #29 remains open and unmerged with its publication-scope health-check correction. PR #25 and PR #26 remain open and unmerged; their prior CI results do not prove durable campaign execution or live Meta publishing.
+- Direct GitHub branch metadata still reports `main.protected=false`; the repository rulesets endpoint returned an empty list on 2026-11-18. Required CI/review enforcement is not active.
+- Production running SHA, production Alembic revision, `mia_rls_definer` provisioning, `RLS_CONTEXT_SECRET` provisioning, PostgreSQL/provider logging configuration, and current production health remain unverified. The external health/homepage check could not retrieve `mia.drivenest.info`; that is inconclusive, not proof of an outage.
+- No PR was merged, no production database or secret was modified, no Shopify app release was made, and no production deployment occurred.
+
+### Remaining release gates
+
+1. Obtain an independent security review of migration 0010, the restricted function-owner role, RLS policy behavior, key lifecycle, and downgrade strategy.
+2. Verify production role attributes, memberships, function owners, schema/table/column ACLs, and PostgreSQL/provider/proxy logging directly.
+3. Provision `mia_rls_definer` and the same strong `RLS_CONTEXT_SECRET` in the approved target environments only after review.
+4. Review and merge PR #29, release the updated Shopify publication scopes, and verify merchant reauthorization.
+5. Complete real Shopify development-store acceptance for embedded authentication/token refresh, CSV/product operations, publishing, orders, webhooks/GDPR, billing, Meta, and OpenRouter.
+6. Protect `main` with required CI and independent approval before any production release.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+
+## Engineering update — 2026-11-19: database-target and function-ownership preflights
+
+This is PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010, release Shopify configuration, or deploy the application.
+
+### Additional PostgreSQL preflight hardening
+
+- `_runtime_role()` now parses both `DATABASE_URL` and `MIGRATION_DATABASE_URL`, requires both to name a database, and fails closed if their database names differ. Hostnames may differ intentionally to support an application pooler endpoint and a direct migration endpoint.
+- `_verify_runtime_role()` now checks for runtime-role-owned SECURITY DEFINER functions across every non-system schema, not only `public`.
+- `_verify_definer_role()` now rejects unexpected pre-existing functions owned by `mia_rls_definer`; only the three functions deliberately assigned by migration 0010 are allowlisted.
+- Added PostgreSQL/configuration regressions for mismatched database names, a runtime-owned SECURITY DEFINER function in a non-public schema, and an unexpected function owned by the definer role.
+
+### Verification
+
+- CI #304 on migration commit `2d856c8cd2ea82d1b6e7aa74d203d956fa8931e0` passed all three jobs. Backend: **295 passed, 3 warnings**; frontend: **17 passed**; production Docker build passed.
+- CI #305 on latest code/test head `5df9b2b6e0eb7cd2a90d113a21b94d546baa780e` completed successfully on 2026-11-19:
+  - Backend: **298 passed, 3 warnings**.
+  - PostgreSQL migration 0010 downgrade/re-upgrade: **passed**.
+  - Frontend: **17 passed**; lint and production build passed.
+  - Production-only npm audit: **0 vulnerabilities**.
+  - Full-tree audit exception checker: **passed**, accepting only the documented 11 development-tooling entries tracing to GHSA-fc5q-39xc-vjpf / picomatch 4.0.7.
+  - Production Docker image build: **passed**.
+- CI #305 verifies the latest PR branch code and workflow in GitHub Actions. It does not prove the production database has matching roles/ACLs, nor does it constitute an independent security approval.
+
+[CI #304](https://github.com/Amir2051/mia-ai/actions/runs/44537541800) · [CI #305](https://github.com/Amir2051/mia-ai/actions/runs/44537650153)
+
+### Main-branch reconciliation
+
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its latest successful main-branch CI is #267 from 2026-11-10 (285 backend tests, 17 frontend tests, Docker build). This predates the 2026-11-18 picomatch advisory refresh.
+- Main contains the GDPR customer-redaction wildcard correction: customer PII matching uses escaped substring matching rather than treating email characters such as underscores as SQL LIKE wildcards. Regression coverage verifies a near-match address is retained.
+- Main's lockfile includes patched `follow-redirects 1.16.2` and `minimatch 11.0.1`; it still contains development-only `picomatch 4.0.7` copies. The narrow audit exception is on PR #27, not main.
+- Direct branch metadata reports `main.protected=false`; the repository rulesets endpoint returns an empty list. Required CI/review enforcement is not active.
+
+### Current review and release state
+
+- PR #27 remains open, draft, mergeable, unmerged, and undeployed. Latest code/test head: `5df9b2b6e0eb7cd2a90d113a21b94d546baa780e`.
+- No independent `APPROVE` review is recorded. The latest completed CodeRabbit review remains 2026-11-12; the November 18 re-review request did not complete because the PR head changed. A fresh review is requested against the current head separately.
+- PR #29 remains open/unmerged with CI #279 passing; PR #25 remains open/unmerged with CI #271 passing; PR #26 remains open/unmerged with CI #273 passing.
+- Production running SHA, production Alembic revision, runtime/definer role catalog, production signing-secret provisioning, PostgreSQL/provider/proxy logging configuration, current production health, and live Shopify merchant acceptance remain unverified.
+- No PR was merged, no production database or secret was modified, no Shopify app release was made, and no production deployment occurred.
+
+### Next release gates
+
+1. Obtain independent security review of migration 0010, including the definer function allowlist, transaction-bound signatures, RLS policies, signing-key lifecycle, and downgrade strategy.
+2. Verify production database identity, Alembic revision, runtime/definer roles, memberships, function owners, schema/table/column/sequence ACLs, and database/provider/proxy logging directly.
+3. Provision `mia_rls_definer` and `RLS_CONTEXT_SECRET` only after review and against the verified target database.
+4. Review and merge PR #29, release the updated Shopify publication scopes, and verify merchant reauthorization.
+5. Complete real Shopify development-store acceptance for authentication, products/CSV, publishing, webhooks/GDPR, billing, Meta, and OpenRouter.
+6. Protect `main` with required CI and independent review before any production release.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+## Engineering update — 2026-11-19: restricted migration rollback verification
+
+This update records PR-branch engineering evidence only. It does not merge PR #27, change `main`, provision production roles/secrets, apply migration 0010 in production, release Shopify configuration, or deploy the application.
+
+- CI #330 on head `c6823dfe90ff50f6c97c6bcb631b6b937b730055` exposed a real rollback-preflight issue: after migration 0010, `mia_rls_definer` intentionally has USAGE on `mia_private`, so the pre-upgrade-only "no pre-existing private access" check incorrectly rejected a valid downgrade.
+- Fixed `_verify_definer_role()` with an explicit `allow_private_schema_usage=True` option used only during downgrade. The default remains false for the pre-upgrade check. Downgrade still rejects CREATE on every non-system schema and now calls `_verify_definer_table_privileges()` to enforce the exact table/column privilege allowlist before changing policies or functions.
+- CI #331 on code commit `05233f192a86bdae9eb223ed7e625d2019b269a7` completed all three jobs successfully on 2026-11-19:
+  - Backend: **305 passed, 3 warnings**.
+  - The migration upgrade ran under the restricted non-superuser migration login with PostgreSQL 16 SET-only membership; the downgrade to `0009_privacy_audit_purge` and re-upgrade to `0010_signed_tenant_context` also passed under that same non-superuser connection.
+  - Frontend: **17 passed**; lint and production build passed.
+  - Production-only npm audit: **0 vulnerabilities**.
+  - Full-tree audit exception checker passed, accepting only the documented 11 development-tooling entries tied to GHSA-fc5q-39xc-vjpf / picomatch 4.0.7. The full dependency tree is not vulnerability-free; the exception remains temporary.
+  - Production Docker image build passed.
+- The current branch's 11 CodeRabbit inline threads from the 2026-11-19 review were rechecked against the source and CI evidence and marked resolved where the fixes were already present and verified. This is not an independent security approval or a human APPROVE review.
+- PR #27 remains draft, open, mergeable, unmerged, and undeployed. No independent APPROVED review is recorded. A fresh CodeRabbit review of the current head is requested separately.
+- `main` remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; its repository migration head remains `0009_privacy_audit_purge`. PR #29 remains open and unmerged; PR #25 and PR #26 also remain open and unmerged.
+- Repository rulesets read returned an empty list. The branch-protection detail endpoint returned HTTP 403 to the connected integration, so current classic branch-protection settings require confirmation by a repository administrator. A prior direct check on 2026-11-18 reported `main.protected=false`.
+- No production database, application environment, signing secret, Shopify configuration, or deployment was modified.
+
+### Remaining release gates
+
+1. Obtain an independent human security review of migration 0010, the restricted function owner, transaction-bound signatures, function ACLs, RLS policy behavior, key lifecycle, and security-sensitive downgrade behavior.
+2. Verify production database identity, applied Alembic revision, runtime/definer/migration role attributes and memberships, function owners, schema/table/column/sequence ACLs, and PostgreSQL/provider/proxy logging.
+3. Provision `mia_rls_definer` and `RLS_CONTEXT_SECRET` only after approval and against the verified production database.
+4. Protect `main` with required CI and independent approval.
+5. Review/merge PR #29, release the updated Shopify scopes, and complete real development-store installation, product, CSV, publication, webhook, GDPR, billing, AI, and Meta acceptance tests.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+## Engineering update — 2026-11-20: withdrawn picomatch advisory and audit-gate simplification
+
+This update supersedes the earlier PR #27 notes that treated GHSA-fc5q-39xc-vjpf / CVE-2026-112366 as an active high-severity finding.
+
+- GitHub's primary advisory page now states that GHSA-fc5q-39xc-vjpf was **withdrawn on 2026-11-18 because it is not a security issue**: https://github.com/advisories/GHSA-fc5q-39xc-vjpf
+- CI #332 on PR #27 head `39b9eb47ed14c62f34354827749cdd0da7b006f3` completed all three jobs successfully on 2026-11-19. Backend: **305 passed, 3 warnings**; frontend: **17 passed**; lint/build passed; PostgreSQL migration 0010 downgrade/re-upgrade passed under the restricted migration role; production-only npm audit reported **0 vulnerabilities**; the full dependency-tree checker reported **no moderate, high, or critical findings**; Docker build passed.
+- CI #331, which ran earlier on 2026-11-19, still reported the withdrawn advisory in its audit data. CI #332 no longer reported any moderate/high/critical findings. This is consistent with the advisory withdrawal and registry-feed propagation; do not repeat the earlier 11-entry exception as the current state.
+- Simplified `.github/workflows/ci.yml` to use a direct `npm audit --audit-level=moderate` full-tree gate alongside the production-only audit and removed the advisory-specific checker script. CI #334 on current PR head `4024412dbc0d59848f2d8c597f96b6cfd2710792` passed the simplified workflow: production-only and full-tree npm audits each reported **0 vulnerabilities**.
+- PR #27 remains draft, open, unmerged, and undeployed. All current inline review threads are resolved, but no independent human `APPROVE` review is recorded. Production role/ACL/logging/secret/database-revision checks remain unverified.
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`, with migration head `0009_privacy_audit_purge`. Migration 0010 remains proposed only on PR #27.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+### CI #334 verification — 2026-11-20
+
+- CI #334 completed all three jobs successfully on current PR #27 head `4024412dbc0d59848f2d8c597f96b6cfd2710792`: backend **305 passed, 3 warnings**; frontend **17 passed**; lint/build passed; production-only and full-tree `npm audit` each reported **0 vulnerabilities**; production Docker build passed.
+- PostgreSQL migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade passed using the restricted non-superuser migration login and the pre-provisioned function-owner role.
+- The direct full-tree npm audit gate is now CI-verified; the withdrawn picomatch advisory-specific exception checker has been removed.
+- [CI #334](https://github.com/Amir2051/mia-ai/actions/runs/44753832570)
+
+### GDPR shop-redaction regression — PR #30
+
+- PR #30 adds PostgreSQL-backed coverage that shop redaction removes `SocialAccount`, `ScheduledReport`, `MiaMemory`, and `PublishingAction` records through the existing ORM/database cascade path, in addition to the explicitly deleted shop-owned tables.
+- Hardened the test with per-run UUID shop domains and unique session/event/social-account/idempotency values so a failed prior run cannot collide with the next fixture seed.
+- CI #333 on commit `8fb13694e1264312d5b8bf9b068a23ecf1976d08` passed all three jobs: backend **285 passed, 3 warnings**; frontend **17 passed**; both npm audits reported **0 vulnerabilities**; production Docker build passed.
+- PR #30 remains draft and unmerged. This is PostgreSQL regression coverage, not live Shopify GDPR webhook acceptance.
+- [CI #333](https://github.com/Amir2051/mia-ai/actions/runs/44753043576)
