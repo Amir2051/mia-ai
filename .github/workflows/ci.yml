@@ -247,10 +247,8 @@ jobs:
       # checker fails closed on any other advisory or if picomatch changes.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
-      - name: Audit development dependency tree with explicit exception policy
-        run: |
-          npm audit --json > audit-report.json || true
-          node scripts/check-audit-exceptions.mjs audit-report.json
+      - name: Audit all dependencies
+        run: npm audit --audit-level=moderate
 
   docker:
     runs-on: ubuntu-latest
