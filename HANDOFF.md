@@ -454,3 +454,17 @@ This update records PR-branch engineering evidence only. It does not merge PR #2
 5. Review/merge PR #29, release the updated Shopify scopes, and complete real development-store installation, product, CSV, publication, webhook, GDPR, billing, AI, and Meta acceptance tests.
 
 Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
+
+
+## Engineering update — 2026-11-20: withdrawn picomatch advisory and audit-gate simplification
+
+This update supersedes the earlier PR #27 notes that treated GHSA-fc5q-39xc-vjpf / CVE-2026-112366 as an active high-severity finding.
+
+- GitHub's primary advisory page now states that GHSA-fc5q-39xc-vjpf was **withdrawn on 2026-11-18 because it is not a security issue**: https://github.com/advisories/GHSA-fc5q-39xc-vjpf
+- CI #332 on PR #27 head `39b9eb47ed14c62f34354827749cdd0da7b006f3` completed all three jobs successfully on 2026-11-19. Backend: **305 passed, 3 warnings**; frontend: **17 passed**; lint/build passed; PostgreSQL migration 0010 downgrade/re-upgrade passed under the restricted migration role; production-only npm audit reported **0 vulnerabilities**; the full dependency-tree checker reported **no moderate, high, or critical findings**; Docker build passed.
+- CI #331, which ran earlier on 2026-11-19, still reported the withdrawn advisory in its audit data. CI #332 no longer reported any moderate/high/critical findings. This is consistent with the advisory withdrawal and registry-feed propagation; do not repeat the earlier 11-entry exception as the current state.
+- Simplified `.github/workflows/ci.yml` to use a direct `npm audit --audit-level=moderate` full-tree gate alongside the production-only audit. Removed the advisory-specific checker script. The simplified workflow change is a new PR-branch commit and has **not yet been CI-verified**; CI #332 tested the preceding workflow head. The moderate threshold does not prove the absence of low-severity findings.
+- PR #27 remains draft, open, unmerged, and undeployed. All current inline review threads are resolved, but no independent human `APPROVE` review is recorded. Production role/ACL/logging/secret/database-revision checks remain unverified.
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`, with migration head `0009_privacy_audit_purge`. Migration 0010 remains proposed only on PR #27.
+
+Do not apply migration 0010 or describe Mia as production-approved based on PR-branch CI alone.
