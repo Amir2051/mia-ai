@@ -165,7 +165,7 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
     import os
     import uuid
     from datetime import datetime
-    from sqlalchemy import select
+    from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
     from app.models.schemas import (
@@ -269,6 +269,29 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
         finally:
             await engine.dispose()
 
+    async def cleanup(shop_id):
+        """Remove this test's committed fixtures even when the webhook assertion fails."""
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                for model in (
+                    ShopSession,
+                    ProductImport,
+                    SyncJob,
+                    AppSetting,
+                    WebhookEvent,
+                    AuditLog,
+                    SocialAccount,
+                    ScheduledReport,
+                    MiaMemory,
+                    PublishingAction,
+                ):
+                    await db.execute(delete(model).where(model.shop_id == shop_id))
+                await db.execute(delete(Shop).where(Shop.id == shop_id))
+                await db.commit()
+        finally:
+            await engine.dispose()
+
     shop_id = asyncio.run(seed())
 
     # The shared client fixture defaults to an isolated SQLite database. Route
@@ -277,21 +300,22 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
     # to seed and inspect rows that RLS must hide from other tenants.
     import app.models.database as db_mod
 
-    runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
-    runtime_session_local = sessionmaker(
-        bind=runtime_engine,
-        class_=AsyncSession,
-        autocommit=False,
-        autoflush=False,
-        expire_on_commit=False,
-    )
-    monkeypatch.setattr(db_mod, "engine", runtime_engine)
-    monkeypatch.setattr(db_mod, "AsyncSessionLocal", runtime_session_local)
-
+    runtime_engine = None
     original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = json.dumps({"shop_id": 123, "shop_domain": shop_domain}).encode()
     try:
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        runtime_session_local = sessionmaker(
+            bind=runtime_engine,
+            class_=AsyncSession,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        monkeypatch.setattr(db_mod, "engine", runtime_engine)
+        monkeypatch.setattr(db_mod, "AsyncSessionLocal", runtime_session_local)
+
+        body = json.dumps({"shop_id": 123, "shop_domain": shop_domain}).encode()
         response = client.post(
             "/api/webhooks",
             headers=_signed_headers("shop/redact", shop_domain, f"erase-event-{suffix}", body),
@@ -304,7 +328,9 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
         assert not leftovers, leftovers
     finally:
         router_settings.shopify_api_secret = original_secret
-        asyncio.run(runtime_engine.dispose())
+        if runtime_engine is not None:
+            asyncio.run(runtime_engine.dispose())
+        asyncio.run(cleanup(shop_id))
 
 
 def test_customer_redact_removes_legacy_pii_records(client):
