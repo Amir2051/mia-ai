@@ -200,13 +200,26 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
                 db.add(shop)
                 await db.flush()
                 shop_id = shop.id
+                webhook_event = WebhookEvent(
+                    shop_id=shop_id,
+                    topic="products/update",
+                    event_id=f"seed-event-{suffix}",
+                    payload_json="{}",
+                )
+                audit_log = AuditLog(
+                    shop_id=shop_id,
+                    action="shopify.products.update",
+                    entity_type="product",
+                    entity_id="1",
+                    details_json="{}",
+                )
                 db.add_all([
                     ShopSession(shop_id=shop_id, session_token=f"session-erase-{suffix}", is_valid=True),
                     ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
                     SyncJob(shop_id=shop_id, entity="products", status="queued"),
                     AppSetting(shop_id=shop_id, key="test", value_json="{}"),
-                    WebhookEvent(shop_id=shop_id, topic="products/update", event_id=f"seed-event-{suffix}", payload_json="{}"),
-                    AuditLog(shop_id=shop_id, action="shopify.products.update", entity_type="product", entity_id="1", details_json="{}"),
+                    webhook_event,
+                    audit_log,
                     SocialAccount(
                         shop_id=shop_id,
                         provider="meta",
@@ -236,12 +249,15 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
                         payload_json='{"product_id":"123","note":"erase merchant payload"}',
                     ),
                 ])
+                await db.flush()
+                webhook_event_id = webhook_event.id
+                audit_log_id = audit_log.id
                 await db.commit()
-                return shop_id
+                return shop_id, webhook_event_id, audit_log_id
         finally:
             await engine.dispose()
 
-    async def counts(shop_id):
+    async def counts(shop_id, webhook_event_id, audit_log_id):
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         try:
             async with AsyncSession(engine) as db:
@@ -259,28 +275,34 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
                     MiaMemory,
                     PublishingAction,
                 ):
-                    result = await db.execute(
-                        select(model).where(model.shop_id == shop_id)
-                        if model is not Shop
-                        else select(model).where(model.id == shop_id)
-                    )
+                    if model is Shop:
+                        statement = select(model).where(model.id == shop_id)
+                    elif model is WebhookEvent:
+                        statement = select(model).where(model.id == webhook_event_id)
+                    elif model is AuditLog:
+                        statement = select(model).where(model.id == audit_log_id)
+                    else:
+                        statement = select(model).where(model.shop_id == shop_id)
+                    result = await db.execute(statement)
                     values[model.__name__] = len(result.scalars().all())
                 return values
         finally:
             await engine.dispose()
 
-    async def cleanup(shop_id):
+    async def cleanup(shop_id, webhook_event_id, audit_log_id):
         """Remove this test's committed fixtures even when the webhook assertion fails."""
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         try:
             async with AsyncSession(engine, expire_on_commit=False) as db:
+                # These two tables use ON DELETE SET NULL, so their rows must be
+                # addressed by primary key rather than shop_id.
+                await db.execute(delete(WebhookEvent).where(WebhookEvent.id == webhook_event_id))
+                await db.execute(delete(AuditLog).where(AuditLog.id == audit_log_id))
                 for model in (
                     ShopSession,
                     ProductImport,
                     SyncJob,
                     AppSetting,
-                    WebhookEvent,
-                    AuditLog,
                     SocialAccount,
                     ScheduledReport,
                     MiaMemory,
@@ -292,7 +314,7 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
         finally:
             await engine.dispose()
 
-    shop_id = asyncio.run(seed())
+    shop_id, webhook_event_id, audit_log_id = asyncio.run(seed())
 
     # The shared client fixture defaults to an isolated SQLite database. Route
     # this request through the same restricted PostgreSQL runtime role used by
@@ -323,14 +345,14 @@ def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
         )
         assert response.status_code == 200, response.text
         assert response.json().get("processed") is True, response.json()
-        remaining = asyncio.run(counts(shop_id))
+        remaining = asyncio.run(counts(shop_id, webhook_event_id, audit_log_id))
         leftovers = {name: count for name, count in remaining.items() if count}
         assert not leftovers, leftovers
     finally:
         router_settings.shopify_api_secret = original_secret
         if runtime_engine is not None:
             asyncio.run(runtime_engine.dispose())
-        asyncio.run(cleanup(shop_id))
+        asyncio.run(cleanup(shop_id, webhook_event_id, audit_log_id))
 
 
 def test_customer_redact_removes_legacy_pii_records(client):
