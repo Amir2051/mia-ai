@@ -134,6 +134,7 @@ def test_gdpr_compliance_webhooks_accept_valid_hmac(client):
             await db.commit()
 
     asyncio.run(seed())
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
     try:
         for index, topic in enumerate(("customers/data_request", "customers/redact", "shop/redact"), 1):
@@ -147,17 +148,21 @@ def test_gdpr_compliance_webhooks_accept_valid_hmac(client):
             assert response.status_code == 200, (topic, response.text)
             assert response.json()["processed"] is True
     finally:
-        router_settings.shopify_api_secret = "test-secret"
+        router_settings.shopify_api_secret = original_secret
 
 
 def test_gdpr_webhooks_reject_invalid_hmac(client):
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = b'{"shop_id":123}'
-    for topic in ("customers/data_request", "customers/redact", "shop/redact"):
-        headers = _signed_headers(topic, "example.myshopify.com", f"bad-{topic}", body)
-        headers["X-Shopify-Hmac-SHA256"] = "invalid"
-        response = client.post("/api/webhooks", headers=headers, content=body)
-        assert response.status_code == 401
+    try:
+        body = b'{"shop_id":123}'
+        for topic in ("customers/data_request", "customers/redact", "shop/redact"):
+            headers = _signed_headers(topic, "example.myshopify.com", f"bad-{topic}", body)
+            headers["X-Shopify-Hmac-SHA256"] = "invalid"
+            response = client.post("/api/webhooks", headers=headers, content=body)
+            assert response.status_code == 401
+    finally:
+        router_settings.shopify_api_secret = original_secret
 
 
 def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
@@ -424,37 +429,41 @@ def test_customer_redact_removes_legacy_pii_records(client):
             ]
 
     shop_id = asyncio.run(seed())
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = json.dumps({
-        "customer": {"id": 456, "email": target_email}
-    }).encode()
-    response = client.post(
-        "/api/webhooks",
-        headers=_signed_headers(
-            "customers/redact",
-            "customer-redact.myshopify.com",
-            "redact-event",
-            body,
-        ),
-        content=body,
-    )
-    assert response.status_code == 200
+    try:
+        body = json.dumps({
+            "customer": {"id": 456, "email": target_email}
+        }).encode()
+        response = client.post(
+            "/api/webhooks",
+            headers=_signed_headers(
+                "customers/redact",
+                "customer-redact.myshopify.com",
+                "redact-event",
+                body,
+            ),
+            content=body,
+        )
+        assert response.status_code == 200
 
-    events, audits = asyncio.run(remaining(shop_id))
-    # The actual customer's legacy event is erased, while an address that
-    # differs only at the SQL LIKE wildcard position remains untouched.
-    assert {event_id for _, event_id in events} == {
-        "legacy-near-match",
-        "redact-event",
-    }
-    assert any(
-        action == "legacy.near_match"
-        and near_match_email in details_json
-        and entity_id == near_match_email
-        for action, details_json, entity_id in audits
-    )
-    assert any(
-        action == "privacy.customer_redact" and entity_id is None
-        for action, _, entity_id in audits
-    )
-    assert len(audits) == 2
+        events, audits = asyncio.run(remaining(shop_id))
+        # The actual customer's legacy event is erased, while an address that
+        # differs only at the SQL LIKE wildcard position remains untouched.
+        assert {event_id for _, event_id in events} == {
+            "legacy-near-match",
+            "redact-event",
+        }
+        assert any(
+            action == "legacy.near_match"
+            and near_match_email in details_json
+            and entity_id == near_match_email
+            for action, details_json, entity_id in audits
+        )
+        assert any(
+            action == "privacy.customer_redact" and entity_id is None
+            for action, _, entity_id in audits
+        )
+        assert len(audits) == 2
+    finally:
+        router_settings.shopify_api_secret = original_secret
