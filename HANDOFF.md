@@ -1,3 +1,95 @@
+# Current verified checkpoint — 2026-11-23
+
+> This section is the current source of truth for repository and release status. Older dated notes below are retained as historical evidence and must not override this checkpoint.
+
+## Repository and release governance
+
+- Repository: `Amir2051/mia-ai`; default branch: `main`.
+- Current `main` SHA: `59660d53d7c6b3ceeae7a584499e5ad392733fb8`, committed 2026-11-10. The commit message identifies it as a documentation-only handoff refresh; it did not change application code or production configuration.
+- GitHub's branch object reports `protected: false`; the repository rulesets endpoint returned an empty list. Required checks and review protection are therefore not enforced by a repository ruleset at this checkpoint. Configure protection in GitHub repository settings before treating `main` as a release branch.
+- The connected GitHub integration cannot read the detailed branch-protection endpoint, but the branch metadata itself reports `protected: false`.
+- No application PR listed below is merged. PR #28 was a documentation-only merge and is not evidence of an application release.
+- The last Shopify app version recorded in the historical handoff is `mia-ai-9` (2026-09-18). A newer app release has not been verified.
+
+## Latest CI evidence
+
+### PR #27 — signed PostgreSQL tenant context
+
+- PR: https://github.com/Amir2051/mia-ai/pull/27
+- Branch: `security/signed-tenant-context-2026-11-03`
+- Head: `8b1cd300128e3da19ee40a779d76dfce708af494`
+- State: open, draft, mergeable, not merged or deployed; 119 commits ahead of main, 0 behind.
+- CI #335 (2026-11-20): all three jobs passed.
+  - Backend: 305 passed, 3 warnings.
+  - Frontend: 17 passed; lint and production build passed.
+  - Production-only and full-tree npm audit: 0 vulnerabilities reported.
+  - PostgreSQL migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade passed using the restricted migration login.
+  - Production Docker image build passed.
+- All 16 inline review threads are resolved. Recorded reviews are from the repository owner and CodeRabbit; no independent human `APPROVED` review is recorded.
+- Migration `0010_signed_tenant_context` is proposed only. Main remains at `0009_privacy_audit_purge`.
+- The branch requires independent security review and direct production verification of database identity, runtime/definer role attributes and memberships, ownership/effective ACLs, parameter logging, and secure `RLS_CONTEXT_SECRET` provisioning. Do not deploy migration 0010 from CI evidence alone.
+- Downgrade restores the legacy caller-settable GUC policies; it is security-sensitive and is not a routine rollback.
+
+### PR #30 — shop-redaction cascade regression
+
+- PR: https://github.com/Amir2051/mia-ai/pull/30
+- Branch: `test/gdpr-shop-redact-cascade-coverage-2026-11-19`
+- Head: `c4b049a5b00d83c3d582b94eb6b961599576d004`
+- State: open, ready for review, mergeable, not merged; 8 commits ahead of main, 0 behind.
+- CI #337 (2026-11-22): all three jobs passed.
+  - Backend: 285 passed, 3 warnings.
+  - Frontend: 17 passed; lint and production build passed.
+  - Production-only and full-tree npm audit: 0 vulnerabilities reported.
+  - Production Docker image build passed.
+- The test covers Shop, ShopSession, ProductImport, SyncJob, AppSetting, WebhookEvent, AuditLog, SocialAccount, ScheduledReport, MiaMemory, and PublishingAction.
+- AuditLog and WebhookEvent are verified and cleaned up by seeded primary key, so `ON DELETE SET NULL` cannot hide orphaned rows.
+- One CodeRabbit inline finding is resolved; no independent human approval is recorded.
+- This PR is test-only. CI #337 runs against main's migration 0009, not PR #27's proposed migration 0010. Rebase/re-run this regression against the signed-context migration after the security migration is integrated.
+
+### PR #29 — publication scope health-check alignment
+
+- PR: https://github.com/Amir2051/mia-ai/pull/29
+- Head: `4bd375c1fabbcb28471f0a044f0344288dd009c2`
+- State: open, ready for review, mergeable, not merged; 8 commits ahead of main, 0 behind.
+- CI #279 passed all three jobs: 287 backend tests, 17 frontend tests, and production Docker build.
+- The backend health-check requirement is aligned with all seven manifest scopes, including `read_publications` and `write_publications`. This does not grant scopes, release a new app configuration, or prove merchant reauthorization.
+
+### PR #25 and PR #26 — AI/social integration
+
+- PR #25: https://github.com/Amir2051/mia-ai/pull/25 — CI #271 passed; 4 commits ahead of main, 0 behind. Campaign execution still uses FastAPI process-local `BackgroundTasks`; persisted job rows do not make execution restart-durable.
+- PR #26: https://github.com/Amir2051/mia-ai/pull/26 — CI #273 passed; 3 commits ahead of main, 0 behind. The test-token fallback is implemented, but live Meta OAuth and Facebook/Instagram publishing have not been accepted against production provider credentials.
+- The above CI runs are historical head checks, not live integration acceptance.
+
+## Task status and release blockers
+
+1. **Shopify authentication/App Bridge:** ID-token validation, server-side token exchange, offline token persistence, session and logout code exist. The manifest still declares `/auth/callback`, while the backend auth router exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`. Validate install/reinstall on a development store before changing this configuration.
+2. **Webhooks/GDPR:** HMAC and GDPR handlers exist; PR #30 expands database cascade regression coverage. Real Shopify webhook deliveries, actual customer/shop redaction, uninstall/reinstall, and Protected Customer Data approval remain unverified.
+3. **Products/CSV/publishing:** core routes exist; PR #29 fixes the health-check scope floor. Release the manifest scopes, obtain merchant reauthorization where required, and test product/CSV/publish/unpublish workflows on a development store.
+4. **AI/orders/analytics/billing:** core code exists. Replace process-local campaign execution with a durable worker/lease/retry/recovery design. Live OpenRouter, Meta, Shopify Billing, cancellation/webhook, and paid-entitlement behavior remain unverified. Current defaults remain `billing_test=true` and `billing_enforced=false` in the reviewed configuration.
+5. **PostgreSQL tenant isolation:** PR #27 has 305 passing backend tests and a successful migration rollback/re-upgrade CI sequence. Independent security approval and production role/ACL/secret/logging verification remain blockers.
+6. **Docker/deployment:** production image builds pass in PR CI. Production running SHA, actual Alembic revision, role state, secrets, and current health have not been directly verified. Do not infer deployment from image builds.
+7. **CI/security/governance:** latest PR #27 and PR #30 audits report zero findings, but `main` is currently unprotected. Enforce required backend/frontend/Docker checks, independent review, and restrictions on direct pushes in repository settings.
+8. **Production acceptance:** no complete development-store or live production acceptance record is available. Installation, auth refresh, product publishing, webhooks/GDPR, billing, Meta, OpenRouter, scheduled reports, production database state, deployment, smoke tests, and release sign-off remain outstanding.
+
+## Immediate next actions
+
+1. Enable and verify `main` branch protection and required status checks in GitHub settings.
+2. Obtain an independent human security review of PR #27; keep it draft and do not deploy migration 0010 until approved.
+3. Obtain human review of PR #30, then rebase/re-run it against the signed-context migration after #27 is integrated.
+4. Review PR #29 and complete a development-store scope/reauthorization and publishing test.
+5. Replace PR #25 process-local campaign execution with durable workers and test restart recovery.
+6. Complete real development-store acceptance, then read-only verify production SHA, Alembic revision, roles/ACLs, logging, and secrets before planning a release.
+
+## Evidence links
+
+- CI #335 / PR #27: https://github.com/Amir2051/mia-ai/actions/runs/44754233252
+- CI #337 / PR #30: https://github.com/Amir2051/mia-ai/actions/runs/45030460800
+- CI #279 / PR #29: https://github.com/Amir2051/mia-ai/actions/runs/43238930678
+- CI #271 / PR #25: https://github.com/Amir2051/mia-ai/actions/runs/43237067602
+- CI #273 / PR #26: https://github.com/Amir2051/mia-ai/actions/runs/43237382266
+
+---
+
 # Mia AI — Production Handoff
 
 ## Project
