@@ -34,16 +34,18 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/30
 - Branch: `test/gdpr-shop-redact-cascade-coverage-2026-11-19`
-- Head: `c4b049a5b00d83c3d582b94eb6b961599576d004`
-- State: open, ready for review, mergeable, not merged; 8 commits ahead of main, 0 behind.
-- CI #337 (2026-11-22): all three jobs passed.
+- Head: `a227966ab983f4c77a354f8d40938d2966eb80b7`
+- State: open, ready for review, mergeable, not merged; 9 commits ahead of main, 0 behind.
+- CI #339 (2026-11-23) on the current head: all three jobs passed.
   - Backend: 285 passed, 3 warnings.
   - Frontend: 17 passed; lint and production build passed.
   - Production-only and full-tree npm audit: 0 vulnerabilities reported.
   - Production Docker image build passed.
+- CI #337 (2026-11-22) on the preceding head `c4b049a5b00d83c3d582b94eb6b961599576d004` also passed all three jobs.
 - The test covers Shop, ShopSession, ProductImport, SyncJob, AppSetting, WebhookEvent, AuditLog, SocialAccount, ScheduledReport, MiaMemory, and PublishingAction.
 - AuditLog and WebhookEvent are verified and cleaned up by seeded primary key, so `ON DELETE SET NULL` cannot hide orphaned rows.
-- One CodeRabbit inline finding is resolved; no independent human approval is recorded.
+- The latest test-only commit restores the original `router_settings.shopify_api_secret` in `finally` blocks for GDPR valid-HMAC, invalid-HMAC, and customer-redaction tests, preventing global test-state leakage.
+- The earlier CodeRabbit inline finding is resolved; CodeRabbit review of the latest test-isolation commit has been requested and is pending. No independent human approval is recorded.
 - This PR is test-only. CI #337 runs against main's migration 0009, not PR #27's proposed migration 0010. Rebase/re-run this regression against the signed-context migration after the security migration is integrated.
 
 ### PR #29 — publication scope health-check alignment
@@ -80,10 +82,19 @@
 5. Replace PR #25 process-local campaign execution with durable workers and test restart recovery.
 6. Complete real development-store acceptance, then read-only verify production SHA, Alembic revision, roles/ACLs, logging, and secrets before planning a release.
 
+### Handoff refresh PR #31
+
+- PR: https://github.com/Amir2051/mia-ai/pull/31
+- Branch: `docs/verified-handoff-2026-11-23`
+- This checkpoint is documentation-only; CI #338 passed all three jobs on the initial handoff commit (285 backend tests, 17 frontend tests, both npm audits reporting zero findings, and production Docker build).
+- No application code, Shopify configuration, secrets, production database, or deployment was changed.
+
 ## Evidence links
 
 - CI #335 / PR #27: https://github.com/Amir2051/mia-ai/actions/runs/44754233252
-- CI #337 / PR #30: https://github.com/Amir2051/mia-ai/actions/runs/45030460800
+- CI #337 / PR #30 previous head: https://github.com/Amir2051/mia-ai/actions/runs/45030460800
+- CI #339 / PR #30 current head: https://github.com/Amir2051/mia-ai/actions/runs/45192096528
+- CI #338 / PR #31: https://github.com/Amir2051/mia-ai/actions/runs/45191856505
 - CI #279 / PR #29: https://github.com/Amir2051/mia-ai/actions/runs/43238930678
 - CI #271 / PR #25: https://github.com/Amir2051/mia-ai/actions/runs/43237067602
 - CI #273 / PR #26: https://github.com/Amir2051/mia-ai/actions/runs/43237382266
