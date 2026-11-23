@@ -134,6 +134,7 @@ def test_gdpr_compliance_webhooks_accept_valid_hmac(client):
             await db.commit()
 
     asyncio.run(seed())
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
     try:
         for index, topic in enumerate(("customers/data_request", "customers/redact", "shop/redact"), 1):
@@ -147,56 +148,216 @@ def test_gdpr_compliance_webhooks_accept_valid_hmac(client):
             assert response.status_code == 200, (topic, response.text)
             assert response.json()["processed"] is True
     finally:
-        router_settings.shopify_api_secret = "test-secret"
+        router_settings.shopify_api_secret = original_secret
 
 
 def test_gdpr_webhooks_reject_invalid_hmac(client):
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = b'{"shop_id":123}'
-    for topic in ("customers/data_request", "customers/redact", "shop/redact"):
-        headers = _signed_headers(topic, "example.myshopify.com", f"bad-{topic}", body)
-        headers["X-Shopify-Hmac-SHA256"] = "invalid"
-        response = client.post("/api/webhooks", headers=headers, content=body)
-        assert response.status_code == 401
+    try:
+        body = b'{"shop_id":123}'
+        for topic in ("customers/data_request", "customers/redact", "shop/redact"):
+            headers = _signed_headers(topic, "example.myshopify.com", f"bad-{topic}", body)
+            headers["X-Shopify-Hmac-SHA256"] = "invalid"
+            response = client.post("/api/webhooks", headers=headers, content=body)
+            assert response.status_code == 401
+    finally:
+        router_settings.shopify_api_secret = original_secret
 
 
-def test_shop_redact_deletes_all_shop_owned_records(client):
+def test_shop_redact_deletes_all_shop_owned_records(client, monkeypatch):
     import asyncio
-    from sqlalchemy import select
-    from app.models.database import AsyncSessionLocal
-    from app.models.schemas import AppSetting, AuditLog, ProductImport, Shop, ShopSession, SyncJob, WebhookEvent
+    import os
+    import uuid
+    from datetime import datetime
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.models.schemas import (
+        AppSetting,
+        AuditLog,
+        MiaMemory,
+        ProductImport,
+        PublishingAction,
+        ScheduledReport,
+        Shop,
+        ShopSession,
+        SocialAccount,
+        SyncJob,
+        WebhookEvent,
+    )
+
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    if not admin_url or not runtime_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
+        pytest.skip("Dedicated PostgreSQL admin and runtime URLs are not configured")
+
+    suffix = uuid.uuid4().hex
+    shop_domain = f"erase-me-{suffix}.myshopify.com"
 
     async def seed():
-        async with AsyncSessionLocal() as db:
-            shop = Shop(shop_domain="erase-me.myshopify.com", is_active=True)
-            db.add(shop)
-            await db.flush()
-            shop_id = shop.id
-            db.add_all([
-                ShopSession(shop_id=shop_id, session_token="session-erase", is_valid=True),
-                ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
-                SyncJob(shop_id=shop_id, entity="products", status="queued"),
-                AppSetting(shop_id=shop_id, key="test", value_json="{}"),
-                WebhookEvent(shop_id=shop_id, topic="products/update", event_id="seed-event", payload_json="{}"),
-                AuditLog(shop_id=shop_id, action="shopify.products.update", entity_type="product", entity_id="1", details_json="{}"),
-            ])
-            await db.commit()
-            return shop_id
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                shop = Shop(shop_domain=shop_domain, is_active=True)
+                db.add(shop)
+                await db.flush()
+                shop_id = shop.id
+                webhook_event = WebhookEvent(
+                    shop_id=shop_id,
+                    topic="products/update",
+                    event_id=f"seed-event-{suffix}",
+                    payload_json="{}",
+                )
+                audit_log = AuditLog(
+                    shop_id=shop_id,
+                    action="shopify.products.update",
+                    entity_type="product",
+                    entity_id="1",
+                    details_json="{}",
+                )
+                db.add_all([
+                    ShopSession(shop_id=shop_id, session_token=f"session-erase-{suffix}", is_valid=True),
+                    ProductImport(shop_id=shop_id, source="test", status="pending", sync_status="pending"),
+                    SyncJob(shop_id=shop_id, entity="products", status="queued"),
+                    AppSetting(shop_id=shop_id, key="test", value_json="{}"),
+                    webhook_event,
+                    audit_log,
+                    SocialAccount(
+                        shop_id=shop_id,
+                        provider="meta",
+                        account_type="facebook_page",
+                        external_account_id=f"page-erase-{suffix}",
+                        account_name="Erase Me Page",
+                        access_token_encrypted="encrypted-test-token",
+                    ),
+                    ScheduledReport(
+                        shop_id=shop_id,
+                        name="Erase scheduled report",
+                        frequency="daily",
+                        schedule_time="09:00",
+                        timezone="UTC",
+                        next_run_at=datetime(2030, 1, 1),
+                    ),
+                    MiaMemory(
+                        shop_id=shop_id,
+                        conversation_json='[{"message":"erase merchant conversation"}]',
+                        knowledge_json='[{"note":"erase merchant note"}]',
+                    ),
+                    PublishingAction(
+                        shop_id=shop_id,
+                        action_type="product.publish",
+                        idempotency_key=f"erase-publishing-action-{suffix}",
+                        request_hash="a" * 64,
+                        payload_json='{"product_id":"123","note":"erase merchant payload"}',
+                    ),
+                ])
+                await db.flush()
+                webhook_event_id = webhook_event.id
+                audit_log_id = audit_log.id
+                await db.commit()
+                return shop_id, webhook_event_id, audit_log_id
+        finally:
+            await engine.dispose()
 
-    async def counts(shop_id):
-        async with AsyncSessionLocal() as db:
-            values = {}
-            for model in (Shop, ShopSession, ProductImport, SyncJob, AppSetting, WebhookEvent, AuditLog):
-                result = await db.execute(select(model).where(model.shop_id == shop_id) if model is not Shop else select(model).where(model.id == shop_id))
-                values[model.__name__] = len(result.scalars().all())
-            return values
+    async def counts(shop_id, webhook_event_id, audit_log_id):
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine) as db:
+                values = {}
+                for model in (
+                    Shop,
+                    ShopSession,
+                    ProductImport,
+                    SyncJob,
+                    AppSetting,
+                    WebhookEvent,
+                    AuditLog,
+                    SocialAccount,
+                    ScheduledReport,
+                    MiaMemory,
+                    PublishingAction,
+                ):
+                    if model is Shop:
+                        statement = select(model).where(model.id == shop_id)
+                    elif model is WebhookEvent:
+                        statement = select(model).where(model.id == webhook_event_id)
+                    elif model is AuditLog:
+                        statement = select(model).where(model.id == audit_log_id)
+                    else:
+                        statement = select(model).where(model.shop_id == shop_id)
+                    result = await db.execute(statement)
+                    values[model.__name__] = len(result.scalars().all())
+                return values
+        finally:
+            await engine.dispose()
 
-    shop_id = asyncio.run(seed())
+    async def cleanup(shop_id, webhook_event_id, audit_log_id):
+        """Remove this test's committed fixtures even when the webhook assertion fails."""
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as db:
+                # These two tables use ON DELETE SET NULL, so their rows must be
+                # addressed by primary key rather than shop_id.
+                await db.execute(delete(WebhookEvent).where(WebhookEvent.id == webhook_event_id))
+                await db.execute(delete(AuditLog).where(AuditLog.id == audit_log_id))
+                for model in (
+                    ShopSession,
+                    ProductImport,
+                    SyncJob,
+                    AppSetting,
+                    SocialAccount,
+                    ScheduledReport,
+                    MiaMemory,
+                    PublishingAction,
+                ):
+                    await db.execute(delete(model).where(model.shop_id == shop_id))
+                await db.execute(delete(Shop).where(Shop.id == shop_id))
+                await db.commit()
+        finally:
+            await engine.dispose()
+
+    shop_id, webhook_event_id, audit_log_id = asyncio.run(seed())
+
+    # The shared client fixture defaults to an isolated SQLite database. Route
+    # this request through the same restricted PostgreSQL runtime role used by
+    # the RLS integration suite, while the admin connection above is used only
+    # to seed and inspect rows that RLS must hide from other tenants.
+    import app.models.database as db_mod
+
+    runtime_engine = None
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = b'{"shop_id":123,"shop_domain":"erase-me.myshopify.com"}'
-    response = client.post("/api/webhooks", headers=_signed_headers("shop/redact", "erase-me.myshopify.com", "erase-event", body), content=body)
-    assert response.status_code == 200
-    assert all(value == 0 for value in asyncio.run(counts(shop_id)).values())
+    try:
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        runtime_session_local = sessionmaker(
+            bind=runtime_engine,
+            class_=AsyncSession,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        monkeypatch.setattr(db_mod, "engine", runtime_engine)
+        monkeypatch.setattr(db_mod, "AsyncSessionLocal", runtime_session_local)
+
+        body = json.dumps({"shop_id": 123, "shop_domain": shop_domain}).encode()
+        response = client.post(
+            "/api/webhooks",
+            headers=_signed_headers("shop/redact", shop_domain, f"erase-event-{suffix}", body),
+            content=body,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json().get("processed") is True, response.json()
+        remaining = asyncio.run(counts(shop_id, webhook_event_id, audit_log_id))
+        leftovers = {name: count for name, count in remaining.items() if count}
+        assert not leftovers, leftovers
+    finally:
+        router_settings.shopify_api_secret = original_secret
+        if runtime_engine is not None:
+            asyncio.run(runtime_engine.dispose())
+        asyncio.run(cleanup(shop_id, webhook_event_id, audit_log_id))
 
 
 def test_customer_redact_removes_legacy_pii_records(client):
@@ -268,37 +429,41 @@ def test_customer_redact_removes_legacy_pii_records(client):
             ]
 
     shop_id = asyncio.run(seed())
+    original_secret = router_settings.shopify_api_secret
     router_settings.shopify_api_secret = "test-secret"
-    body = json.dumps({
-        "customer": {"id": 456, "email": target_email}
-    }).encode()
-    response = client.post(
-        "/api/webhooks",
-        headers=_signed_headers(
-            "customers/redact",
-            "customer-redact.myshopify.com",
-            "redact-event",
-            body,
-        ),
-        content=body,
-    )
-    assert response.status_code == 200
+    try:
+        body = json.dumps({
+            "customer": {"id": 456, "email": target_email}
+        }).encode()
+        response = client.post(
+            "/api/webhooks",
+            headers=_signed_headers(
+                "customers/redact",
+                "customer-redact.myshopify.com",
+                "redact-event",
+                body,
+            ),
+            content=body,
+        )
+        assert response.status_code == 200
 
-    events, audits = asyncio.run(remaining(shop_id))
-    # The actual customer's legacy event is erased, while an address that
-    # differs only at the SQL LIKE wildcard position remains untouched.
-    assert {event_id for _, event_id in events} == {
-        "legacy-near-match",
-        "redact-event",
-    }
-    assert any(
-        action == "legacy.near_match"
-        and near_match_email in details_json
-        and entity_id == near_match_email
-        for action, details_json, entity_id in audits
-    )
-    assert any(
-        action == "privacy.customer_redact" and entity_id is None
-        for action, _, entity_id in audits
-    )
-    assert len(audits) == 2
+        events, audits = asyncio.run(remaining(shop_id))
+        # The actual customer's legacy event is erased, while an address that
+        # differs only at the SQL LIKE wildcard position remains untouched.
+        assert {event_id for _, event_id in events} == {
+            "legacy-near-match",
+            "redact-event",
+        }
+        assert any(
+            action == "legacy.near_match"
+            and near_match_email in details_json
+            and entity_id == near_match_email
+            for action, details_json, entity_id in audits
+        )
+        assert any(
+            action == "privacy.customer_redact" and entity_id is None
+            for action, _, entity_id in audits
+        )
+        assert len(audits) == 2
+    finally:
+        router_settings.shopify_api_secret = original_secret
