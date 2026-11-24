@@ -297,7 +297,7 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
               FROM pg_catalog.pg_proc AS p
               JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
              WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
                AND p.proowner = :runtime_oid
                AND p.prosecdef IS TRUE
         """),
@@ -325,7 +325,7 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
               JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
              WHERE p.prosecdef IS TRUE
                AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
                AND p.oid IS DISTINCT FROM pg_catalog.to_regprocedure(
                    'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)'
                )::oid
@@ -347,7 +347,7 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             SELECT n.nspname
               FROM pg_catalog.pg_namespace AS n
              WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
                AND pg_catalog.has_schema_privilege(
                    CAST(:role_oid AS oid), n.oid, 'CREATE'
                )
@@ -549,13 +549,13 @@ def _verify_definer_role(
               JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
              WHERE c.relowner = :role_oid
                AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
             UNION ALL
             SELECT n.nspname
               FROM pg_catalog.pg_namespace AS n
              WHERE n.nspowner = :role_oid
                AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
         """),
         {"role_oid": role["oid"]},
     ).scalars().all()
@@ -579,7 +579,7 @@ def _verify_definer_role(
           JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
          WHERE p.proowner = :role_oid
            AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-           AND n.nspname NOT LIKE 'pg_toast%'
+           AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
            AND p.oid NOT IN (
                SELECT fn::oid
                  FROM unnest(ARRAY[
@@ -620,7 +620,7 @@ def _verify_definer_role(
             SELECT n.nspname
               FROM pg_catalog.pg_namespace AS n
              WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
                AND pg_catalog.has_schema_privilege(
                    CAST(:role_oid AS oid), n.oid, 'CREATE'
                )
@@ -797,7 +797,7 @@ def _verify_definer_table_privileges(bind, role_name: str) -> None:
               JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
              WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
                AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-               AND n.nspname NOT LIKE 'pg_toast%'
+               AND pg_catalog.left(n.nspname, 8) <> 'pg_toast'
              ORDER BY n.nspname, c.relname
         """),
         {"role_oid": role["oid"]},
