@@ -1058,7 +1058,7 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
                 try:
                     await admin.execute(text(
                         f'CREATE FUNCTION public."{named_function}"() '
-                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $ SELECT 1 $"
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
                     ))
                     await admin.execute(text(
                         f'REVOKE ALL ON FUNCTION public."{named_function}"() FROM PUBLIC'
@@ -1068,7 +1068,7 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
                     ))
                     await admin.execute(text(
                         f'CREATE FUNCTION public."{public_function}"() '
-                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $ SELECT 1 $"
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
                     ))
 
                     with pytest.raises(
