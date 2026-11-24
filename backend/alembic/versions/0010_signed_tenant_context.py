@@ -309,6 +309,39 @@ def _verify_runtime_role(bind, runtime_user: str) -> None:
             + ", ".join(owned_security_definers)
         )
 
+    # A non-owner SECURITY DEFINER function can still bypass tenant RLS when
+    # the runtime role can execute it. The legacy GDPR purge function is the
+    # sole transition exception: this migration rebinds its owner, replaces
+    # its body with signed-context checks, and reconciles its EXECUTE ACL below.
+    executable_security_definers = bind.execute(
+        sa.text("""
+            SELECT pg_catalog.format(
+                       '%I.%I(%s)',
+                       n.nspname,
+                       p.proname,
+                       pg_catalog.pg_get_function_identity_arguments(p.oid)
+                   )
+              FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+             WHERE p.prosecdef IS TRUE
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND p.oid IS DISTINCT FROM pg_catalog.to_regprocedure(
+                   'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)'
+               )::oid
+               AND pg_catalog.has_function_privilege(
+                   CAST(:runtime_oid AS oid), p.oid, 'EXECUTE'
+               )
+             ORDER BY n.nspname, p.proname
+        """),
+        {"runtime_oid": role["oid"]},
+    ).scalars().all()
+    if executable_security_definers:
+        raise RuntimeError(
+            "DATABASE_URL runtime role must not execute unreviewed SECURITY DEFINER functions: "
+            + ", ".join(executable_security_definers)
+        )
+
     unexpected_create_schemas = bind.execute(
         sa.text("""
             SELECT n.nspname
