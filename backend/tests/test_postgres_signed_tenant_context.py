@@ -1038,6 +1038,59 @@ def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
     asyncio.run(scenario())
 
 
+def test_runtime_role_preflight_rejects_executable_security_definer_functions():
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
+        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        suffix = uuid.uuid4().hex[:10]
+        named_function = f"mia_runtime_named_definer_{suffix}"
+        public_function = f"mia_runtime_public_definer_{suffix}"
+        try:
+            async with engine.begin() as admin:
+                savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text(
+                        f'CREATE FUNCTION public."{named_function}"() '
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $ SELECT 1 $"
+                    ))
+                    await admin.execute(text(
+                        f'REVOKE ALL ON FUNCTION public."{named_function}"() FROM PUBLIC'
+                    ))
+                    await admin.execute(text(
+                        f'GRANT EXECUTE ON FUNCTION public."{named_function}"() TO mia_runtime_test'
+                    ))
+                    await admin.execute(text(
+                        f'CREATE FUNCTION public."{public_function}"() '
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $ SELECT 1 $"
+                    ))
+
+                    with pytest.raises(
+                        RuntimeError,
+                        match="must not execute unreviewed SECURITY DEFINER functions",
+                    ) as error:
+                        await admin.run_sync(
+                            lambda connection: migration._verify_runtime_role(
+                                connection, "mia_runtime_test"
+                            )
+                        )
+                    assert named_function in str(error.value)
+                    assert public_function in str(error.value)
+                finally:
+                    if savepoint.is_active:
+                        await savepoint.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_definer_role_preflight_rejects_unexpected_function_ownership():
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
     if not admin_url:
