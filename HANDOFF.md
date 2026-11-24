@@ -16,18 +16,19 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/27
 - Branch: `security/signed-tenant-context-2026-11-03`
-- Current head: `ddf43c85411962138c320733fdf1c60b84212c48`; 122 commits ahead of main, 0 behind; 12 files changed.
+- Current head: `3d5a0ae834629af9cb9ad0ff657da4446cf096df`; 124 commits ahead of main, 0 behind; 12 files changed.
 - State: open, draft, mergeable, not merged or deployed.
-- CI #342 (2026-11-24) passed all three jobs on this exact head:
+- CI #344 (2026-11-24) passed all three jobs on this exact head:
   - Backend: **306 passed, 3 warnings**.
   - Frontend: **17 passed**; lint and production build passed.
   - Production-only and full npm audits: **0 vulnerabilities reported by each command**.
   - Signed-context migration upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade passed using the restricted migration login.
   - Production Docker image build passed.
-- New security preflight: migration 0010 now rejects a runtime role that can execute any non-system SECURITY DEFINER function outside a narrow transition allowlist. The sole exception is the legacy GDPR audit-purge function, which migration 0010 rebinds to `mia_rls_definer`, replaces with signed-context checks, and ACL-reconciles in the same migration.
-- A PostgreSQL regression test covers both a named EXECUTE grant and a PUBLIC EXECUTE grant on unreviewed SECURITY DEFINER functions.
-- CI #341 failed because the new test fixture emitted an invalid SQL dollar-quote string. The fixture was corrected before CI #342; the final head is green.
-- All 16 existing inline review threads remain resolved. A fresh CodeRabbit review of the new preflight was requested after CI #342; no new review result is recorded yet. There is still **no independent human security approval**.
+- The runtime preflight rejects execution of non-system SECURITY DEFINER functions unless they are explicitly reviewed. The sole transition exception is the legacy GDPR audit-purge function, which migration 0010 rebinds to `mia_rls_definer`, replaces with signed-context checks, and ACL-reconciles in the same migration.
+- CodeRabbit then identified a schema-filter edge case: SQL `LIKE 'pg_toast%'` treated the underscore as a wildcard and could exclude ordinary application schemas such as `pgxtoast_...`. All eight affected predicates were changed to an exact prefix check using `pg_catalog.left(n.nspname, 8) <> 'pg_toast'`.
+- PostgreSQL regressions now cover lookalike `pgxtoast_...` schemas across runtime function ownership/execution, runtime schema CREATE, definer-owned schema/table/function objects, definer schema CREATE, and definer table/column privileges.
+- CI #342 passed on the preceding security-preflight head. CI #341 failed because the first new test fixture emitted an invalid SQL dollar-quote string; the fixture was corrected before CI #342.
+- All 16 existing inline review threads remain resolved. CodeRabbit review of the exact-prefix filter and new lookalike-schema tests has been requested after CI #344; no new review result is recorded yet. There is still **no independent human security approval**.
 - Migration `0010_signed_tenant_context` is proposed only. Main remains at `0009_privacy_audit_purge`. Do not deploy migration 0010 until independent review and direct production verification are complete.
 - Downgrade restores the legacy caller-settable GUC policies; it is security-sensitive and is not a routine rollback.
 
@@ -63,7 +64,7 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/31
 - Branch: `docs/verified-handoff-2026-11-23`
-- This update records the November 24 PR #27 security-preflight work and CI #342 result. It is documentation-only; it does not change application code, Shopify configuration, secrets, production database, or deployment.
+- This update records the November 24 PR #27 security-preflight changes, the CodeRabbit schema-filter finding and correction, and CI #344. It is documentation-only; it does not change application code, Shopify configuration, secrets, production database, or deployment.
 
 ## Tasks 1–8 and release blockers
 
@@ -88,7 +89,9 @@
 
 ## Evidence links
 
-- CI #342 / PR #27 current head: https://github.com/Amir2051/mia-ai/actions/runs/45414447045
+- CI #344 / PR #27 current head: https://github.com/Amir2051/mia-ai/actions/runs/45415876290
+- CI #342 / PR #27 preceding security-preflight head: https://github.com/Amir2051/mia-ai/actions/runs/45414447045
+- CI #343 / PR #31 preceding handoff head: https://github.com/Amir2051/mia-ai/actions/runs/45415033064
 - CI #341 / PR #27 failed intermediate test-fixture commit: https://github.com/Amir2051/mia-ai/actions/runs/45414124943
 - CI #335 / PR #27 preceding head: https://github.com/Amir2051/mia-ai/actions/runs/44754233252
 - CI #339 / PR #30 current head: https://github.com/Amir2051/mia-ai/actions/runs/45192096528
