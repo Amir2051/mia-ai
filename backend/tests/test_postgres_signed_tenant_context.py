@@ -427,7 +427,7 @@ def test_signed_rls_runtime_role_preflight_rejects_unsafe_roles():
 
                 # Runtime must not be able to create objects in any non-system schema.
                 schema_savepoint = await admin.begin_nested()
-                schema_name = f"runtime_create_{uuid.uuid4().hex[:10]}"
+                schema_name = f"pgxtoast_runtime_create_{uuid.uuid4().hex[:10]}"
                 await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
                 await admin.execute(text(
                     f'GRANT CREATE ON SCHEMA "{schema_name}" TO "{safe_role}"'
@@ -906,7 +906,7 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
     async def scenario():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         suffix = uuid.uuid4().hex[:10]
-        schema_name = f"mia_definer_schema_probe_{suffix}"
+        schema_name = f"pgxtoast_definer_schema_probe_{suffix}"
         table_name = f"mia_definer_column_probe_{suffix}"
         try:
             async with engine.begin() as admin:
@@ -925,14 +925,61 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
                     )
                 await schema_savepoint.rollback()
 
+                # The owner must not own any non-system schema, even one whose
+                # name resembles the PostgreSQL toast prefix.
+                owned_schema_savepoint = await admin.begin_nested()
+                owned_schema_name = f"pgxtoast_definer_owned_schema_{suffix}"
+                await admin.execute(text(
+                    f'CREATE SCHEMA "{owned_schema_name}" AUTHORIZATION mia_rls_definer'
+                ))
+                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                with pytest.raises(RuntimeError, match="must not own tables, sequences, or schemas"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_role(
+                            connection, "mia_rls_definer"
+                        )
+                    )
+                await owned_schema_savepoint.rollback()
+
+                # The owner must not own tables in non-system schemas either.
+                owned_table_savepoint = await admin.begin_nested()
+                owned_table_schema = f"pgxtoast_definer_owned_table_{suffix}"
+                owned_table_name = f"owned_{suffix}"
+                await admin.execute(text(f'CREATE SCHEMA "{owned_table_schema}"'))
+                await admin.execute(text(
+                    f'GRANT CREATE ON SCHEMA "{owned_table_schema}" TO mia_rls_definer'
+                ))
+                await admin.execute(text(
+                    f'CREATE TABLE "{owned_table_schema}"."{owned_table_name}" (id bigint)'
+                ))
+                await admin.execute(text(
+                    f'ALTER TABLE "{owned_table_schema}"."{owned_table_name}" OWNER TO mia_rls_definer'
+                ))
+                await admin.execute(text(
+                    f'REVOKE CREATE ON SCHEMA "{owned_table_schema}" FROM mia_rls_definer'
+                ))
+                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                with pytest.raises(RuntimeError, match="must not own tables, sequences, or schemas"):
+                    await admin.run_sync(
+                        lambda connection: migration._verify_definer_role(
+                            connection, "mia_rls_definer"
+                        )
+                    )
+                await owned_table_savepoint.rollback()
+
                 # Table-level privilege checks alone miss column-only grants.
                 # The owner may read only the explicitly allowlisted tables.
                 column_savepoint = await admin.begin_nested()
+                column_schema = f"pgxtoast_definer_column_probe_{suffix}"
+                await admin.execute(text(f'CREATE SCHEMA "{column_schema}"'))
                 await admin.execute(text(
-                    f'CREATE TABLE public."{table_name}" (id bigint, sensitive_value text)'
+                    f'GRANT USAGE ON SCHEMA "{column_schema}" TO mia_rls_definer'
                 ))
                 await admin.execute(text(
-                    f'GRANT SELECT (sensitive_value) ON TABLE public."{table_name}" '
+                    f'CREATE TABLE "{column_schema}"."{table_name}" (id bigint, sensitive_value text)'
+                ))
+                await admin.execute(text(
+                    f'GRANT SELECT (sensitive_value) ON TABLE "{column_schema}"."{table_name}" '
                     'TO mia_rls_definer'
                 ))
                 with pytest.raises(RuntimeError, match="table/column privileges"):
@@ -1003,7 +1050,7 @@ def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
     async def scenario():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         suffix = uuid.uuid4().hex[:10]
-        schema_name = f"mia_runtime_function_probe_{suffix}"
+        schema_name = f"pgxtoast_runtime_function_probe_{suffix}"
         function_name = f"runtime_owned_definer_{suffix}"
         try:
             async with engine.begin() as admin:
@@ -1050,24 +1097,29 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
     async def scenario():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
         suffix = uuid.uuid4().hex[:10]
+        schema_name = f"pgxtoast_executable_definer_{suffix}"
         named_function = f"mia_runtime_named_definer_{suffix}"
         public_function = f"mia_runtime_public_definer_{suffix}"
         try:
             async with engine.begin() as admin:
                 savepoint = await admin.begin_nested()
                 try:
+                    await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
                     await admin.execute(text(
-                        f'CREATE FUNCTION public."{named_function}"() '
+                        f'GRANT USAGE ON SCHEMA "{schema_name}" TO mia_runtime_test'
+                    ))
+                    await admin.execute(text(
+                        f'CREATE FUNCTION "{schema_name}"."{named_function}"() '
                         "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
                     ))
                     await admin.execute(text(
-                        f'REVOKE ALL ON FUNCTION public."{named_function}"() FROM PUBLIC'
+                        f'REVOKE ALL ON FUNCTION "{schema_name}"."{named_function}"() FROM PUBLIC'
                     ))
                     await admin.execute(text(
-                        f'GRANT EXECUTE ON FUNCTION public."{named_function}"() TO mia_runtime_test'
+                        f'GRANT EXECUTE ON FUNCTION "{schema_name}"."{named_function}"() TO mia_runtime_test'
                     ))
                     await admin.execute(text(
-                        f'CREATE FUNCTION public."{public_function}"() '
+                        f'CREATE FUNCTION "{schema_name}"."{public_function}"() '
                         "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
                     ))
 
@@ -1102,23 +1154,25 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
 
     async def scenario():
         engine = create_async_engine(admin_url, pool_pre_ping=True)
+        schema_name = f"pgxtoast_definer_function_probe_{uuid.uuid4().hex[:10]}"
         function_name = f"mia_unexpected_definer_{uuid.uuid4().hex[:10]}"
         try:
             async with engine.begin() as admin:
                 savepoint = await admin.begin_nested()
                 try:
+                    await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
                     await admin.execute(text(
-                        "GRANT CREATE ON SCHEMA public TO mia_rls_definer"
+                        f'GRANT CREATE ON SCHEMA "{schema_name}" TO mia_rls_definer'
                     ))
                     await admin.execute(text(
-                        f'CREATE FUNCTION public."{function_name}"() '
-                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$"
+                        f'CREATE FUNCTION "{schema_name}"."{function_name}"() '
+                        "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
                     ))
                     await admin.execute(text(
-                        f'ALTER FUNCTION public."{function_name}"() OWNER TO mia_rls_definer'
+                        f'ALTER FUNCTION "{schema_name}"."{function_name}"() OWNER TO mia_rls_definer'
                     ))
                     await admin.execute(text(
-                        "REVOKE CREATE ON SCHEMA public FROM mia_rls_definer"
+                        f'REVOKE CREATE ON SCHEMA "{schema_name}" FROM mia_rls_definer'
                     ))
                     await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
                     with pytest.raises(RuntimeError, match="must not own unexpected functions"):
