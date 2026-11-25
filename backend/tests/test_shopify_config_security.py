@@ -40,7 +40,7 @@ def test_production_validation_uses_normalized_environment_value():
 
 
 def test_application_lifespan_rejects_missing_postgres_signing_secret(monkeypatch):
-    from app import main as app_main
+    import main as app_main
 
     settings = Settings(
         environment="development",
