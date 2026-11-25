@@ -126,13 +126,7 @@ class Settings(BaseSettings):
         return issues
 
 
+# Runtime and production configuration are validated by the FastAPI lifespan.
+# Alembic commands must be able to import Settings for inspection and rollback
+# without requiring the application-only signing secret at module import time.
 settings = Settings()
-
-_security_issues = settings.validate_runtime_security()
-if _security_issues:
-    raise RuntimeError('Database security configuration missing: ' + '; '.join(_security_issues))
-
-if settings.is_production:
-    _issues = settings.validate_production()
-    if _issues:
-        raise RuntimeError('Production configuration missing: ' + '; '.join(_issues))
