@@ -58,6 +58,21 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    # Validate runtime-only secrets when serving the application, not while
+    # Alembic imports settings for inspection or a reviewed rollback.
+    if settings.is_production:
+        configuration_issues = settings.validate_production()
+        if configuration_issues:
+            raise RuntimeError(
+                "Production configuration missing: " + "; ".join(configuration_issues)
+            )
+    else:
+        configuration_issues = settings.validate_runtime_security()
+        if configuration_issues:
+            raise RuntimeError(
+                "Database security configuration missing: " + "; ".join(configuration_issues)
+            )
+
     # Production schema changes are managed exclusively by Alembic.
     scheduler_task = None
     if settings.is_production:
