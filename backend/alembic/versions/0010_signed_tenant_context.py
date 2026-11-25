@@ -75,6 +75,12 @@ def _verify_same_database_cluster(bind, runtime_url: str) -> None:
             if actual_database != runtime_parsed.database:
                 raise RuntimeError("DATABASE_URL connected to an unexpected PostgreSQL database")
 
+            actual_role = runtime.execute(
+                sa.text("SELECT CURRENT_USER")
+            ).scalar_one()
+            if actual_role != runtime_parsed.username:
+                raise RuntimeError("DATABASE_URL connected as an unexpected PostgreSQL role")
+
             runtime_acquired = runtime.execute(
                 sa.text("SELECT pg_catalog.pg_try_advisory_lock(:key1, :key2)"),
                 lock_params,
@@ -123,7 +129,7 @@ def _verify_shop_domain_uniqueness(bind) -> None:
         )
 
 
-def _runtime_role(bind) -> str:
+def _runtime_role(bind, *, verify_runtime_endpoint: bool = True) -> str:
     runtime_url = os.environ.get("DATABASE_URL", "")
     migration_url = os.environ.get("MIGRATION_DATABASE_URL", "")
     if not runtime_url or not migration_url:
@@ -140,7 +146,18 @@ def _runtime_role(bind) -> str:
         raise RuntimeError("Both database URLs must include usernames")
     if runtime_user == migration_user:
         raise RuntimeError("DATABASE_URL must use a dedicated runtime role distinct from MIGRATION_DATABASE_URL")
-    _verify_same_database_cluster(bind, runtime_url)
+    if verify_runtime_endpoint:
+        _verify_same_database_cluster(bind, runtime_url)
+    else:
+        # Rollback must remain possible when the runtime login is disabled.
+        # Validate the migration connection itself without opening DATABASE_URL.
+        actual_database = bind.execute(
+            sa.text("SELECT pg_catalog.current_database()")
+        ).scalar_one()
+        if actual_database != migration_parsed.database:
+            raise RuntimeError(
+                "MIGRATION_DATABASE_URL connection is attached to an unexpected PostgreSQL database"
+            )
     return runtime_user
 
 
@@ -759,7 +776,7 @@ def _reconcile_function_execute_acl(
         for grantee in grantees:
             bind.execute(sa.text(
                 f"REVOKE ALL PRIVILEGES ON FUNCTION public.{function_signature} "
-                f"FROM {preparer.quote(grantee)}"
+                f"FROM {preparer.quote(grantee)} CASCADE"
             ))
         bind.execute(sa.text(
             f"REVOKE ALL PRIVILEGES ON FUNCTION public.{function_signature} FROM PUBLIC"
@@ -1304,7 +1321,7 @@ def downgrade() -> None:
     # Explicit downgrade restores the previous GUC-only policies. Use only as
     # part of a reviewed rollback because it reintroduces the documented gap.
     bind = op.get_bind()
-    runtime_role_name = _runtime_role(bind)
+    runtime_role_name = _runtime_role(bind, verify_runtime_endpoint=False)
     definer_role = bind.dialect.identifier_preparer.quote(DEFINER_ROLE)
     # The installed function owner intentionally has USAGE on mia_private and
     # SELECT on its verifier table. Permit that existing runtime grant during
