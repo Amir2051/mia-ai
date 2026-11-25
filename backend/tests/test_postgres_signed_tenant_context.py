@@ -6,9 +6,24 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+
+
+def _configured_database_role(env_name: str) -> str:
+    url = os.getenv(env_name, "")
+    if not url:
+        pytest.fail(f"{env_name} must be configured for PostgreSQL role assertions")
+    role_name = make_url(url).username
+    if not role_name:
+        pytest.fail(f"{env_name} must include a PostgreSQL username")
+    return role_name
+
+
+def _quote_role_identifier(role_name: str) -> str:
+    return '"' + role_name.replace('"', '""') + '"'
 
 
 def test_runtime_role_cannot_forge_tenant_or_scheduler_context():
@@ -612,10 +627,14 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
     """Prove SECURITY DEFINER functions run as a restricted role subject to tenant RLS."""
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
     runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
-    if not admin_url or not runtime_url:
+    if not admin_url or not runtime_url or not os.getenv("DATABASE_URL") or not os.getenv("MIGRATION_DATABASE_URL"):
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIA_RLS_TEST_RUNTIME_URL")
-        pytest.skip("Dedicated PostgreSQL RLS URLs are not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL, MIA_RLS_TEST_RUNTIME_URL, DATABASE_URL, and MIGRATION_DATABASE_URL")
+        pytest.skip("Dedicated PostgreSQL RLS and migration URLs are not configured")
+    runtime_role_name = _configured_database_role("DATABASE_URL")
+    migration_role_name = _configured_database_role("MIGRATION_DATABASE_URL")
+    if make_url(runtime_url).username != runtime_role_name:
+        pytest.fail("MIA_RLS_TEST_RUNTIME_URL must use the DATABASE_URL runtime role")
 
     from app.models.schemas import AuditLog, Shop
     from app.security.rls import set_shop_context
@@ -679,28 +698,32 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                         assert by_name[function_name]["prosecdef"] is True
                     assert by_name["mia_current_shop_id"]["prosecdef"] is False
 
-                    privileges = (await admin.execute(text("""
-                        SELECT
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'SELECT') AS shops_select,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'UPDATE') AS shops_update,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'SELECT') AS audit_select,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'DELETE') AS audit_delete,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'INSERT') AS audit_insert,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'UPDATE') AS audit_update,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'SELECT') AS key_select,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'INSERT') AS key_insert,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'UPDATE') AS key_update,
-                            pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'DELETE') AS key_delete,
-                            pg_catalog.has_schema_privilege('mia_rls_definer', 'public', 'CREATE') AS public_create,
-                            pg_catalog.has_database_privilege('mia_rls_definer', pg_catalog.current_database(), 'CREATE') AS database_create,
-                            pg_catalog.pg_has_role('mia_runtime_test', 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer,
-                            pg_catalog.pg_has_role('mia_migration_test', 'mia_rls_definer', 'SET') AS migration_can_assume_definer,
-                            pg_catalog.has_function_privilege(
-                                'mia_unexpected_executor',
-                                'public.mia_purge_audit_logs_for_privacy(bigint,text,text,boolean)',
-                                'EXECUTE'
-                            ) AS unexpected_executor_can_purge
-                    """))).mappings().one()
+                    server_version_num = int(await admin.scalar(text("SHOW server_version_num")))
+                    membership_privilege = "SET" if server_version_num >= 160000 else "MEMBER"
+                    privileges = (await admin.execute(
+                        text("""
+                            SELECT
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'SELECT') AS shops_select,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.shops', 'UPDATE') AS shops_update,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'SELECT') AS audit_select,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'DELETE') AS audit_delete,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'INSERT') AS audit_insert,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'public.audit_logs', 'UPDATE') AS audit_update,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'SELECT') AS key_select,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'INSERT') AS key_insert,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'UPDATE') AS key_update,
+                                pg_catalog.has_table_privilege('mia_rls_definer', 'mia_private.tenant_context_keys', 'DELETE') AS key_delete,
+                                pg_catalog.has_schema_privilege('mia_rls_definer', 'public', 'CREATE') AS public_create,
+                                pg_catalog.has_database_privilege('mia_rls_definer', pg_catalog.current_database(), 'CREATE') AS database_create,
+                                pg_catalog.pg_has_role(:runtime_role, 'mia_rls_definer', 'MEMBER') AS runtime_can_assume_definer,
+                                pg_catalog.pg_has_role(:migration_role, 'mia_rls_definer', :membership_privilege) AS migration_can_assume_definer
+                        """),
+                        {
+                            "runtime_role": runtime_role_name,
+                            "migration_role": migration_role_name,
+                            "membership_privilege": membership_privilege,
+                        },
+                    )).mappings().one()
                     assert privileges["shops_select"] is True
                     assert privileges["shops_update"] is False
                     assert privileges["audit_select"] is True
@@ -715,7 +738,6 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                     assert privileges["database_create"] is False
                     assert privileges["runtime_can_assume_definer"] is False
                     assert privileges["migration_can_assume_definer"] is True
-                    assert privileges["unexpected_executor_can_purge"] is False
 
                     members = (await admin.execute(text("""
                         SELECT r.rolname
@@ -726,7 +748,7 @@ def test_security_definer_owner_is_least_privilege_and_rls_scoped():
                            AND r.rolsuper IS FALSE
                            AND pg_catalog.pg_has_role(r.oid, 'mia_rls_definer', 'MEMBER')
                     """))).scalars().all()
-                    assert set(members) == {"mia_migration_test"}
+                    assert set(members) == {migration_role_name}
 
                     owned_relations = await admin.scalar(text("""
                         SELECT count(*)
@@ -884,10 +906,13 @@ def test_signed_definer_role_preflight_rejects_login_bypass_role():
 def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
     """Reject non-system schema CREATE and column-only grants outside the allowlist."""
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
-    if not admin_url:
+    if not admin_url or not os.getenv("MIGRATION_DATABASE_URL"):
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
-        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIGRATION_DATABASE_URL")
+        pytest.skip("Dedicated PostgreSQL admin and migration URLs are not configured")
+    migration_role_identifier = _quote_role_identifier(
+        _configured_database_role("MIGRATION_DATABASE_URL")
+    )
 
     from importlib.util import module_from_spec, spec_from_file_location
     from pathlib import Path
@@ -916,7 +941,7 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
                 await admin.execute(text(
                     f'GRANT CREATE ON SCHEMA "{schema_name}" TO mia_rls_definer'
                 ))
-                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                await admin.execute(text(f"SET LOCAL ROLE {migration_role_identifier}"))
                 with pytest.raises(RuntimeError, match="CREATE on schemas"):
                     await admin.run_sync(
                         lambda connection: migration._verify_definer_role(
@@ -932,7 +957,7 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
                 await admin.execute(text(
                     f'CREATE SCHEMA "{owned_schema_name}" AUTHORIZATION mia_rls_definer'
                 ))
-                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                await admin.execute(text(f"SET LOCAL ROLE {migration_role_identifier}"))
                 with pytest.raises(RuntimeError, match="must not own tables, sequences, or schemas"):
                     await admin.run_sync(
                         lambda connection: migration._verify_definer_role(
@@ -958,7 +983,7 @@ def test_definer_role_preflight_rejects_unexpected_schema_and_column_grants():
                 await admin.execute(text(
                     f'REVOKE CREATE ON SCHEMA "{owned_table_schema}" FROM mia_rls_definer'
                 ))
-                await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                await admin.execute(text(f"SET LOCAL ROLE {migration_role_identifier}"))
                 with pytest.raises(RuntimeError, match="must not own tables, sequences, or schemas"):
                     await admin.run_sync(
                         lambda connection: migration._verify_definer_role(
@@ -1038,12 +1063,120 @@ def test_runtime_role_requires_matching_database_targets(monkeypatch):
     assert migration._runtime_role(None) == "runtime"
 
 
+def test_downgrade_role_resolution_uses_migration_connection_without_runtime_login(monkeypatch):
+    """Rollback can resolve the configured app role without opening DATABASE_URL."""
+    migration = _load_signed_context_migration_for_preflight_tests()
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://runtime:runtime-password@disabled.example:6543/mia_app",
+    )
+    monkeypatch.setenv(
+        "MIGRATION_DATABASE_URL",
+        "postgresql+asyncpg://migrator:migration-password@database.example:5432/mia_app",
+    )
+
+    class Result:
+        def scalar_one(self):
+            return "mia_app"
+
+    class FakeBind:
+        def execute(self, statement):
+            assert "current_database" in str(statement).lower()
+            return Result()
+
+    monkeypatch.setattr(
+        migration,
+        "_verify_same_database_cluster",
+        lambda *_args: pytest.fail("downgrade role resolution must not open DATABASE_URL"),
+    )
+    assert migration._runtime_role(
+        FakeBind(), verify_runtime_endpoint=False
+    ) == "runtime"
+
+
+def test_function_execute_acl_reconciliation_cascades_delegated_grants():
+    """Revoking a named grantor also removes EXECUTE grants it delegated."""
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    if not admin_url or not os.getenv("DATABASE_URL") or not os.getenv("MIGRATION_DATABASE_URL"):
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail("CI must configure PostgreSQL admin, runtime, and migration URLs")
+        pytest.skip("Dedicated PostgreSQL role URLs are not configured")
+
+    migration = _load_signed_context_migration_for_preflight_tests()
+    runtime_role = _configured_database_role("DATABASE_URL")
+    suffix = uuid.uuid4().hex[:10]
+    grantor = f"mia_acl_a_grantor_{suffix}"
+    delegate = f"mia_acl_z_delegate_{suffix}"
+    grantor_sql = _quote_role_identifier(grantor)
+    delegate_sql = _quote_role_identifier(delegate)
+    signature = "mia_purge_audit_logs_for_privacy(bigint, text, text, boolean)"
+
+    async def scenario():
+        engine = create_async_engine(admin_url, pool_pre_ping=True)
+        try:
+            async with engine.begin() as admin:
+                await admin.execute(text(f"CREATE ROLE {grantor_sql} NOLOGIN"))
+                await admin.execute(text(f"CREATE ROLE {delegate_sql} NOLOGIN"))
+                savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text("SET LOCAL ROLE mia_rls_definer"))
+                    await admin.execute(text(
+                        f"GRANT EXECUTE ON FUNCTION public.{signature} TO {grantor_sql} WITH GRANT OPTION"
+                    ))
+                    await admin.execute(text("RESET ROLE"))
+                    await admin.execute(text(f"SET LOCAL ROLE {grantor_sql}"))
+                    await admin.execute(text(
+                        f"GRANT EXECUTE ON FUNCTION public.{signature} TO {delegate_sql}"
+                    ))
+                    await admin.execute(text("RESET ROLE"))
+
+                    await admin.run_sync(
+                        lambda connection: migration._reconcile_function_execute_acl(
+                            connection,
+                            signature,
+                            [runtime_role],
+                            owner_role="mia_rls_definer",
+                        )
+                    )
+                    grants = (await admin.execute(
+                        text("""
+                            SELECT
+                                pg_catalog.has_function_privilege(:grantor, :signature, 'EXECUTE') AS grantor_can_execute,
+                                pg_catalog.has_function_privilege(:delegate, :signature, 'EXECUTE') AS delegate_can_execute,
+                                pg_catalog.has_function_privilege(:runtime, :signature, 'EXECUTE') AS runtime_can_execute
+                        """),
+                        {
+                            "grantor": grantor,
+                            "delegate": delegate,
+                            "runtime": runtime_role,
+                            "signature": f"public.{signature}",
+                        },
+                    )).mappings().one()
+                    assert grants["grantor_can_execute"] is False
+                    assert grants["delegate_can_execute"] is False
+                    assert grants["runtime_can_execute"] is True
+                finally:
+                    if savepoint.is_active:
+                        await savepoint.rollback()
+                    await admin.execute(text(
+                        f"REVOKE ALL PRIVILEGES ON FUNCTION public.{signature} FROM {grantor_sql} CASCADE"
+                    ))
+                    await admin.execute(text(f"DROP ROLE IF EXISTS {delegate_sql}"))
+                    await admin.execute(text(f"DROP ROLE IF EXISTS {grantor_sql}"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
-    if not admin_url:
+    if not admin_url or not os.getenv("DATABASE_URL"):
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
-        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and DATABASE_URL")
+        pytest.skip("Dedicated PostgreSQL admin and runtime URLs are not configured")
+    runtime_role_name = _configured_database_role("DATABASE_URL")
+    runtime_role_identifier = _quote_role_identifier(runtime_role_name)
 
     migration = _load_signed_context_migration_for_preflight_tests()
 
@@ -1058,22 +1191,22 @@ def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
                 try:
                     await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
                     await admin.execute(text(
-                        f'GRANT USAGE, CREATE ON SCHEMA "{schema_name}" TO mia_runtime_test'
+                        f'GRANT USAGE, CREATE ON SCHEMA "{schema_name}" TO {runtime_role_identifier}'
                     ))
                     await admin.execute(text(
                         f'CREATE FUNCTION "{schema_name}"."{function_name}"() '
                         "RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$"
                     ))
                     await admin.execute(text(
-                        f'ALTER FUNCTION "{schema_name}"."{function_name}"() OWNER TO mia_runtime_test'
+                        f'ALTER FUNCTION "{schema_name}"."{function_name}"() OWNER TO {runtime_role_identifier}'
                     ))
                     await admin.execute(text(
-                        f'REVOKE CREATE ON SCHEMA "{schema_name}" FROM mia_runtime_test'
+                        f'REVOKE CREATE ON SCHEMA "{schema_name}" FROM {runtime_role_identifier}'
                     ))
                     with pytest.raises(RuntimeError, match="must not own SECURITY DEFINER functions"):
                         await admin.run_sync(
                             lambda connection: migration._verify_runtime_role(
-                                connection, "mia_runtime_test"
+                                connection, runtime_role_name
                             )
                         )
                 finally:
@@ -1087,10 +1220,12 @@ def test_runtime_role_preflight_rejects_non_public_security_definer_ownership():
 
 def test_runtime_role_preflight_rejects_executable_security_definer_functions():
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
-    if not admin_url:
+    if not admin_url or not os.getenv("DATABASE_URL"):
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
-        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and DATABASE_URL")
+        pytest.skip("Dedicated PostgreSQL admin and runtime URLs are not configured")
+    runtime_role_name = _configured_database_role("DATABASE_URL")
+    runtime_role_identifier = _quote_role_identifier(runtime_role_name)
 
     migration = _load_signed_context_migration_for_preflight_tests()
 
@@ -1106,7 +1241,7 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
                 try:
                     await admin.execute(text(f'CREATE SCHEMA "{schema_name}"'))
                     await admin.execute(text(
-                        f'GRANT USAGE ON SCHEMA "{schema_name}" TO mia_runtime_test'
+                        f'GRANT USAGE ON SCHEMA "{schema_name}" TO {runtime_role_identifier}'
                     ))
                     await admin.execute(text(
                         f'CREATE FUNCTION "{schema_name}"."{named_function}"() '
@@ -1116,11 +1251,14 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
                         f'REVOKE ALL ON FUNCTION "{schema_name}"."{named_function}"() FROM PUBLIC'
                     ))
                     await admin.execute(text(
-                        f'GRANT EXECUTE ON FUNCTION "{schema_name}"."{named_function}"() TO mia_runtime_test'
+                        f'GRANT EXECUTE ON FUNCTION "{schema_name}"."{named_function}"() TO {runtime_role_identifier}'
                     ))
                     await admin.execute(text(
                         f'CREATE FUNCTION "{schema_name}"."{public_function}"() '
                         "RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
+                    ))
+                    await admin.execute(text(
+                        f'GRANT EXECUTE ON FUNCTION "{schema_name}"."{public_function}"() TO PUBLIC'
                     ))
 
                     with pytest.raises(
@@ -1129,7 +1267,7 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
                     ) as error:
                         await admin.run_sync(
                             lambda connection: migration._verify_runtime_role(
-                                connection, "mia_runtime_test"
+                                connection, runtime_role_name
                             )
                         )
                     assert named_function in str(error.value)
@@ -1145,10 +1283,13 @@ def test_runtime_role_preflight_rejects_executable_security_definer_functions():
 
 def test_definer_role_preflight_rejects_unexpected_function_ownership():
     admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
-    if not admin_url:
+    if not admin_url or not os.getenv("MIGRATION_DATABASE_URL"):
         if os.getenv("CI", "").lower() == "true":
-            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL")
-        pytest.skip("Dedicated PostgreSQL admin URL is not configured")
+            pytest.fail("CI must configure MIA_RLS_TEST_ADMIN_URL and MIGRATION_DATABASE_URL")
+        pytest.skip("Dedicated PostgreSQL admin and migration URLs are not configured")
+    migration_role_identifier = _quote_role_identifier(
+        _configured_database_role("MIGRATION_DATABASE_URL")
+    )
 
     migration = _load_signed_context_migration_for_preflight_tests()
 
@@ -1174,7 +1315,7 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
                     await admin.execute(text(
                         f'REVOKE CREATE ON SCHEMA "{schema_name}" FROM mia_rls_definer'
                     ))
-                    await admin.execute(text("SET LOCAL ROLE mia_migration_test"))
+                    await admin.execute(text(f"SET LOCAL ROLE {migration_role_identifier}"))
                     with pytest.raises(RuntimeError, match="must not own unexpected functions"):
                         await admin.run_sync(
                             lambda connection: migration._verify_definer_role(
@@ -1189,10 +1330,18 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
 
     asyncio.run(scenario())
 
-@pytest.mark.parametrize(("runtime_lock_acquired", "should_reject"), [(False, False), (True, True)])
+@pytest.mark.parametrize(
+    ("runtime_lock_acquired", "runtime_current_user", "should_reject"),
+    [
+        (False, "runtime", False),
+        (True, "runtime", True),
+        (False, "pooler_backend", True),
+    ],
+)
 def test_database_cluster_probe_accepts_pooler_direct_pair_and_rejects_other_cluster(
     monkeypatch,
     runtime_lock_acquired,
+    runtime_current_user,
     should_reject,
 ):
     """A same-named database on another cluster must not pass the advisory-lock identity check."""
@@ -1209,33 +1358,67 @@ def test_database_cluster_probe_accepts_pooler_direct_pair_and_rejects_other_clu
             return self.value
 
     class FakeBind:
+        def __init__(self):
+            self.lock_key = None
+            self.unlock_key = None
+
         def execute(self, statement, _params=None):
-            sql = str(statement)
+            sql = str(statement).lower()
+            key = (_params["key1"], _params["key2"]) if _params else None
             if "pg_try_advisory_lock" in sql:
+                self.lock_key = key
+                return Result(True)
+            if "pg_advisory_unlock" in sql:
+                self.unlock_key = key
                 return Result(True)
             return Result(True)
 
     class FakeRuntimeConnection:
+        def __init__(self):
+            self.probe_key = None
+            self.unlock_key = None
+
         def execute(self, statement, _params=None):
-            sql = str(statement)
+            sql = str(statement).lower()
+            key = (_params["key1"], _params["key2"]) if _params else None
             if "current_database" in sql:
                 return Result("mia_app")
+            if "current_user" in sql:
+                return Result(runtime_current_user)
             if "pg_try_advisory_lock" in sql:
+                self.probe_key = key
                 return Result(runtime_lock_acquired)
+            if "pg_advisory_unlock" in sql:
+                self.unlock_key = key
+                return Result(True)
             return Result(True)
 
+    fake_runtime = FakeRuntimeConnection()
     fake_engine = SimpleNamespace(
-        connect=lambda: nullcontext(FakeRuntimeConnection()),
+        connect=lambda: nullcontext(fake_runtime),
         dispose=lambda: None,
     )
     monkeypatch.setattr(migration.sa, "create_engine", lambda *_args, **_kwargs: fake_engine)
 
     runtime_url = "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app"
+    fake_bind = FakeBind()
     if should_reject:
-        with pytest.raises(RuntimeError, match="different PostgreSQL clusters"):
-            migration._verify_same_database_cluster(FakeBind(), runtime_url)
+        expected_message = (
+            "unexpected PostgreSQL role"
+            if runtime_current_user != "runtime"
+            else "different PostgreSQL clusters"
+        )
+        with pytest.raises(RuntimeError, match=expected_message):
+            migration._verify_same_database_cluster(fake_bind, runtime_url)
     else:
-        migration._verify_same_database_cluster(FakeBind(), runtime_url)
+        migration._verify_same_database_cluster(fake_bind, runtime_url)
+
+    assert fake_bind.lock_key is not None
+    assert fake_bind.unlock_key == fake_bind.lock_key
+    if runtime_current_user == "runtime":
+        assert fake_runtime.probe_key == fake_bind.lock_key
+        if runtime_lock_acquired:
+            assert fake_runtime.unlock_key == fake_runtime.probe_key
 
 
 def test_migration_rejects_case_insensitive_shop_domain_duplicates():
@@ -1263,22 +1446,38 @@ def test_migration_rejects_case_insensitive_shop_domain_duplicates():
                 assert index_definition is not None
                 assert "lower(" in index_definition.lower() and "shop_domain" in index_definition.lower()
 
-                savepoint = await admin.begin_nested()
-                await admin.execute(text(
-                    "DROP INDEX public.uq_shops_shop_domain_lower"
-                ))
-                await admin.execute(text("""
-                    INSERT INTO public.shops (shop_domain, installed_at, is_active)
-                    VALUES
-                        (:domain, CURRENT_TIMESTAMP, TRUE),
-                        (:mixed_domain, CURRENT_TIMESTAMP, TRUE)
-                """), {
-                    "domain": domain,
-                    "mixed_domain": domain.upper(),
-                })
-                with pytest.raises(RuntimeError, match="duplicate case-insensitive shop domains"):
-                    await admin.run_sync(migration._verify_shop_domain_uniqueness)
-                await savepoint.rollback()
+                unique_savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text("""
+                        INSERT INTO public.shops (shop_domain, installed_at, is_active)
+                        VALUES (:domain, CURRENT_TIMESTAMP, TRUE)
+                    """), {"domain": domain})
+                    with pytest.raises(IntegrityError):
+                        await admin.execute(text("""
+                            INSERT INTO public.shops (shop_domain, installed_at, is_active)
+                            VALUES (:mixed_domain, CURRENT_TIMESTAMP, TRUE)
+                        """), {"mixed_domain": domain.upper()})
+                finally:
+                    await unique_savepoint.rollback()
+
+                duplicate_savepoint = await admin.begin_nested()
+                try:
+                    await admin.execute(text(
+                        "DROP INDEX public.uq_shops_shop_domain_lower"
+                    ))
+                    await admin.execute(text("""
+                        INSERT INTO public.shops (shop_domain, installed_at, is_active)
+                        VALUES
+                            (:domain, CURRENT_TIMESTAMP, TRUE),
+                            (:mixed_domain, CURRENT_TIMESTAMP, TRUE)
+                    """), {
+                        "domain": domain,
+                        "mixed_domain": domain.upper(),
+                    })
+                    with pytest.raises(RuntimeError, match="duplicate case-insensitive shop domains"):
+                        await admin.run_sync(migration._verify_shop_domain_uniqueness)
+                finally:
+                    await duplicate_savepoint.rollback()
         finally:
             await engine.dispose()
 
