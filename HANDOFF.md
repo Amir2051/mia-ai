@@ -1,4 +1,4 @@
-# Current verified checkpoint — 2026-11-24
+# Current verified checkpoint — 2026-11-25
 
 > This section is the current source of truth for repository and release status. Older dated notes below are retained as historical evidence and must not override this checkpoint.
 
@@ -16,19 +16,26 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/27
 - Branch: `security/signed-tenant-context-2026-11-03`
-- Current head: `3d5a0ae834629af9cb9ad0ff657da4446cf096df`; 124 commits ahead of main, 0 behind; 12 files changed.
+- Current head: `d41b26b5d6cd80bd57be97f63cbcebf314698647`; 131 commits ahead of main, 0 behind; 13 files changed.
 - State: open, draft, mergeable, not merged or deployed.
-- CI #344 (2026-11-24) passed all three jobs on this exact head:
-  - Backend: **306 passed, 3 warnings**.
-  - Frontend: **17 passed**; lint and production build passed.
-  - Production-only and full npm audits: **0 vulnerabilities reported by each command**.
+- CI #349 (2026-11-25) passed all three jobs on this exact head:
+  - Backend: **310 passed, 3 warnings**.
+  - Frontend: **17 passed**.
+  - Production Docker build: **passed**.
   - Signed-context migration upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade passed using the restricted migration login.
-  - Production Docker image build passed.
-- The runtime preflight rejects execution of non-system SECURITY DEFINER functions unless they are explicitly reviewed. The sole transition exception is the legacy GDPR audit-purge function, which migration 0010 rebinds to `mia_rls_definer`, replaces with signed-context checks, and ACL-reconciles in the same migration.
-- CodeRabbit then identified a schema-filter edge case: SQL `LIKE 'pg_toast%'` treated the underscore as a wildcard and could exclude ordinary application schemas such as `pgxtoast_...`. All eight affected predicates were changed to an exact prefix check using `pg_catalog.left(n.nspname, 8) <> 'pg_toast'`.
-- PostgreSQL regressions now cover lookalike `pgxtoast_...` schemas across runtime function ownership/execution, runtime schema CREATE, definer-owned schema/table/function objects, definer schema CREATE, and definer table/column privileges.
-- CI #342 passed on the preceding security-preflight head. CI #341 failed because the first new test fixture emitted an invalid SQL dollar-quote string; the fixture was corrected before CI #342.
-- All 16 existing inline review threads remain resolved. CodeRabbit review of the exact-prefix filter and new lookalike-schema tests has been requested after CI #344; no new review result is recorded yet. There is still **no independent human security approval**.
+  - The full and production-only npm audit gates passed with zero reported vulnerabilities in the latest relevant PR-branch run.
+- Nine CodeRabbit findings from the November 24 review were addressed:
+  - Runtime connection verifies `current_user` matches the username configured in `DATABASE_URL`.
+  - Named function EXECUTE revocations use `CASCADE`; a PostgreSQL regression seeds a grant-option chain and verifies both the grantor and delegate lose execution.
+  - Downgrade resolves the runtime role from configuration without opening the runtime login, while checking the rollback database through the migration connection.
+  - RLS signing-key validation moved from module import to the FastAPI lifespan. Alembic can import settings for inspection/rollback without the application-only signing secret; application startup still fails closed.
+  - Integration tests derive runtime and migration role identities from configured URLs and use the PostgreSQL 16 `SET` / pre-16 `MEMBER` membership gate. The CI-only unexpected-grant assertion remains in the workflow that seeds the role.
+  - The PUBLIC-executable function fixture explicitly grants PUBLIC EXECUTE.
+  - Advisory-lock tests record and compare the held, probed and released keys.
+  - The normalized shop-domain index test proves that the installed expression index rejects case variants before the separate post-drop duplicate-diagnostic test.
+  - SECURITY.md now reflects the withdrawn picomatch advisory and current clean PR-branch audit evidence, while preserving the production-verification caveat.
+- CI #348 failed on one newly added startup-test import (`app.main` instead of the repository's top-level `main` module). That import was corrected; CI #349 then passed with 310 backend tests.
+- All **25** recorded inline review threads are resolved; **0 unresolved**. A fresh `@coderabbitai review` request was posted in the PR conversation after CI #349; no new review result is recorded yet. There is still **no independent human security approval**.
 - Migration `0010_signed_tenant_context` is proposed only. Main remains at `0009_privacy_audit_purge`. Do not deploy migration 0010 until independent review and direct production verification are complete.
 - Downgrade restores the legacy caller-settable GUC policies; it is security-sensitive and is not a routine rollback.
 
@@ -64,15 +71,15 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/31
 - Branch: `docs/verified-handoff-2026-11-23`
-- This update records the November 24 PR #27 security-preflight changes, the CodeRabbit schema-filter finding and correction, and CI #344. It is documentation-only; it does not change application code, Shopify configuration, secrets, production database, or deployment.
+- This update records the November 25 PR #27 findings, fixes, resolved review threads, and CI #349 evidence. It is documentation-only; it does not change application code, Shopify configuration, secrets, production database, or deployment.
 
 ## Tasks 1–8 and release blockers
 
 1. **Shopify authentication/App Bridge:** ID-token validation, server-side token exchange, offline token persistence, session and logout code exist. The manifest still declares `/auth/callback`, while the backend auth router exposes `/api/auth/login-url`, `/api/auth/session`, and `/api/auth/logout`. Validate install/reinstall on a development store before changing this configuration.
 2. **Webhooks/GDPR:** HMAC and GDPR handlers exist; PR #30 expands PostgreSQL cascade regression coverage. Real Shopify webhook deliveries, actual customer/shop redaction, uninstall/reinstall, and Protected Customer Data approval remain unverified.
 3. **Products/CSV/publishing:** core routes exist; PR #29 fixes the health-check scope floor. Release the manifest scopes, obtain merchant reauthorization where required, and test product/CSV/publish/unpublish workflows on a development store.
-4. **AI/orders/analytics/billing:** core code exists. Replace process-local campaign execution with a durable worker/lease/retry/recovery design. Live OpenRouter, Meta, Shopify Billing, cancellation/webhook, and paid-entitlement behavior remain unverified. Reviewed defaults remain `billing_test=true` and `billing_enforced=false`.
-5. **PostgreSQL tenant isolation:** PR #27 has 306 passing backend tests and a successful migration rollback/re-upgrade CI sequence. Independent security approval and production role/ACL/secret/logging verification remain blockers.
+4. **AI/orders/analytics/billing:** core code exists. Replace process-local campaign execution with a durable worker/lease/retry/recovery design. Live OpenRouter, Meta, Shopify Billing, cancellation/webhook, and paid-entitlement behavior remain unverified.
+5. **PostgreSQL tenant isolation:** PR #27 has 310 passing backend tests and a successful migration rollback/re-upgrade CI sequence. Independent security approval and production role/ACL/secret/logging verification remain blockers.
 6. **Docker/deployment:** production image builds pass in PR CI. Production running SHA, actual Alembic revision, role state, secrets, and current health have not been directly verified. Do not infer deployment from image builds.
 7. **CI/security/governance:** latest PR #27, PR #30 and PR #31 audit commands report zero vulnerabilities. Main is unprotected; enforce required backend/frontend/Docker checks, independent review, and restrictions on direct pushes in repository settings.
 8. **Production acceptance:** no complete development-store or live production acceptance record is available. Installation, auth refresh, product publishing, webhooks/GDPR, billing, Meta, OpenRouter, scheduled reports, production database state, deployment, smoke tests, and release sign-off remain outstanding.
@@ -81,7 +88,7 @@
 
 1. Enable and verify main branch protection and required status checks in GitHub settings.
 2. Obtain independent human security review of PR #27; keep it draft and do not deploy migration 0010 until approved.
-3. Review the new CodeRabbit feedback on PR #27; keep the runtime SECURITY DEFINER allowlist narrow.
+3. Wait for and assess the new CodeRabbit review requested in the PR conversation.
 4. Obtain human review of PR #30, then rebase/rerun it against migration 0010 after the security migration is integrated.
 5. Review PR #29 and complete a development-store scope/reauthorization and publishing test.
 6. Replace PR #25 process-local campaign execution with durable workers and test restart recovery.
@@ -89,22 +96,14 @@
 
 ## Evidence links
 
-- CI #344 / PR #27 current head: https://github.com/Amir2051/mia-ai/actions/runs/45415876290
+- CI #349 / PR #27 current head: https://github.com/Amir2051/mia-ai/actions/runs/45633010583
+- CI #348 / PR #27 intermediate head (failed on the startup-test import, corrected in #349): https://github.com/Amir2051/mia-ai/actions/runs/45632768934
+- CI #344 / PR #27 previous security head: https://github.com/Amir2051/mia-ai/actions/runs/45415876290
 - CI #342 / PR #27 preceding security-preflight head: https://github.com/Amir2051/mia-ai/actions/runs/45414447045
-- CI #343 / PR #31 preceding handoff head: https://github.com/Amir2051/mia-ai/actions/runs/45415033064
-- CI #341 / PR #27 failed intermediate test-fixture commit: https://github.com/Amir2051/mia-ai/actions/runs/45414124943
+- CI #341 / PR #27 failed intermediate SQL fixture: https://github.com/Amir2051/mia-ai/actions/runs/45414124943
 - CI #335 / PR #27 preceding head: https://github.com/Amir2051/mia-ai/actions/runs/44754233252
 - CI #339 / PR #30 current head: https://github.com/Amir2051/mia-ai/actions/runs/45192096528
-- CI #340 / PR #31 previous head: https://github.com/Amir2051/mia-ai/actions/runs/45192714151
-- CI #279 / PR #29: https://github.com/Amir2051/mia-ai/actions/runs/43238930678
-- CI #271 / PR #25: https://github.com/Amir2051/mia-ai/actions/runs/43237067602
-- CI #273 / PR #26: https://github.com/Amir2051/mia-ai/actions/runs/43237382266
-
-
-- CI #335 / PR #27: https://github.com/Amir2051/mia-ai/actions/runs/44754233252
-- CI #337 / PR #30 previous head: https://github.com/Amir2051/mia-ai/actions/runs/45030460800
-- CI #339 / PR #30 current head: https://github.com/Amir2051/mia-ai/actions/runs/45192096528
-- CI #338 / PR #31: https://github.com/Amir2051/mia-ai/actions/runs/45191856505
+- CI #345 / PR #31 previous head: https://github.com/Amir2051/mia-ai/actions/runs/45416282734
 - CI #279 / PR #29: https://github.com/Amir2051/mia-ai/actions/runs/43238930678
 - CI #271 / PR #25: https://github.com/Amir2051/mia-ai/actions/runs/43237067602
 - CI #273 / PR #26: https://github.com/Amir2051/mia-ai/actions/runs/43237382266
