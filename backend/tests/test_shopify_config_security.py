@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from app.shopify.config import Settings
 
 
@@ -32,3 +36,22 @@ def test_production_validation_uses_normalized_environment_value():
 
     assert settings.is_production is True
     assert "RLS_CONTEXT_SECRET must contain at least 32 bytes" in settings.validate_production()
+
+
+
+def test_application_lifespan_rejects_missing_postgres_signing_secret(monkeypatch):
+    from app import main as app_main
+
+    settings = Settings(
+        environment="development",
+        database_url="postgresql+asyncpg://mia:example@localhost/mia",
+        rls_context_secret="",
+    )
+    monkeypatch.setattr(app_main, "settings", settings)
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match="Database security configuration missing"):
+            async with app_main.lifespan(None):
+                pass
+
+    asyncio.run(scenario())
