@@ -128,5 +128,7 @@ class Settings(BaseSettings):
 
 # Runtime and production configuration are validated by the FastAPI lifespan.
 # Alembic commands must be able to import Settings for inspection and rollback
-# without requiring the application-only signing secret at module import time.
+# without requiring RLS_CONTEXT_SECRET at module import time. Migration 0010 reads
+# RLS_CONTEXT_SECRET from the process environment, so Alembic must receive the
+# same value as the application.
 settings = Settings()
