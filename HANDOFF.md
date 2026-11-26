@@ -46,9 +46,9 @@ Do not merge these stale branches without rebasing, reviewing their current diff
 
 ## Documentation handoff — PR #31
 
-- Current head: `10e6269cc230954d382e84732f0fafcc2764cd53`; open, documentation-only, not merged.
-- CI #353 (2026-11-26) passed all three jobs on this exact head: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed.
-- The CodeRabbit check on this documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The separate CodeRabbit review check on PR #27's application/security head is still in progress.
+- PR #31 remains open, documentation-only, and unmerged. Its first November 26 checkpoint commit `10e6269cc230954d382e84732f0fafcc2764cd53` passed CI #353: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed.
+- A subsequent documentation-only correction reconciled the open pull-request inventory to **11**; CI for the resulting latest handoff head is pending at this checkpoint.
+- The CodeRabbit check on the documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The separate CodeRabbit review check on PR #27's application/security head is still in progress.
 - No application code, Shopify configuration, secrets, production database, or deployment changed in PR #31.
 
 ## Release gate remains unchanged
