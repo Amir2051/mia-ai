@@ -6,19 +6,19 @@
 
 - PR: https://github.com/Amir2051/mia-ai/pull/27
 - Branch: `security/signed-tenant-context-2026-11-03`
-- Current head: `16307fa4c0ced73dd4886cb1b50ba7fea19ebaad`; 134 commits ahead of main, 0 behind; 13 files changed.
+- Current head: `7230af31c3d51d62b232e93a70c0ead0ee284b6e`; 135 commits ahead of main, 0 behind; 13 files changed.
 - State: open, draft, mergeable, not merged or deployed.
-- Added a PostgreSQL startup verifier check. For PostgreSQL configurations, FastAPI startup opens one transaction, calls `set_internal_scheduler_context()`, and checks `public.mia_is_internal_scheduler()` returns true. This verifies the configured application HMAC key matches the private database verifier without reading or exposing the key. Startup fails closed if migration 0010 is missing, the function cannot be executed, or the key does not match.
-- Added tests for a matching key and a mismatched key. The existing short/missing-secret startup test remains.
+- FastAPI startup now verifies that the configured PostgreSQL HMAC key matches the private database verifier. In one transaction it calls `set_internal_scheduler_context()` and checks `public.mia_is_internal_scheduler()` returns true. It does not read or expose the private key and fails closed if migration 0010 is missing, the function cannot be executed, or the key does not match.
+- Unit tests cover matching and mismatched verifier results. A new PostgreSQL integration test uses the CI restricted runtime role and the actual migration secret: it accepts the matching key, rejects a different valid-length key, and verifies startup fails when EXECUTE on the verifier function is revoked. The test restores the grant in `finally`.
 - Corrected the configuration comment: Alembic can import Settings without requiring the secret at module import time, but migration 0010 reads `RLS_CONTEXT_SECRET` from the migration process environment during upgrade; that process must receive the same value as the application.
-- CI #352 (2026-11-26) passed all three jobs on this exact head:
-  - Backend: **312 passed, 3 warnings**.
-  - Frontend: **17 passed**.
+- CI #357 (2026-11-26) passed all three jobs on this exact head:
+  - Backend: **313 passed, 3 warnings**.
+  - Frontend: **17 passed**; lint and production build passed.
   - Production-only and full npm audits: **0 vulnerabilities** each.
   - Migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade: **passed**.
   - Production Docker build: **passed**.
-- CI #352 is PR-branch evidence only. It does not prove production roles, verifier provisioning, logging configuration, or live merchant behavior.
-- The 2026-11-25 CodeRabbit note about documenting Alembic's secret requirement was corrected. Its inline thread was replied to and resolved. The new startup-verifier change was posted for CodeRabbit review on 2026-11-26; no response to that new request is recorded yet.
+- CI #357 is PR-branch evidence only. It does not prove production roles, verifier provisioning, logging configuration, or live merchant behavior.
+- The 2026-11-25 Alembic-secret documentation note was corrected and its inline thread resolved. CodeRabbit's November 26 review identified a test-coverage gap in the first startup-check tests; the PostgreSQL integration test above addresses it. A re-review request on the current head was rate-limited, so no fresh CodeRabbit result is recorded.
 - GitHub currently reports **26 total inline review threads, 26 resolved, 0 unresolved**. This does not equal an independent human security approval: there is still no independent `APPROVED` review.
 - Keep PR #27 draft. Do not apply migration 0010 until independent security review and direct production-state verification are complete.
 
@@ -46,9 +46,8 @@ Do not merge these stale branches without rebasing, reviewing their current diff
 
 ## Documentation handoff — PR #31
 
-- PR #31 remains open, documentation-only, and unmerged. Its first November 26 checkpoint commit `10e6269cc230954d382e84732f0fafcc2764cd53` passed CI #353: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed.
-- A subsequent documentation-only correction reconciled the open pull-request inventory to **11**; CI for the resulting latest handoff head is pending at this checkpoint.
-- The CodeRabbit check on the documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The separate CodeRabbit review check on PR #27's application/security head is still in progress.
+- PR #31 remains open, documentation-only, and unmerged. The November 26 handoff revision at `ec3c93f9bedf88e41d2d838970b2a99cd426cb0e` passed CI #356: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed. This latest follow-up updates the checkpoint to PR #27 head `7230af31c3d51d62b232e93a70c0ead0ee284b6e`; its documentation CI is triggered separately.
+- The CodeRabbit check on the documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The re-review request for PR #27's current application/security head was rate-limited.
 - No application code, Shopify configuration, secrets, production database, or deployment changed in PR #31.
 
 ## Release gate remains unchanged
