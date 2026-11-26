@@ -44,6 +44,13 @@ The repository currently has 12 open PRs. The six current engineering/documentat
 
 Do not merge these stale branches without rebasing, reviewing their current diffs, and rerunning CI. Determine whether their changes are superseded by the current main or PR #27 work; close or refresh them deliberately rather than silently ignoring them.
 
+## Documentation handoff — PR #31
+
+- Current head: `10e6269cc230954d382e84732f0fafcc2764cd53`; open, documentation-only, not merged.
+- CI #353 (2026-11-26) passed all three jobs on this exact head: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed.
+- The CodeRabbit check on this documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The separate CodeRabbit review check on PR #27's application/security head is still in progress.
+- No application code, Shopify configuration, secrets, production database, or deployment changed in PR #31.
+
 ## Release gate remains unchanged
 
 Tasks 1–8 retain the status in the November 25 checkpoint below: authentication, products, AI, and billing code exists but needs live acceptance; GDPR regression is expanded but needs real Shopify webhook/redaction testing; migration 0010 is PR-only; Docker builds pass but production deployment is unverified; main is unprotected; production acceptance is incomplete.
