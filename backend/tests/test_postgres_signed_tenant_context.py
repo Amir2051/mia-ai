@@ -1525,3 +1525,100 @@ def test_definer_owner_requires_set_role_membership_for_non_superuser_migration(
 
     asyncio.run(scenario())
 
+
+
+def test_postgres_startup_verifier_checks_real_runtime_key_and_execute_access(monkeypatch):
+    """Exercise the FastAPI startup probe against migration 0010 as the restricted runtime role."""
+    import os
+
+    from app.models.database import AsyncSession
+    from app.shopify.config import Settings
+    import app.models.database as db_mod
+    import app.security.rls as rls_mod
+    import main as app_main
+
+    admin_url = os.getenv("MIA_RLS_TEST_ADMIN_URL")
+    runtime_url = os.getenv("MIA_RLS_TEST_RUNTIME_URL")
+    migration_secret = os.getenv("RLS_CONTEXT_SECRET")
+    if not admin_url or not runtime_url or not migration_secret:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail(
+                "CI must configure MIA_RLS_TEST_ADMIN_URL, "
+                "MIA_RLS_TEST_RUNTIME_URL, and RLS_CONTEXT_SECRET"
+            )
+        pytest.skip("Dedicated PostgreSQL RLS URLs and migration secret are not configured")
+
+    runtime_role = make_url(runtime_url).username
+    if not runtime_role:
+        pytest.fail("MIA_RLS_TEST_RUNTIME_URL must include a PostgreSQL username")
+
+    async def scenario():
+        admin_engine = create_async_engine(admin_url, pool_pre_ping=True)
+        runtime_engine = create_async_engine(runtime_url, pool_pre_ping=True)
+        runtime_factory = sessionmaker(
+            bind=runtime_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        monkeypatch.setattr(db_mod, "AsyncSessionLocal", runtime_factory)
+
+        def configure_secret(secret: str) -> None:
+            settings = Settings(
+                environment="test",
+                database_url=runtime_url,
+                rls_context_secret=secret,
+            )
+            monkeypatch.setattr(app_main, "settings", settings)
+            monkeypatch.setattr(rls_mod, "settings", settings)
+
+        role_identifier = runtime_engine.sync_engine.dialect.identifier_preparer.quote(
+            runtime_role
+        )
+        try:
+            # The exact migration key must produce a valid scheduler proof and
+            # verifier result within the same transaction.
+            configure_secret(migration_secret)
+            await app_main._verify_postgres_rls_context()
+
+            # A different, still-valid-length key must fail the database proof.
+            wrong_secret = "x" * 48
+            if wrong_secret == migration_secret:
+                wrong_secret = "y" * 48
+            configure_secret(wrong_secret)
+            with pytest.raises(
+                RuntimeError,
+                match="PostgreSQL signed-context verification failed",
+            ) as mismatch:
+                await app_main._verify_postgres_rls_context()
+            assert wrong_secret not in str(mismatch.value)
+
+            # The runtime role must also fail closed if it cannot execute the
+            # verifier function, even when its configured key is otherwise correct.
+            configure_secret(migration_secret)
+            async with admin_engine.begin() as admin:
+                await admin.execute(
+                    text(
+                        "REVOKE EXECUTE ON FUNCTION "
+                        f"public.mia_is_internal_scheduler() FROM {role_identifier}"
+                    )
+                )
+            try:
+                with pytest.raises(
+                    RuntimeError,
+                    match="PostgreSQL signed-context verification failed",
+                ) as denied:
+                    await app_main._verify_postgres_rls_context()
+                assert migration_secret not in str(denied.value)
+            finally:
+                async with admin_engine.begin() as admin:
+                    await admin.execute(
+                        text(
+                            "GRANT EXECUTE ON FUNCTION "
+                            f"public.mia_is_internal_scheduler() TO {role_identifier}"
+                        )
+                    )
+        finally:
+            await runtime_engine.dispose()
+            await admin_engine.dispose()
+
+    asyncio.run(scenario())
