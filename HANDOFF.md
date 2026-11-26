@@ -1,3 +1,62 @@
+# Current verified checkpoint — 2026-11-26
+
+> This section supersedes the November 25 checkpoint below. Older dated notes are retained as historical evidence; use the exact commit and CI run recorded here for the latest PR-branch evidence.
+
+## Latest security work — PR #27
+
+- PR: https://github.com/Amir2051/mia-ai/pull/27
+- Branch: `security/signed-tenant-context-2026-11-03`
+- Current head: `16307fa4c0ced73dd4886cb1b50ba7fea19ebaad`; 134 commits ahead of main, 0 behind; 13 files changed.
+- State: open, draft, mergeable, not merged or deployed.
+- Added a PostgreSQL startup verifier check. For PostgreSQL configurations, FastAPI startup opens one transaction, calls `set_internal_scheduler_context()`, and checks `public.mia_is_internal_scheduler()` returns true. This verifies the configured application HMAC key matches the private database verifier without reading or exposing the key. Startup fails closed if migration 0010 is missing, the function cannot be executed, or the key does not match.
+- Added tests for a matching key and a mismatched key. The existing short/missing-secret startup test remains.
+- Corrected the configuration comment: Alembic can import Settings without requiring the secret at module import time, but migration 0010 reads `RLS_CONTEXT_SECRET` from the migration process environment during upgrade; that process must receive the same value as the application.
+- CI #352 (2026-11-26) passed all three jobs on this exact head:
+  - Backend: **312 passed, 3 warnings**.
+  - Frontend: **17 passed**.
+  - Production-only and full npm audits: **0 vulnerabilities** each.
+  - Migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade: **passed**.
+  - Production Docker build: **passed**.
+- CI #352 is PR-branch evidence only. It does not prove production roles, verifier provisioning, logging configuration, or live merchant behavior.
+- The 2026-11-25 CodeRabbit note about documenting Alembic's secret requirement was corrected. Its inline thread was replied to and resolved. The new startup-verifier change was posted for CodeRabbit review on 2026-11-26; no response to that new request is recorded yet.
+- GitHub currently reports **26 total inline review threads, 26 resolved, 0 unresolved**. This does not equal an independent human security approval: there is still no independent `APPROVED` review.
+- Keep PR #27 draft. Do not apply migration 0010 until independent security review and direct production-state verification are complete.
+
+[CI #352](https://github.com/Amir2051/mia-ai/actions/runs/45836787211)
+
+## Repository and governance checkpoint
+
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application PR has been merged.
+- GitHub branch metadata reports `main.protected=false`; the repository rulesets endpoint returns an empty list. Required CI/review protection is not enforced.
+- The latest main commit is still the November 10 documentation-only merge. The repository was pushed on November 26 only through PR branches.
+- No production database, application secret, Shopify app configuration, or deployment was modified in this update.
+- The production homepage and `/health` and `/ready` endpoints were not accessible through the available external web check. This is inconclusive and is not evidence that production is down. Running application SHA, Alembic revision, and health remain unverified.
+
+## Open pull-request inventory and triage
+
+The repository currently has 12 open PRs. The six current engineering/documentation PRs are #27, #30, #29, #25, #26, and #31. Five older PRs also remain open and need explicit triage before any broad release claim:
+
+- PR #2 — independent audit fixes: draft, dirty/non-mergeable, last updated 2026-09-18.
+- PR #9 — scheduled-report RLS refresh: draft, dirty/non-mergeable, last updated 2026-10-23.
+- PR #10 — sales-channel publishing API tests: draft, mergeability unstable, last updated 2026-10-23.
+- PR #11 — Vitest dependency advisory fixes: open, dirty/non-mergeable, last updated 2026-10-24. Main's current dependency audit evidence must be compared before deciding whether this old fix is still needed.
+- PR #12 — optional MIA-RZ provider: draft, dirty/non-mergeable, last updated 2026-10-23.
+
+Do not merge these stale branches without rebasing, reviewing their current diffs, and rerunning CI. Determine whether their changes are superseded by the current main or PR #27 work; close or refresh them deliberately rather than silently ignoring them.
+
+## Release gate remains unchanged
+
+Tasks 1–8 retain the status in the November 25 checkpoint below: authentication, products, AI, and billing code exists but needs live acceptance; GDPR regression is expanded but needs real Shopify webhook/redaction testing; migration 0010 is PR-only; Docker builds pass but production deployment is unverified; main is unprotected; production acceptance is incomplete.
+
+Immediate gates:
+1. Protect main with required backend/frontend/Docker checks and independent review.
+2. Obtain independent human security approval for migration 0010.
+3. Directly verify production database identity, Alembic revision, runtime/definer roles, memberships, function owners, effective ACLs, signing-key provisioning, and PostgreSQL/provider/proxy parameter logging.
+4. Complete development-store install/authentication, product/CSV/publication, webhook/GDPR, billing, Meta, and OpenRouter acceptance.
+5. Replace FastAPI process-local campaign background tasks with durable worker execution and restart recovery before claiming restart-safe jobs.
+
+---
+
 # Current verified checkpoint — 2026-11-25
 
 > This section is the current source of truth for repository and release status. Older dated notes below are retained as historical evidence and must not override this checkpoint.
