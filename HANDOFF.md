@@ -34,7 +34,7 @@
 
 ## Open pull-request inventory and triage
 
-The repository currently has 12 open PRs. The six current engineering/documentation PRs are #27, #30, #29, #25, #26, and #31. Five older PRs also remain open and need explicit triage before any broad release claim:
+The repository currently has 11 open pull requests. The six current engineering/documentation PRs are #27, #30, #29, #25, #26, and #31. Five older PRs also remain open and need explicit triage before any broad release claim:
 
 - PR #2 — independent audit fixes: draft, dirty/non-mergeable, last updated 2026-09-18.
 - PR #9 — scheduled-report RLS refresh: draft, dirty/non-mergeable, last updated 2026-10-23.
