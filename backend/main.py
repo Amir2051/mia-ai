@@ -56,8 +56,55 @@ def _register_exception_handlers(app: FastAPI) -> None:
         )
 
 
+async def _verify_postgres_rls_context() -> None:
+    """Fail startup if the app's HMAC key does not match PostgreSQL's verifier."""
+    from app.models.database import AsyncSessionLocal
+    from app.security.rls import set_internal_scheduler_context
+
+    try:
+        async with AsyncSessionLocal() as db:
+            # The scheduler proof and verifier call must share one transaction
+            # because the signed context is bound to txid_current().
+            async with db.begin():
+                await set_internal_scheduler_context(db)
+                is_valid = await db.scalar(
+                    text("SELECT public.mia_is_internal_scheduler()")
+                )
+                if is_valid is not True:
+                    raise RuntimeError(
+                        "RLS_CONTEXT_SECRET does not match the PostgreSQL verifier key"
+                    )
+    except Exception as exc:
+        raise RuntimeError(
+            "PostgreSQL signed-context verification failed; confirm migration 0010 "
+            "is applied and the application's RLS_CONTEXT_SECRET matches the "
+            "database verifier"
+        ) from exc
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    # Validate runtime-only secrets when serving the application, not while
+    # Alembic imports settings for inspection or a reviewed rollback.
+    if settings.is_production:
+        configuration_issues = settings.validate_production()
+        if configuration_issues:
+            raise RuntimeError(
+                "Production configuration missing: " + "; ".join(configuration_issues)
+            )
+    else:
+        configuration_issues = settings.validate_runtime_security()
+        if configuration_issues:
+            raise RuntimeError(
+                "Database security configuration missing: " + "; ".join(configuration_issues)
+            )
+
+    # A length check alone cannot detect a key that differs from the
+    # verifier stored by migration 0010. Prove the signed scheduler context
+    # against PostgreSQL before serving tenant requests.
+    if (settings.database_url.strip().lower().startswith("postgresql")):
+        await _verify_postgres_rls_context()
+
     # Production schema changes are managed exclusively by Alembic.
     scheduler_task = None
     if settings.is_production:
