@@ -1,58 +1,65 @@
-# Current verified checkpoint — 2026-11-26
+# Current verified checkpoint — 2026-11-27
 
-> This section supersedes the November 25 checkpoint below. Older dated notes are retained as historical evidence; use the exact commit and CI run recorded here for the latest PR-branch evidence.
+> This section supersedes the November 26 checkpoint below. Older dated notes are retained as historical evidence. Use the exact PR heads and CI runs recorded here for current branch evidence.
 
 ## Latest security work — PR #27
 
 - PR: https://github.com/Amir2051/mia-ai/pull/27
 - Branch: `security/signed-tenant-context-2026-11-03`
-- Current head: `7230af31c3d51d62b232e93a70c0ead0ee284b6e`; 135 commits ahead of main, 0 behind; 13 files changed.
+- Current head: `400500b193c360ae54f7eaea460547f5282d0862`; 138 commits ahead of main, 0 behind; 13 files changed.
 - State: open, draft, mergeable, not merged or deployed.
-- FastAPI startup now verifies that the configured PostgreSQL HMAC key matches the private database verifier. In one transaction it calls `set_internal_scheduler_context()` and checks `public.mia_is_internal_scheduler()` returns true. It does not read or expose the private key and fails closed if migration 0010 is missing, the function cannot be executed, or the key does not match.
-- Unit tests cover matching and mismatched verifier results. A new PostgreSQL integration test uses the CI restricted runtime role and the actual migration secret: it accepts the matching key, rejects a different valid-length key, and verifies startup fails when EXECUTE on the verifier function is revoked. The test restores the grant in `finally`.
-- Corrected the configuration comment: Alembic can import Settings without requiring the secret at module import time, but migration 0010 reads `RLS_CONTEXT_SECRET` from the migration process environment during upgrade; that process must receive the same value as the application.
-- CI #357 (2026-11-26) passed all three jobs on this exact head:
-  - Backend: **313 passed, 3 warnings**.
+- FastAPI startup verifies that the configured PostgreSQL HMAC key matches the private database verifier. In one transaction it calls `set_internal_scheduler_context()` and checks `public.mia_is_internal_scheduler()`. It does not read or expose the private key and fails closed if migration 0010 is missing, the verifier cannot be executed, or the key does not match.
+- A re-read of the November 24 CodeRabbit review summary found that the psycopg identity probe still forwarded SQLAlchemy's asyncpg-only `prepared_statement_cache_size` URL option. The probe now uses `_runtime_psycopg_url()`, removes only that asyncpg-specific option, and preserves other PostgreSQL query options such as TLS and application-name settings.
+- Added parameterized tests for an unadorned PostgreSQL URL, a URL with `prepared_statement_cache_size=0`, and a URL that combines that option with `sslmode=require` and `application_name=mia`.
+- The startup-key integration test remains in place: the CI restricted runtime role accepts the actual migration key, rejects a different valid-length key, and fails closed when EXECUTE on the verifier function is revoked. The test restores the grant in `finally`.
+- CI #360 (2026-11-27) passed all three jobs on this exact head:
+  - Backend: **316 passed, 3 warnings**.
   - Frontend: **17 passed**; lint and production build passed.
   - Production-only and full npm audits: **0 vulnerabilities** each.
   - Migration 0010 upgrade, downgrade to `0009_privacy_audit_purge`, and re-upgrade: **passed**.
   - Production Docker build: **passed**.
-- CI #357 is PR-branch evidence only. It does not prove production roles, verifier provisioning, logging configuration, or live merchant behavior.
-- The 2026-11-25 Alembic-secret documentation note was corrected and its inline thread resolved. CodeRabbit's November 26 review identified a test-coverage gap in the first startup-check tests; the PostgreSQL integration test above addresses it. A re-review request on the current head was rate-limited, so no fresh CodeRabbit result is recorded.
-- GitHub currently reports **26 total inline review threads, 26 resolved, 0 unresolved**. This does not equal an independent human security approval: there is still no independent `APPROVED` review.
+- CI #360 is PR-branch evidence only. It does not prove production roles, verifier provisioning, database/provider/proxy logging, or live merchant behavior.
+- GitHub reports **26 total inline review threads, 26 resolved, 0 unresolved**. The recorded reviews are comments, not an independent `APPROVED` security review. A fresh CodeRabbit re-review of the latest head has not been recorded; the previous re-review request was rate-limited.
 - Keep PR #27 draft. Do not apply migration 0010 until independent security review and direct production-state verification are complete.
 
-[CI #352](https://github.com/Amir2051/mia-ai/actions/runs/45836787211)
+[CI #360](https://github.com/Amir2051/mia-ai/actions/runs/46016050621)
 
 ## Repository and governance checkpoint
 
-- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application PR has been merged.
-- GitHub branch metadata reports `main.protected=false`; the repository rulesets endpoint returns an empty list. Required CI/review protection is not enforced.
-- The latest main commit is still the November 10 documentation-only merge. The repository was pushed on November 26 only through PR branches.
-- No production database, application secret, Shopify app configuration, or deployment was modified in this update.
-- The production homepage and `/health` and `/ready` endpoints were not accessible through the available external web check. This is inconclusive and is not evidence that production is down. Running application SHA, Alembic revision, and health remain unverified.
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`; no application PR has been merged. The latest main commit is the November 10 documentation-only merge.
+- GitHub branch metadata reports `main.protected=false`; the repository rulesets endpoint returns an empty list. Required CI and review protection are not enforced.
+- The branch-protection detail endpoint returned HTTP 403 to the connected integration, but the public branch metadata independently reports protection disabled and the rulesets collection is empty.
+- No production database, application secret, Shopify app configuration, or deployment was modified during this update. Production running SHA, Alembic revision, database role/ACL state, and health remain unverified.
 
 ## Open pull-request inventory and triage
 
-The repository currently has 11 open pull requests. The six current engineering/documentation PRs are #27, #30, #29, #25, #26, and #31. Five older PRs also remain open and need explicit triage before any broad release claim:
+The repository currently has **11 open pull requests**. The six current engineering/documentation PRs are #27, #30, #29, #25, #26, and #31. Five older PRs remain open and need deliberate triage:
 
-- PR #2 — independent audit fixes: draft, dirty/non-mergeable, last updated 2026-09-18.
-- PR #9 — scheduled-report RLS refresh: draft, dirty/non-mergeable, last updated 2026-10-23.
-- PR #10 — sales-channel publishing API tests: draft, mergeability unstable, last updated 2026-10-23.
-- PR #11 — Vitest dependency advisory fixes: open, dirty/non-mergeable, last updated 2026-10-24. Main's current dependency audit evidence must be compared before deciding whether this old fix is still needed.
-- PR #12 — optional MIA-RZ provider: draft, dirty/non-mergeable, last updated 2026-10-23.
+- PR #2 — independent audit fixes: draft, non-mergeable, last updated 2026-09-18.
+- PR #9 — scheduled-report RLS refresh: draft, non-mergeable, last updated 2026-10-23.
+- PR #10 — sales-channel publishing API tests: draft, stale, last updated 2026-10-23.
+- PR #11 — Vitest dependency advisory fixes: open, non-mergeable, last updated 2026-10-24. Compare its old dependency changes against the current clean PR-branch audits before deciding whether they remain needed.
+- PR #12 — optional MIA-RZ provider: draft, non-mergeable, last updated 2026-10-23.
 
-Do not merge these stale branches without rebasing, reviewing their current diffs, and rerunning CI. Determine whether their changes are superseded by the current main or PR #27 work; close or refresh them deliberately rather than silently ignoring them.
+Do not merge stale branches without reviewing their current diffs, rebasing, and rerunning CI. Decide whether to refresh or close each one.
 
 ## Documentation handoff — PR #31
 
-- PR #31 remains open, documentation-only, and unmerged. The November 26 handoff revision at `ec3c93f9bedf88e41d2d838970b2a99cd426cb0e` passed CI #356: backend **285 passed, 3 warnings**; frontend **17 passed**; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed. This latest follow-up updates the checkpoint to PR #27 head `7230af31c3d51d62b232e93a70c0ead0ee284b6e`; its documentation CI is triggered separately.
-- The CodeRabbit check on the documentation commit was skipped with the explicit status “manual review required for this OSS repository.” The re-review request for PR #27's current application/security head was rate-limited.
-- No application code, Shopify configuration, secrets, production database, or deployment changed in PR #31.
+- PR #31 remains open, documentation-only, and unmerged.
+- Its previous head `d295e99fefeb366199710fdfaa264b5cefc95ce6` passed CI #358 on 2026-11-26: backend **285 passed, 3 warnings**; frontend **17 passed**; both npm audits **0 vulnerabilities**; production Docker build passed.
+- This November 27 checkpoint is a documentation-only update on the same PR branch. Its own CI must pass before this revision is described as CI-verified.
+- No application code, Shopify configuration, secrets, production database, or deployment is changed by this handoff update.
 
-## Release gate remains unchanged
+## Tasks 1–8 and release gate
 
-Tasks 1–8 retain the status in the November 25 checkpoint below: authentication, products, AI, and billing code exists but needs live acceptance; GDPR regression is expanded but needs real Shopify webhook/redaction testing; migration 0010 is PR-only; Docker builds pass but production deployment is unverified; main is unprotected; production acceptance is incomplete.
+- Task 1 — Shopify authentication/App Bridge: implementation exists on main; embedded launch, token exchange/refresh, reauthorization, and install/uninstall behavior still need development-store acceptance. The manifest's `/auth/callback` URL does not match a route in the auth router; validate the managed-install/ID-token flow before changing it.
+- Task 2 — Webhooks/GDPR: HMAC validation and uninstall/customer/shop redaction handlers exist. PR #30 adds shop-redaction cascade regression coverage and CI #339 passed; real Shopify webhook deliveries, redaction, and Protected Customer Data approval remain outstanding.
+- Task 3 — Products/CSV/publishing: core endpoints exist. PR #29 aligns the backend's required-scope health check with the seven manifest scopes; CI #279 passed. It does not grant scopes or release the app. Reauthorization and live product/CSV/publish/unpublish acceptance remain.
+- Task 4 — AI/orders/analytics/billing: implementation exists, but PR #25 still uses process-local FastAPI `BackgroundTasks`, so campaign execution is not restart-durable. PR #26's Meta fallback has automated coverage only. Billing defaults remain `billing_test=true` and `billing_enforced=false`; live billing, cancellation, webhook handling, paid entitlements, Meta OAuth/publishing, and OpenRouter production generation remain unverified.
+- Task 5 — PostgreSQL/tenant isolation: PR #27's signed tenant and scheduler context migration has strong restricted-role PostgreSQL regression coverage, including the latest startup-key and psycopg URL-option checks. It remains PR-only and requires independent security approval plus direct production role, ownership, ACL, cluster, secret, and logging verification.
+- Task 6 — Docker/deployment: PR #27 CI #360 and PR #31 CI #358 production image builds passed. A successful build does not prove deployment. Production SHA, applied Alembic revision, runtime configuration, and health remain unknown.
+- Task 7 — CI/security/governance: the current PR branches have green CI, but main is unprotected and there are no repository rulesets. No independent security approval is recorded.
+- Task 8 — production acceptance: incomplete. Development-store installation, merchant workflows, live integrations, production database verification, reviewed migration, deployment, smoke tests, and release sign-off remain.
 
 Immediate gates:
 1. Protect main with required backend/frontend/Docker checks and independent review.
