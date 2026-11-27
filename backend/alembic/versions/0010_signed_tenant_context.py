@@ -45,7 +45,14 @@ def _verify_same_database_cluster(bind, runtime_url: str) -> None:
     if not runtime_parsed.drivername.startswith("postgresql"):
         raise RuntimeError("DATABASE_URL must use PostgreSQL for signed tenant-context migration")
 
-    runtime_sync_url = runtime_parsed.set(drivername="postgresql+psycopg")
+    # SQLAlchemy's asyncpg dialect consumes this option, but psycopg does not.
+    # Preserve TLS, routing, and other PostgreSQL URL options for the identity probe.
+    runtime_query = dict(runtime_parsed.query)
+    runtime_query.pop("prepared_statement_cache_size", None)
+    runtime_sync_url = runtime_parsed.set(
+        drivername="postgresql+psycopg",
+        query=runtime_query,
+    )
     lock_params = None
     for _ in range(5):
         candidate = {
