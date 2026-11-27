@@ -1331,6 +1331,36 @@ def test_definer_role_preflight_rejects_unexpected_function_ownership():
     asyncio.run(scenario())
 
 @pytest.mark.parametrize(
+    ("runtime_url", "expected_query"),
+    [
+        (
+            "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app",
+            {},
+        ),
+        (
+            "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app?prepared_statement_cache_size=0",
+            {},
+        ),
+        (
+            "postgresql+asyncpg://runtime:runtime-password@pooler.example:6543/mia_app"
+            "?prepared_statement_cache_size=0&sslmode=require&application_name=mia",
+            {"sslmode": "require", "application_name": "mia"},
+        ),
+    ],
+)
+def test_runtime_psycopg_url_removes_asyncpg_cache_option_and_preserves_other_options(
+    runtime_url,
+    expected_query,
+):
+    migration = _load_signed_context_migration_for_preflight_tests()
+
+    runtime_parsed = migration.make_url(runtime_url)
+    runtime_sync_url = migration._runtime_psycopg_url(runtime_parsed)
+
+    assert runtime_sync_url.drivername == "postgresql+psycopg"
+    assert dict(runtime_sync_url.query) == expected_query
+
+@pytest.mark.parametrize(
     ("runtime_lock_acquired", "runtime_current_user", "should_reject"),
     [
         (False, "runtime", False),
