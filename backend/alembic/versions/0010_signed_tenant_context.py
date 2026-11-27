@@ -33,6 +33,18 @@ TENANT_TABLES = (
 DEFINER_ROLE = "mia_rls_definer"
 
 
+def _runtime_psycopg_url(runtime_parsed):
+    """Build the synchronous identity-probe URL without asyncpg-only options."""
+    # SQLAlchemy's asyncpg dialect consumes this option, but psycopg does not.
+    # Preserve TLS, routing, and other PostgreSQL URL options for the identity probe.
+    runtime_query = dict(runtime_parsed.query)
+    runtime_query.pop("prepared_statement_cache_size", None)
+    return runtime_parsed.set(
+        drivername="postgresql+psycopg",
+        query=runtime_query,
+    )
+
+
 def _verify_same_database_cluster(bind, runtime_url: str) -> None:
     """Prove both URLs reach the same PostgreSQL database without relying on hostnames.
 
@@ -45,14 +57,7 @@ def _verify_same_database_cluster(bind, runtime_url: str) -> None:
     if not runtime_parsed.drivername.startswith("postgresql"):
         raise RuntimeError("DATABASE_URL must use PostgreSQL for signed tenant-context migration")
 
-    # SQLAlchemy's asyncpg dialect consumes this option, but psycopg does not.
-    # Preserve TLS, routing, and other PostgreSQL URL options for the identity probe.
-    runtime_query = dict(runtime_parsed.query)
-    runtime_query.pop("prepared_statement_cache_size", None)
-    runtime_sync_url = runtime_parsed.set(
-        drivername="postgresql+psycopg",
-        query=runtime_query,
-    )
+    runtime_sync_url = _runtime_psycopg_url(runtime_parsed)
     lock_params = None
     for _ in range(5):
         candidate = {
