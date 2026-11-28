@@ -379,3 +379,61 @@ Main remains at 11ff8cc5f0b427117576e43edc4918907e72f750; no production database
 4. Run development-store install/reinstall, token exchange, publication-scope approval, product publishing, webhook, GDPR, and billing acceptance.
 5. Replace process-local FastAPI `BackgroundTasks` for campaign jobs with a durable worker/lease-recovery design before claiming restart-safe execution.
 6. Track the `deepmerge` advisory until upstream publishes a fix; assess the actual transitive usage and avoid unsafe forced upgrades.
+
+
+## Engineering update — 2026-11-28
+
+This section records a fresh read-only repository check on 2026-11-28. It supersedes earlier status statements only where the evidence below is newer. It does not imply that any PR was merged or any production environment was changed.
+
+### PR #30 — GDPR shop-redaction regression
+
+- Current head: `a227966ab983f4c77a354f8d40938d2966eb80b7`; base `main` at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`.
+- GitHub reports the PR open, non-draft, and mergeable. It changes one test file.
+- CI #339 (2026-11-23) passed all three jobs on that exact head:
+  - Backend: **285 passed, 3 warnings**.
+  - Frontend: **17 passed**.
+  - Production-only and full npm audits: **0 vulnerabilities**.
+  - Production Docker build: **passed**.
+- The updated shop-redaction test seeds and checks 11 merchant-owned record types, captures the primary keys of the WebhookEvent and AuditLog fixtures, checks for leftovers by primary key, and performs cleanup by those keys. This avoids overlooking rows whose shop_id is nulled by deletion behavior.
+- The single CodeRabbit inline thread is resolved. This is regression-test evidence, not a live Shopify GDPR delivery test. PR #30 remains open and unmerged.
+
+### PR #29 — Shopify publication-scope health check
+
+- Current head: `4bd375c1fabbcb28471f0a044f0344288dd009c2`; base `main` at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`.
+- GitHub reports the PR open, non-draft, and mergeable. It changes four files.
+- CI #279 (2026-11-12) passed all three jobs on that exact head:
+  - Backend: **287 passed, 3 warnings**.
+  - Frontend: **17 passed**.
+  - Both npm audit commands reported **3 low-severity vulnerabilities**; the moderate-threshold CI gates passed. Do not describe this branch's audit as zero findings.
+  - Production Docker build: **passed**.
+- The current test patch compares the full default scope set with the manifest and REQUIRED_SHOPIFY_SCOPES, addressing the earlier review request to catch drift in either direction.
+- This fixes the health-check's required-scope floor; it does not grant publication scopes to a merchant or deploy a new Shopify app version. PR #29 remains open and unmerged.
+
+### PRs #25 and #26 — older feature branches
+
+- PR #25 head `85eef38c40ca0990ccfa5c3188b17565ba41ee07`: CI #271 passed all three jobs on 2026-11-12 (backend **288 passed, 3 warnings**; frontend **17 passed**; Docker passed). Both npm audit steps reported **3 low-severity vulnerabilities**.
+- PR #26 head `04edf103e0de175734949d1ed3819743c8aa1a63`: CI #273 passed all three jobs on 2026-11-12 (backend **285 passed, 3 warnings**; frontend **18 passed**; Docker passed). Both npm audit steps reported **3 low-severity vulnerabilities**.
+- These are green CI results for the recorded heads, not live provider acceptance. PR #25 still uses FastAPI process-local BackgroundTasks and is not restart-durable. PR #26's test-token fallback does not prove live Meta OAuth or publishing.
+
+### PR #27 and PR #31 — November 27 checkpoint revalidated
+
+- PR #27 remains open, draft, mergeable, and unmerged at `400500b193c360ae54f7eaea460547f5282d0862`; it is 138 commits ahead and 0 behind main, with 13 changed files.
+- CI #360 passed all three jobs on that exact head: backend **316 passed, 3 warnings**; frontend **17 passed**; both npm audits **0 vulnerabilities**; migration 0010 upgrade/downgrade/re-upgrade and production Docker build passed.
+- PR #31 remains open, non-draft, mergeable, and unmerged at `dd6998bd01ab3a757f4509740d2d878bcb6fdc4d`. CI #361 passed all three jobs: backend **285 passed, 3 warnings**; frontend **17 passed**; both npm audits **0 vulnerabilities**; production Docker build passed.
+- PR #27 has 26 inline review threads and all are marked resolved. Recorded review submissions do not include an independent APPROVE; CodeRabbit's follow-up review was rate-limited. Independent human security approval is still outstanding.
+
+### Main and release governance
+
+- Main remains at `59660d53d7c6b3ceeae7a584499e5ad392733fb8`.
+- GitHub's branch endpoint reports `protected: false`; the repository rulesets endpoint returns an empty list. Required checks and independent approval are not enforced by branch protection.
+- The connected GitHub integration can read repository metadata but does not expose a write operation for branch-protection settings. An administrator must configure and verify protection in GitHub.
+- The repository still has 11 open PRs. No application PR was merged during this check.
+- No production database was queried or modified, no production secrets were changed, no Shopify release was performed, and no deployment was made. Production running SHA, applied Alembic revision, role catalog state, signing-secret provisioning, database/provider/proxy parameter logging, and live merchant acceptance remain unverified.
+
+### Immediate next actions
+
+1. Obtain independent review and approval for PR #27; keep migration 0010 unmerged and undeployed until the production role, database identity, secret, logging, and rollback checks are approved.
+2. Have a repository administrator enable required status checks and review protection on main.
+3. Review and merge the test-only PR #30 and the scope-health-check PR #29 only after the normal maintainer review; then verify the merged main CI.
+4. For PR #25, replace process-local BackgroundTasks with durable worker/lease/retry/stale-job recovery before claiming restart-safe execution.
+5. Run real Shopify development-store acceptance for authentication, product/CSV/publishing, webhooks/GDPR, billing, and provider integrations.
