@@ -419,7 +419,8 @@ This section records a fresh read-only repository check on 2026-11-28. It supers
 
 - PR #27 remains open, draft, mergeable, and unmerged at `400500b193c360ae54f7eaea460547f5282d0862`; it is 138 commits ahead and 0 behind main, with 13 changed files.
 - CI #360 passed all three jobs on that exact head: backend **316 passed, 3 warnings**; frontend **17 passed**; both npm audits **0 vulnerabilities**; migration 0010 upgrade/downgrade/re-upgrade and production Docker build passed.
-- PR #31 remains open, non-draft, mergeable, and unmerged at `dd6998bd01ab3a757f4509740d2d878bcb6fdc4d`. CI #361 passed all three jobs: backend **285 passed, 3 warnings**; frontend **17 passed**; both npm audits **0 vulnerabilities**; production Docker build passed.
+- PR #31 current head is `ea85a37b64b155820da0178fa575e7a6b010932a`; it remains open, non-draft, mergeable, and unmerged. CI #362 completed on 2026-11-28 on this exact head with all three jobs passed: backend **285 passed, 3 warnings**; frontend **17 passed**; lint and production build passed; production-only and full npm audits **0 vulnerabilities** each; production Docker build passed. This verifies the documentation-only update, not a new application-code change.
+- CI #361 passed all three jobs on the previous PR #31 head `dd6998bd01ab3a757f4509740d2d878bcb6fdc4d` with the same backend/frontend/audit/Docker results.
 - PR #27 has 26 inline review threads and all are marked resolved. Recorded review submissions do not include an independent APPROVE; CodeRabbit's follow-up review was rate-limited. Independent human security approval is still outstanding.
 
 ### Main and release governance
